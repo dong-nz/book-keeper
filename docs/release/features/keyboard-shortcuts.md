@@ -55,3 +55,14 @@ The full app is keyboard-operable: sidebar, toolbar, document rows, dialogs (foc
 > | Ctrl+O (Cmd+O) | Import folder — opens the folder picker directly |
 >
 > `Ctrl+I` still opens the file picker. An older undocumented alias (`Ctrl+Shift+I`) no longer does anything, since its key combination now belongs to *Import folder*. In a password prompt (a protected document opening in the reader), `Enter` submits the password ([password-protected-pdfs.md](password-protected-pdfs.md)). Everything else is unchanged.
+
+> **Amendment (2026-11-12, v0.0.9): the book reading window has its own keys** (verified in the running app). A book is one continuous text — it has no pages — so its keys are reading keys:
+>
+> | Keys (in a book window) | Action |
+> |---|---|
+> | `↑` / `↓` | Scroll one notch |
+> | `PageUp` / `PageDown` | Scroll one screen |
+> | `Home` / `End` | Jump to the start / end of the book |
+> | `Esc` | Closes the contents panel first if it's open; otherwise the window |
+>
+> There is no page-turn key set and no zoom keys in a book window: a book adapts to the window, and its text size is changed with the size buttons in the bottom bar, not with keys. The guard rule holds here too: while you're typing in the jump-to-position field, or while the contents panel or a menu is open, these keys belong to that thing. `Ctrl+I` / `Ctrl+O` now accept both file types; every shortcut in the tables above and in the earlier amendments is unchanged.

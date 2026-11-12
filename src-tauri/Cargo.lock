@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "pdfkeeper"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "image",
  "lopdf",

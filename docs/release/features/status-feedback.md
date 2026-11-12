@@ -1,6 +1,6 @@
 # Status and feedback
 
-> **Status: ✅ Shipped in v0.0.1, updated in v0.0.3, v0.0.4, v0.0.7 and v0.0.8** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.1, updated in v0.0.3, v0.0.4, v0.0.7, v0.0.8 and v0.0.9** — verified by running the app.
 
 ## The status bar
 
@@ -33,3 +33,5 @@ These messages appear near your work and disappear on their own; the status bar 
 > The bottom bar's conditional content, the counts and their sources, the result messages and their action buttons are otherwise unchanged.
 
 > **Amendment (2026-11-10, v0.0.8): progress counts advance in smaller steps** (verified during real import jobs). During an import, the progress bar and its "x of y" count now update every **5** files instead of every 50 — on a large import the numbers visibly walk instead of leaping, and the bar's fill keeps sliding as before. What the bar shows, when it shows it, the labeled counts, the result messages and their action buttons are unchanged.
+
+> **Amendment (2026-11-12, v0.0.9): import messages no longer name a file type** (verified in the running app). The import completion toast reads **"Imported N file(s)"** — it said "document(s)" while the app handled only PDFs; now that the library holds both PDFs and books, "files" is what the message truthfully describes. The delete confirmation likewise says "the files stay on disk". The bottom bar's count and its label ("N documents"), the progress behavior from the last three amendments, and every other message are unchanged.

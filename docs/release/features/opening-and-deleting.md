@@ -29,3 +29,5 @@ Pressing Esc cancels — your selection stays, so you can retry the same action.
 > - **A password-protected document** opened with the built-in reader shows a password prompt in the reading window instead of an error ([password-protected-pdfs.md](password-protected-pdfs.md)). *Open in external viewer* hands such a document to your system's application, which asks for the password its own way.
 >
 > Opening (double-click, `Enter`, **Open**), external viewing, and the delete flow are unchanged.
+
+> **Amendment (2026-11-12, v0.0.9): books (EPUBs) open the same way** (verified in the running app). Double-click, `Enter` on the focused row, or **Open** on a book opens it in the app's own **book reading window** — the same activation as a PDF, a surface designed for books ([reading-epubs.md](reading-epubs.md)). **Open in external viewer** hands the book to your computer's other application, exactly as it does for PDFs. A book that cannot be read (a damaged file) shows the window's plain error message instead. The delete flow is unchanged — its wording simply no longer names one file type ("the files stay on disk…"), because the library now holds both kinds.

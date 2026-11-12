@@ -1,6 +1,6 @@
 # Reading PDFs
 
-> **Status: ✅ Shipped in v0.0.6, updated in v0.0.7 and v0.0.8** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.6, updated in v0.0.7, v0.0.8 and v0.0.9** — verified by running the app.
 
 PDF Keeper now opens documents **inside itself**. Double-click a document (or press `Enter` on a focused row, or choose **Open** in its right-click menu) and the document opens in its own reading window — no other application needs to start.
 
@@ -53,3 +53,5 @@ Opening a document with your system's PDF application is still there — it just
 > - **Changing zoom near the end of a document no longer moves the page.** Earlier, at the last page, switching from a *Fit* mode to another zoom level and back could leave the page sitting away from the window's bottom edge — the view jumped when it shouldn't have. Now the page you were looking at stays anchored through any zoom change, including at the document's end and in every view mode. Measured in a 192-page document: fit → 50 % → fit leaves the last page exactly where it was.
 >
 > Everything else about reading — view modes, contents, navigation, keys, the strip — is unchanged.
+
+> **Amendment (2026-11-12, v0.0.9): opening a document no longer flashes** (verified in the running app). Earlier, a reading window showed an empty moment for a beat before the first page appeared — a visible flash. The first page now arrives with a short, smooth cross-fade: the document appears as one continuous motion, and the same fade covers switching a document's view mode. Opening speed is unchanged — measured on the test machine, the first page of a 192-page document still appears in about 0.37 s from the double-click. Everything else about reading is unchanged. Books (EPUBs) open in their own window, described in [reading-epubs.md](reading-epubs.md).

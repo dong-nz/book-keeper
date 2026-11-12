@@ -1869,7 +1869,19 @@ async function cSearch(term) {
     if (rows.length === 0) return null;
     return (rows[0].querySelector('.title-line')?.textContent ?? '').includes(${JSON.stringify(term)}) ? true : null;
   `, { timeout: 30000 });
-  if (!shown) throw new Error(`the search term ${term} did not reach the rendered rows`);
+  if (!shown) {
+    // Failure evidence: what the list actually shows when the claim fails —
+    // row count, the first titles, the field's content.
+    const diag = await cMainEval(`
+      const rows = Array.from(document.querySelectorAll('[data-row-id]'));
+      return {
+        rowCount: rows.length,
+        firstTitles: rows.slice(0, 3).map((r) => r.querySelector('.title-line')?.textContent ?? ''),
+        fieldValue: document.querySelector('.search-input')?.value ?? null,
+      };
+    `);
+    throw new Error(`the search term ${term} did not reach the rendered rows — ${JSON.stringify(diag)}`);
+  }
 }
 
 async function cClearSearch() {
@@ -7458,6 +7470,29 @@ async function recoverAfterCrash() {
     await clearSelectionIfAny();
     await clearSearch();
   } catch { /* the session is gone; the next flow will report it */ }
+  await closeOpenReaderWindows();
+}
+
+// A crashed reader flow can leave its window open. Every later flow opens
+// its own windows, and the measured flow's scenario is "fresh windows, in
+// the default mode" — a surviving window is reused by create-or-focus
+// (store, mode and served pages included), which silently changes what the
+// measured rows measure (measured in the 2026-11-12 evidence run: a
+// crashed view-modes flow left a facing-mode window, and the performance
+// flow ran its cold-scroll scenario against pair geometry). Close every
+// surviving reader window the way the user does: Escape.
+async function closeOpenReaderWindows() {
+  for (const target of await cdpTargets()) {
+    const id = cdpReaderId(target);
+    if (id === null || !target.webSocketDebuggerUrl) continue;
+    try {
+      const session = new CdpSession(target.webSocketDebuggerUrl);
+      await session.ready;
+      await session.key("Escape", "Escape", 27);
+      await cWaitReaderId(id, false, { timeout: 8000 });
+      session.ws.close();
+    } catch { /* the window or the runtime is gone */ }
+  }
 }
 
 // ============================================================ v0.0.4 flows ===
@@ -10339,7 +10374,13 @@ async function flowReaderViewModes() {
 
   // A new reader window opens in continuous regardless of the previous
   // window's mode (DR-181: a mode is session state of its own window).
-  const second = await cOpenReader("multi-012");
+  // The second document is multi-096 — a multi-page fixture no flow ever
+  // deletes. multi-012 would also work standalone, but flowReaderClose
+  // (earlier in the same sequence) deletes it as its library-only-delete
+  // subject (DR-149), so in a single-instance set run its row is gone by
+  // the time this flow needs it (measured in the 2026-11-12 evidence run:
+  // the search returned zero rows and the flow crashed).
+  const second = await cOpenReader("multi-096");
   await second.session.waitFor(FIRST_PAGE_READY, { timeout: 8000 });
   const modes2 = await modeButtons(second.session);
   check("AC-80: a new reader window opens in continuous regardless of the previous window's mode",
@@ -10556,8 +10597,19 @@ async function flowReaderPerformance() {
     return ${fieldLabel};
   `, { timeout: 8000 });
   timingRow("page jump → new image visible (192 pages)", Date.now() - jumpedAt, 300, "page field 1 → 96 (performance flow, AC-73)");
+  // Failure evidence for the jump check: where the viewport actually is
+  // (scroll offset + the geometry of the pages around the target), so a
+  // mis-landed jump names its off-by-one instead of just its label (DR-323).
+  const jumpDiag = await s.evaluate(`
+    const sc = document.querySelector('.reader-scroll');
+    const pages = Array.from(document.querySelectorAll('.reader-scroll .page')).map((p) => {
+      const img = p.querySelector('img'); const r = p.getBoundingClientRect();
+      return { alt: img?.getAttribute('alt') ?? (p.querySelector('.page-placeholder')?.getAttribute('aria-label') ?? null), top: Math.round(r.top), h: Math.round(r.height), w: Math.round(r.width) };
+    }).filter((p) => p.alt && /Page 9[3-7]$/.test(p.alt));
+    return { scrollTop: Math.round(sc.scrollTop), pages, label: document.querySelector('.reader-controls input[aria-label]')?.getAttribute('aria-label') ?? null };
+  `);
   check("AC-73: the page-jump row measured in the performance flow reaches page 96", jumpedLabel === pageLabel(96, count192),
-    `label: ${JSON.stringify(jumpedLabel)}`);
+    `label: ${JSON.stringify(jumpedLabel)} diag: ${JSON.stringify(jumpDiag)}`);
 
   // Let every in-flight serving (initial mount window + jump window) land
   // before the measured run starts, so its files and its CPU stay out.
@@ -10589,9 +10641,14 @@ async function flowReaderPerformance() {
   check("AC-73: cold-scroll page serving costs ≤ 350 ms of app-process CPU per served page (budget calibrated to the measured method, DR-202; baseline M1 ≈ 447 ms/page)",
     !!quietBefore && !!quietAfter && served > 0 && cpuPerPage !== null && cpuPerPage <= 350,
     `served ${served} pages, app-process CPU ${cpuMs} ms, per served page ${cpuPerPage === null ? "n/a" : cpuPerPage.toFixed(1)} ms — breakdown (DR-202): pipeline standalone ≈ 229–237 ms/page, remainder is the request plumbing (invoke dispatch + WebView2 asset streaming + queue handling); full process tree ${treeAfter - (cpuBeforeTree ?? 0)} ms for comparison`);
+  // Failure evidence for the served-count check: the requested keys that
+  // have no cache file, named (DR-323).
+  const requestedKeys = await s.evaluate(`return Array.from(window.__TAURI_INTERNALS__.__pageRequested ?? []);`);
+  const servedKeys = readerCacheKeys(opened.id);
+  const missingKeys = requestedKeys.filter((k) => !servedKeys.has(k)).slice(0, 14);
   check("AC-73: every page the mount window requested is served by the end of the run (served-page count = requested count)",
     !!settled && requested > 0 && served === requested,
-    `requested ${requested}, served ${served}`);
+    `requested ${requested}, served ${served}, missing keys ${JSON.stringify(missingKeys)}`);
   await s.key("Escape", "Escape", 27);
   await cWaitReaderId(opened.id, false);
 

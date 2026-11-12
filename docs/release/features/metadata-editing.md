@@ -29,3 +29,5 @@ Title, author, and notes feed the search index ([searching.md](searching.md)). R
 > - **Open containing folder** opens the document's folder in your system's file manager with the file selected; it appears when the file is present, where *Relink* appears when it is missing ([finding-a-documents-file.md](finding-a-documents-file.md)).
 >
 > When a document's title was taken from its filename, the dialog now says so, quietly, under the title field — and a file rename updates such a title to the new name. A title you edited yourself is never rewritten by a rename. Title, author, notes, the favorite toggle, the *Discard changes?* step and the delete actions are unchanged.
+
+> **Amendment (2026-11-12, v0.0.9): the same automatic metadata now reads books.** For an EPUB, the app reads the book's own properties for title and author at import — the same rule as a PDF's internal properties — with the same fallback to the filename when the book declares nothing. Everything the editor does for a PDF does for a book: title, author, notes, tags, favorite, Rename, Relink, delete. Books carry no page count or file-format field; nothing new appears in the dialog.

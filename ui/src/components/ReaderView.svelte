@@ -215,7 +215,11 @@
            never changes shape, so an entry update is an attribute-only
            patch: the base image node is never rebuilt, and the painted
            preview is never torn down (a rebuilt <img> must decode again —
-           that gap was the surviving flash). -->
+           that gap was the surviving flash). DR-323: the load event hands
+           the page to the store's release timer — after the fade the full
+           stage becomes the base src and this overlay's src clears, so the
+           coexistence is the fade's own window, not the page's whole
+           mounted lifetime. -->
       <img
         class="page-full"
         src={image.full}
@@ -225,6 +229,7 @@
         style="width: {width}px; height: {height}px"
         onload={(e) => {
           e.currentTarget.setAttribute("data-loaded", "");
+          store.previewShown(page, width);
         }}
       />
     {:else}

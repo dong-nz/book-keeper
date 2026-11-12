@@ -73,6 +73,14 @@ export const MAX_PIXEL_RATIO = 2;
  *  target and the request stays single-stage. */
 export const PREVIEW_WIDTH_MAX = 1400;
 
+/** DR-323: how long the preview stage stays under the loaded cross-fade
+ *  overlay before `previewShown` releases it (the store's release timer).
+ *  The overlay's own fade is 160 ms (ReaderView's transition); this window
+ *  clears the preview well before a mounted page can be scrolled through,
+ *  so the doubled-raster cost is bounded to a page-load tail and never a
+ *  steady state. */
+const PREVIEW_RELEASE_MS = 600;
+
 export type ReaderStatus = "loading" | "ready" | "error";
 
 /** View modes (UI-34, DR-180): the store's `viewMode` is the single source
@@ -91,7 +99,10 @@ export interface PageImage {
   /** The full-resolution stage (DR-151/DR-153; the seam fix DR-316):
    *  null until the full raster's request resolves, and null whenever the
    *  two stages coincide (single-stage request). The view overlays it on
-   *  the preview and cross-fades — the preview is never replaced in place. */
+   *  the preview and cross-fades. DR-323: once the cross-fade has run,
+   *  `previewShown` promotes the full stage to `src` and clears this field
+   *  — the mounted page keeps one decoded raster, the v0.0.8 memory
+   *  profile the AC-73/AC-75 budgets were calibrated against. */
   full: string | null;
 }
 
@@ -562,8 +573,10 @@ export class ReaderStore {
    *  the Rust cache serves re-requests of a known width without rendering).
    *  Two stages above the fast-render cap (DR-151, preview width per
    *  DR-153): the preview at `min(CSS display width, PREVIEW_WIDTH_MAX)`
-   *  lands and displays first, the full target then replaces it in place;
-   *  when the preview equals the target this is a single request. */
+   *  lands and displays first, the full target then arrives as the
+   *  cross-fade overlay (DR-316/DR-318) and is promoted to the base src
+   *  when the fade completes (DR-323); when the preview equals the target
+   *  this is a single request. */
   requestPage(page: number): void {
     if (this.status !== "ready") return;
     const width = this.pageWidth(page);
@@ -608,6 +621,32 @@ export class ReaderStore {
         this.error = asAppError(error);
         this.status = "error";
       });
+  }
+
+  /** DR-323: release the preview stage once the cross-fade has completed.
+   *  The view calls this from the overlay's load event — the moment its
+   *  fade begins. After `PREVIEW_RELEASE_MS` the full stage is promoted to
+   *  the entry's `src` and the overlay source cleared: the base image
+   *  re-points at the raster the overlay just showed (same URL, already
+   *  decoded and cached — an attribute-only patch invisible under the
+   *  opaque overlay), and the page's steady state is one decoded raster
+   *  again — the v0.0.8 memory profile the AC-73/AC-75 budgets were
+   *  calibrated against (the doubled held rasters of DR-318's always-on
+   *  coexistence were the regression measured in the v0.0.9 evidence run).
+   *  Guarded like `#setImage`: a chain superseded (zoom/fit change) or a
+   *  different full stage published since the load event releases nothing
+   *  — the captured URL must still be the entry's current full stage. */
+  previewShown(page: number, width: number): void {
+    const entry = this.images.get(page);
+    if (!entry || entry.width !== width || entry.full === null) return;
+    const full = entry.full;
+    setTimeout(() => {
+      const current = this.images.get(page);
+      if (!current || current.width !== width || current.full !== full) return;
+      const next = new Map(this.images);
+      next.set(page, { width, src: full, full: null });
+      this.images = next;
+    }, PREVIEW_RELEASE_MS);
   }
 
   #setImage(page: number, width: number, path: string, full: string | null): void {

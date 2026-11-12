@@ -34,3 +34,9 @@ Covers are display-only: opening a document still uses your system's PDF viewer 
 > - **Renaming a document's file carries its cover along.** After a rename through the app, the cover in the list follows the renamed file automatically — nothing for you to do ([renaming-a-documents-file.md](renaming-a-documents-file.md)).
 >
 > Generation, speed, regeneration on change, the fallback symbol, and cleanup on removal are unchanged.
+
+> **Amendment (2026-11-12, v0.0.9): books (EPUBs) get covers too** (verified in the running app).
+>
+> - **A book's cover is the cover image the book itself declares.** It is fitted into the cover space whole — never cropped — so nothing printed on a book's cover is cut away; the space around it shows the card's background color.
+> - **A book that declares no usable cover image gets the same generic placeholder** every unrenderable document gets. The import still succeeds, and everything else about the book works normally.
+> - Background generation, the appearance of covers in the open list, regeneration on change, and cleanup on removal work for books exactly as described above.

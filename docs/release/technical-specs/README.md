@@ -10,7 +10,7 @@ Populated at Ship commits. **v0.0.1 shipped 2026-11-03**, **v0.0.2 shipped 2026-
 
 | Technical doc | Released since | Last updated | User guide page | Requirements |
 |---|---|---|---|---|
-| [importing-pdfs.md](importing-pdfs.md) | v0.0.1 | v0.0.8 | [importing-pdfs](../features/importing-pdfs.md) | FR-10 (MODIFIED in v0.0.2), FR-11, UI-14 (v0.0.3), UI-20 (v0.0.4), UI-44/D25 (v0.0.8) |
+| [importing-files.md](importing-files.md) | v0.0.1 | v0.0.8 | [importing-pdfs](../features/importing-files.md) | FR-10 (MODIFIED in v0.0.2), FR-11, UI-14 (v0.0.3), UI-20 (v0.0.4), UI-44/D25 (v0.0.8) |
 | [tags.md](tags.md) | v0.0.1 (as categories) | v0.0.8 | [tags](../features/tags.md) | FR-02 (MODIFIED in v0.0.2), FR-07, UI-03 (MODIFIED in v0.0.3), UI-24 (v0.0.4), UI-42 (v0.0.8) |
 | [browsing-and-filtering.md](browsing-and-filtering.md) | v0.0.2 | v0.0.8 | [browsing-and-filtering](../features/browsing-and-filtering.md) | UI-01 (MODIFIED in v0.0.2 and v0.0.3), UI-09 (ADDED v0.0.2, MODIFIED v0.0.3), FR-15 (placement, v0.0.3), D5/UI-19/UI-20/UI-26 (v0.0.4), UI-43/UI-42 (v0.0.8) |
 | [the-app-window.md](the-app-window.md) | v0.0.2 | v0.0.8 | [the-app-window](../features/the-app-window.md) | UI-07, UI-11 (MODIFIED in v0.0.3), UI-12 (MODIFIED in v0.0.3), UI-13 (v0.0.3), defects D2 (v0.0.3), D3/D9 (v0.0.4), D20/UI-29 shortcut map (v0.0.8) |

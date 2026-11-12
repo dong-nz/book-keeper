@@ -10,7 +10,7 @@
 - A document can belong to **any number of tags** (or none).
 - Single document: choose tags in its Details dialog.
 - Many at once: select rows (checkboxes) → bulk bar → **Tags** → add and/or remove in one action.
-- Importing while one or more tags are active assigns all of them ([importing-pdfs.md](importing-pdfs.md)).
+- Importing while one or more tags are active assigns all of them ([importing-files.md](importing-files.md)).
 
 ## Browsing
 **Browse ▸ Tags** lists your tags with live counts; its items are checkable and **multi-select** — filtering by several tags shows the documents in *any* of them (a document in two of them is listed once). The tag filter combines with search, Favorites, Reading and Missing. The Browse menu is also the only place that shows which tags you're currently filtering by ([browsing-and-filtering.md](browsing-and-filtering.md)).
