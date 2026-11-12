@@ -2,14 +2,14 @@
 
 **Living document, not a release spec.** It has no lifecycle status and is not a requirements source: requirements and acceptance criteria stay in the release specs (this file never restates them as definitions). It is the factual inventory of every test case the repository implements *today*, per `docs/specs/INDEX.md` → current spec → `AGENTS.md` §2a maintenance rules (DR-160).
 
-Regenerated 2026-11-10 by extracting the sources directly: `#[test]` items under `src-tauri/src/`, `it()`/`test()` items under `ui/src/`, and every `check()`/`skip()` call site in `scripts/ui-smoke.mjs` and `scripts/ui-10k.mjs`. Counts below are call sites in the current working tree; parameterized checks (width matrix, contrast matrix) run once per case, and a lane run additionally asserts its own suite-level checks — core lanes four (AC-49 source scan, AC-56 sleep scan, AC-58 wall time, AC-60 area coverage), docs lanes their own budget check — so a full run asserts more than the number of listed call sites (the per-lane pattern is exact: each lane reports its flow's call sites plus those suite-level checks, the width matrix doubling at its two tested widths). The v0.0.7 full-mode lane run (Phase C, DR-192) will record its lane tallies here when it completes; the previous full-mode reference is the v0.0.6 Ship run (44/44 lanes green, 474/474 check executions, combined wall 130.7 s — inside the NFR-06 300 s budget).
+Regenerated 2026-11-12 by extracting the sources directly: `#[test]` items under `src-tauri/src/`, `it()`/`test()` items under `ui/src/`, and every `check()`/`skip()` call site in `scripts/ui-smoke.mjs` and `scripts/ui-10k.mjs`. Counts below are call sites in the current working tree; parameterized checks (width matrix, contrast matrix) run once per case, and a lane run additionally asserts its own suite-level checks — core lanes four (AC-49 source scan, AC-56 sleep scan, AC-58 wall time, AC-60 area coverage), docs lanes their own budget check — so a full run asserts more than the number of listed call sites (the per-lane pattern is exact: each lane reports its flow's call sites plus those suite-level checks, the width matrix doubling at its two tested widths). The v0.0.7 full-mode lane run (Phase C, DR-192) will record its lane tallies here when it completes; the previous full-mode reference is the v0.0.6 Ship run (44/44 lanes green, 474/474 check executions, combined wall 130.7 s — inside the NFR-06 300 s budget).
 
 |Layer|Runner|Test call sites|
 |---|---|---|
-|Rust core|`cargo test` (in `src-tauri/`)|82 `#[test]` in 9 files|
-|Frontend units|`pnpm -C ui test` (Vitest)|124 test call sites in 17 files (the design-tokens checks iterate the role-pair and token lists: vitest reports **210** test cases at run time - 91 from those 5 call sites; every other file runs exactly its call-site count)|
-|UI smoke harness|`node scripts/ui-smoke.mjs`|56 flows (53 run directly - 51 internal + the two exported prefix flows; the three exported scale flows are executed only by the 10k suite and its lanes), 494 check call sites in flow bodies and their helper functions - 475 belong to the direct-run shape, of which four are the suite-level checks (AC-49 source scan, AC-56 sleep scan, AC-60 area coverage, AC-58 wall time); plus 4 conditional `skip()` call sites and the AC-72 timing rows, asserted through the shared `timingRow()` helper (5 call sites). A direct full run asserts exactly the 475; under `scripts/ui-verify.mjs` full mode each core lane additionally asserts its own suite-level checks, which is why the full lane run reports more executions - see §3|
-|10 000-document suite|`node scripts/ui-10k.mjs`|1 flow (6 check call sites) + 2 suite-level checks (abort guard, NFR-06 budget) = 8 in the file; the suite additionally runs the shared 4-check prefix (flowStartup, flowDropAndSkip) and the three exported scale flows (19 call sites) — a full run asserts 35: the width matrix runs its four checks per tested window width|
+|Rust core|`cargo test` (in `src-tauri/`)|131 `#[test]` in 11 files|
+|Frontend units|`pnpm -C ui test` (Vitest)|149 test call sites in 18 files (the design-tokens checks iterate the role-pair and token lists: vitest reports **235** test cases at run time - 91 from those 5 call sites; every other file runs exactly its call-site count)|
+|UI smoke harness|`node scripts/ui-smoke.mjs`|58 flows (55 run directly - 53 internal + the two exported prefix flows; the three exported scale flows are executed only by the 10k suite and its lanes), 546 check call sites in flow bodies and their helper functions - 526 belong to the direct-run shape, of which four are the suite-level checks (AC-49 source scan, AC-56 sleep scan, AC-60 area coverage, AC-58 wall time); plus 4 conditional `skip()` call sites and the AC-72 timing rows, asserted through the shared `timingRow()` helper (6 call sites). A direct full run asserts exactly the 526; under `scripts/ui-verify.mjs` full mode each core lane additionally asserts its own suite-level checks, which is why the full lane run reports more executions - see §3|
+|10 000-document suite|`node scripts/ui-10k.mjs`|1 flow (8 check call sites) + 2 suite-level checks (abort guard, NFR-06 budget) = 10 in the file; the suite additionally runs the shared 4-check prefix (flowStartup, flowDropAndSkip) and the three exported scale flows (20 call sites) — a full run asserts 38: the width matrix runs its four checks per tested window width|
 |Full-verification orchestrator|`node scripts/ui-verify.mjs`|1 scheduler gate (every lane green + combined wall ≤ 300 s) — implemented as its own exit gate, not a `check()` call site, so it is not in the counts above; §3|
 
 The authoritative **requirement → test** mapping stays in each release spec (acceptance-criteria index + Build ledger). This document is the other direction: every test, and what it asserts. The `covers` columns list only requirement IDs the test source itself names; `—` means the test text carries no ID, not that none exists.
@@ -78,13 +78,15 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`tag_names_travel_with_rows_for_badges`|rows carry their tag names for the UI|—|
 |`cover_path_is_delivered_only_when_the_cache_file_exists`|an unprepared row carries no cover path; the path appears with the cached file (DR-237)|AC-100|
 
-### `src-tauri/src/library/service.rs` — library operations (24)
+### `src-tauri/src/library/service.rs` — library operations (31)
 
 |Test|Verifies|covers|
 |---|---|---|
 |`import_extracts_info_titles_and_falls_back_to_filename`|Info-dictionary title, filename fallback|FR-05|
+|`import_accepts_epub_documents_and_uses_the_package_metadata`|the same pipeline takes `.epub`: title/author from the OPF; the malformed fixture is refused with the typed error and nothing is stored; a no-metadata package falls back to the filename title|AC-126, AC-139…AC-141|
+|`folder_walk_collects_both_document_types`|the folder walk collects `.pdf` and `.epub` at any depth and nothing else|AC-126|
 |`import_skips_duplicates_and_auto_assigns_the_selected_tag`|duplicate skip + assignment on import|FR-01|
-|`import_of_ten_thousand_fixtures_stays_within_budget`|10 000-file import under the time budget|AC-01, NFR-02|
+|`import_of_ten_thousand_fixtures_stays_within_budget`|10 000-file import under the time budget — the corpus is the AC-131 mix (9 000 PDFs + 1 000 EPUBs), title probes for one document of each type|AC-01, NFR-02, AC-131|
 |`search_of_ten_thousand_documents_stays_within_budget`|search latency at 10 000 documents|AC-02, AC-01|
 |`tags_membership_bulk_edit_and_delete_cascade`|create/assign/bulk-edit/delete with document detach|AC-03, FR-02|
 |`reading_membership_single_and_bulk_with_view_and_counts`|the Reading toggle per document and across a selection; the Reading view lists exactly the members; the status counts follow every change|AC-121, AC-103, FR-19|
@@ -94,8 +96,12 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`rename_moves_the_file_and_the_record_and_preserves_identity`|file and record move together; tags, favorite, notes, Reading membership and the stored password belong to the row, not the name; relink and missing detection then work against the new path|AC-107, AC-109, FR-21|
 |`a_user_title_survives_the_rename_an_auto_title_re_derives`|`title_source = 'user'` is unchanged by a rename; the extracted title follows the new filename through the same gate the released relink uses|AC-109|
 |`rename_rejects_invalid_and_colliding_names_and_changes_nothing`|typed rejections (invalid name, collision with an existing document) happen before any file or row moves|AC-108, FR-21|
+|`rename_between_supported_extensions_is_accepted_and_re_derives`|a rename between supported extensions (`.pdf` ↔ `.epub`) is accepted: the file and record move together and the extracted title re-derives through the same gate (FR-21 MODIFIED)|AC-124|
+|`rename_to_an_unsupported_extension_is_rejected_and_changes_nothing`|a target extension outside the supported pair is refused with the typed error before anything moves|AC-124|
+|`library_capabilities_work_on_an_epub_document`|details/notes, favorite, Reading membership and rename behave on an EPUB record exactly as on a PDF one|AC-124|
 |`delete_library_only_keeps_the_file_delete_with_file_removes_it_and_its_cover`|both delete modes, cover cleanup on file delete|AC-04, AC-62, FR-09, FR-11|
 |`rescan_marks_missing_and_relink_restores_the_entry`|rescan flags missing, relink restores|AC-05|
+|`relink_is_type_matched`|the relink candidate must carry the document's own extension — a PDF row is not relinked to an EPUB file and the other way round|AC-128|
 |`rescan_restores_entries_when_files_come_back`|reappearing files clear the flag|—|
 |`title_source_transitions_gate_relink_re_derivation`|a manual title survives relink; an auto title re-derives|—|
 |`update_rejects_empty_title_at_the_service_boundary`|empty title never reaches the database|—|
@@ -103,6 +109,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`import_progress_events_cover_the_whole_batch`|progress events span the whole import|—|
 |`import_pipeline_events_cover_every_chunk_and_fire_outside_the_lock`|the progress bar appears before any file is processed, advances in steps of at most `CHUNK` (twelve full chunks of 5 for 60 fixtures — the bound revised from 25 by DR-279), covers the whole import, and is emitted while the connection is free — never from inside a lock hold (AC-101 pipeline audit)|AC-101, AC-123, FR-11|
 |`settings_carry_secondary_sort_and_grid_override`|secondary sort + manual column count persist|FR-13, UI-08|
+|`epub_text_size_accepts_only_the_ladder_steps`|the reading text-size setting stores only the ladder's fixed steps|AC-135|
 |`theme_defaults_to_system_and_accepts_only_the_three_states`|theme setting values `system/light/dark` only|UI-17|
 |`last_filter_grammar_accepts_the_new_form_and_the_legacy_one`|the persisted filter grammar: the modes including `reading` and the `&tags=` list form, and the legacy `&cats=`/`cat:` forms all decode; malformed values are rejected|AC-113|
 |`import_assigns_every_active_tag`|import assigns to every active tag|FR-10|
@@ -134,7 +141,57 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`an_unparseable_file_yields_the_typed_error`|a file that cannot be parsed at all → `PdfUnopenable`, the same classification the reader paths give|AC-77|
 |`unresolvable_destinations_are_skipped_while_siblings_remain`|a dangling page reference and a named destination absent from the names tree cost their own entries only|AC-77|
 
-### `src-tauri/src/covers/mod.rs` — cover pipeline (8)
+### `src-tauri/src/epubmeta/mod.rs` — EPUB package reading (21)
+
+|Test|Verifies|covers|
+|---|---|---|
+|`extracts_title_author_and_cover_from_the_opf`|title, author and the cover reference read from the OPF package|AC-139|
+|`extracts_metadata_from_a_stored_only_archive`|the same reading works on a stored-only (uncompressed) EPUB|AC-139|
+|`no_metadata_yields_no_fields`|a package without metadata yields no fields, nothing invented|AC-140|
+|`missing_cover_declaration_yields_no_cover`|no cover property: no cover reference|AC-140|
+|`declared_svg_cover_is_a_reference_not_bytes`|an SVG cover stays a reference — no raster bytes exist at import|AC-127|
+|`malformed_package_is_a_typed_error`|a damaged OPF is the typed error, never a panic or a silent empty record|AC-141|
+|`mimetype_rules_reject_a_zip_that_is_not_an_epub`|the mimetype rules (first entry, uncompressed, exact value) decide what an EPUB is|AC-126|
+|`missing_container_or_rootfile_is_a_typed_error`|no container.xml or no rootfile pointer: typed error|AC-141|
+|`href_resolution_rules`|relative href resolution — `../`, `./`, percent-encoded segments, archive-root forms|AC-126|
+|`cover_href_resolves_through_the_archive_namespace`|the cover href resolves inside the archive's own directory tree|AC-127|
+|`cover_pointing_at_a_missing_entry_yields_no_cover`|a cover reference to an absent entry is no cover, not an error|AC-127|
+|`oversized_metadata_entry_is_refused`|the entry-size ceiling bounds what metadata reading opens|AC-139|
+|`extract_never_opens_oversized_chapter_entries`|metadata extraction never touches the chapter entries it does not need|AC-139|
+|`whitespace_only_title_is_no_title`|a blank declared title is no title — the filename fallback applies|AC-140|
+|`read_package_returns_the_spine_in_reading_order`|`read_package` yields the spine in the package's reading order|AC-132|
+|`spine_sizes_are_uncompressed_and_missing_entries_read_as_zero`|the position model's sizes are uncompressed entry sizes; an absent entry reads as zero, never breaks the model|AC-135|
+|`read_package_builds_the_toc_from_the_nav_document`|the ToC tree from the EPUB3 nav document|AC-132|
+|`read_package_falls_back_to_the_ncx_navmap`|the NCX navmap yields the same tree shape|AC-132|
+|`read_package_derives_a_toc_from_the_spine_when_no_toc_exists`|no ToC in the package: the spine-derived list|AC-132|
+|`read_package_reads_declared_language_and_direction`|the package's declared language and writing direction reach the manifest|AC-132|
+|`read_package_rejects_a_malformed_package_like_import`|the reader path gives the same typed error the import path gives|AC-133|
+
+### `src-tauri/src/epubsrv/mod.rs` — EPUB content delivery (19)
+
+|Test|Verifies|covers|
+|---|---|---|
+|`parse_request_accepts_all_url_forms`|the protocol request line parses every form the platform hands over — including the Windows `pdfkeeper-epub://localhost/<id>/…` shape (DR-305) and the custom-protocol forms|AC-136|
+|`parse_request_normalizes_and_refuses_hostile_paths`|percent-decoding, `..`/`.` normalization, hostile paths refused before any file is opened|AC-136|
+|`base_url_follows_the_platform_branch`|the manifest's base URL carries the platform's own protocol form|AC-136|
+|`encoding_helpers`|percent-encode/decode round-trips used by the URL rewrite|—|
+|`base64_and_data_uri_decoding`|`data:` URI decoding to bytes|AC-137|
+|`sanitizer_removes_executable_content`|`<script>`, `on*` handlers, `<iframe>`, `javascript:` hrefs — all removed|AC-137|
+|`sanitizer_rewrites_package_references_to_protocol_urls`|src/href/srcset point into the content protocol|AC-136|
+|`sanitizer_rewrites_data_uris_to_synthetic_entries`|a `data:` URI becomes a synthetic entry served through the protocol|AC-137|
+|`sanitizer_is_best_effort_on_unparseable_documents`|a document the parser cannot read is served sanitized-as-possible, never refused|AC-137|
+|`serve_returns_the_spine_chapter_sanitized_as_text_html`|a spine chapter is served as `text/html`, sanitized|AC-136|
+|`synthetic_entries_re_derive_after_eviction`|a evicted synthetic entry re-derives from the package, not from disk|AC-137|
+|`serve_answers_assets_with_declared_types_and_raw_bytes`|images and fonts arrive with the media type the package declares, bytes unmodified|AC-136|
+|`serve_rewrites_css_url_tokens_to_protocol_urls`|`url()` tokens in delivered CSS point into the protocol — no remote host is ever addressed|AC-137|
+|`serve_sanitizes_svg_entries`|SVG entries are sanitized on delivery|AC-137|
+|`typed_errors_before_and_around_the_file`|typed errors precede any file read; every one answers as protocol 404|AC-133|
+|`absent_entries_and_unreadable_packages_are_typed_errors`|a missing entry and an unreadable package are the same classification|AC-133|
+|`the_lru_caches_output_and_invalidates_on_mtime`|the serving cache holds output per document, invalidated when the file's mtime moves|AC-138|
+|`the_lru_holds_its_caps`|the cache's entry and byte ceilings hold|AC-138|
+|`manifest_composes_the_reading_facts_with_the_base_url`|the `app_epub_manifest` payload: spine, sizes, ToC, language/direction, base URL|AC-125, AC-132|
+
+### `src-tauri/src/covers/mod.rs` — cover pipeline (10)
 
 |Test|Verifies|covers|
 |---|---|---|
@@ -142,6 +199,8 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`enqueue_missing_covers_queues_only_documents_without_a_cache_file`|backfill skips covered documents|—|
 |`sweep_orphans_removes_pngs_no_document_owns`|orphaned cache files deleted|—|
 |`worker_renders_valid_pdfs_and_leaves_glyph_fallback_for_unrenderable`|real PNGs for valid files, fallback for broken ones|AC-06, AC-36|
+|`epub_cover_renders_through_the_pipeline_by_contain_fit`|the declared EPUB cover goes through the real worker and lands under the document's cache key, drawn contain-fit inside the cover box|AC-127|
+|`epub_without_a_usable_declared_cover_leaves_the_glyph_fallback`|no usable declared cover (absent, SVG-only, missing entry): the glyph fallback, no broken image|AC-127|
 |`a_protected_document_gets_no_cover_until_its_password_is_stored`|the cover of a protected document stays absent until its password is stored through the service (the reader's unlock path); it is then re-enqueued and the real image appears under the unchanged cache key|AC-106, FR-20|
 |`a_renamed_document_renders_under_the_new_key_and_the_stale_entry_is_swept`|the real rename path through the real cover pool: the cover follows the new identity (the key composes from the new path) and the stale entry is removed by the released orphan sweep|AC-110, FR-21|
 |`cover_pool_size_clamps_the_override_and_bounds_the_default`|pool-size setting clamped to its allowed range|—|
@@ -219,6 +278,33 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - imports the row geometry constants from virtual.ts
 - sizes the cover placeholder from the constants, not from its own numbers
 - the cover's own CSS rule defines no dimensions
+
+### `ui/src/lib/state/epubReader.test.ts` — 25 · *the EPUB reader store's math (SPEC-v0.0.9 §3.13, DR-288/DR-303): the text-size ladder · the position model (cumulative uncompressed entry sizes → chapter byte starts, percent ↔ chapter resolution both directions) · the bounded mount window (§3.12 rule 3) · height bookkeeping (estimate → measured → deltas) · link routing through the sanitizer's protocol URLs · the ToC label and current-entry derivations · chapter fetching and failure marking · the strip's walk persistence*
+- walks the six fixed steps in both directions
+- clamps at the ladder ends and resets an unknown value to the default
+- estimates a chapter's height from the uncompressed entry size with a floor
+- records a measured height once and returns deltas against what the layout used
+- names the chunking threshold the mount rule uses
+- computes chapter byte starts and the book total
+- resolves a percent to the chapter containing it, clamped
+- maps the scroll fraction inside a chapter to the book percent
+- mounts the touched chapters plus one on each side and pads the rest
+- derives the current chapter from the store's own scroll source (DR-155)
+- reads 100% once the viewport bottom reaches the end of the last chapter (DR-306 end-of-book rule)
+- routes a bare fragment to the current chapter
+- resolves protocol URLs — percent-encoded or not — to spine chapters
+- refuses anything that is not an in-book chapter
+- labels a chapter with the first ToC entry targeting it, else nothing
+- highlights the last entry (document order) the scroll has reached
+- prefers the ToC label, falls back to the chapter's own heading, else none
+- lands at a chapter's start with the released +1 px snap tolerance, clamped
+- resolves a percent jump to the start of the chapter containing it
+- routes viewport and notch scrolls through the view's callbacks
+- builds the chapter URL from the manifest base and the encoded entry
+- deduplicates in-flight requests for the same chapter
+- marks a failed fetch on the chapter, not the window
+- ignores indexes outside the spine
+- the strip's walk persists through the settings store, clamped
 
 ### `ui/src/lib/state/feedback.test.ts` — 2 · *feedback overlay stack*
 - keeps a closed overlay counted until the current task ends
@@ -328,7 +414,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 
 **Run shapes.** No arguments: full suite on the core tier (functional section, reader section last) — since DR-161 this suite never imports the docs tier: every 10 000-document UI test case runs in the separated 10k suite (§4). `SMOKE_SET=<area>[,<area>…]`: exactly the flows of the named feature areas, core tier. `SMOKE_FLOW=flowX,flowY`: narrows further (debugging aid; a scale-flow name errors with a pointer to `scripts/ui-10k.mjs`). Every flow is timed (D14/AC-54); wall time is checked against the NFR-06 budget; exit 0 only if every check passes. The bodies of the three scale flows live in `ui-smoke.mjs` (they share its geometry/menu/selection helpers) and are exported for the 10k suite; no ui-smoke run shape executes them.
 
-**Full verification: `node scripts/ui-verify.mjs` (DR-162 lanes, DR-163 per-flow split, DR-164 phases, DR-165 isolation, DR-168 phase order).** The entry point that runs every UI test case as its own lane: 1 prefix lane (the two prefix test cases, checks ON, owns the build, runs alone first), 15 measured lanes run **one at a time** (the ten reader lanes; the bounded-job lanes `flowStatusBar`, `flowProgressTransform`, `flowMissingAndRelink`; the picker-request lane `flowSearchField`; the window-strip double-click lane `flowDragRegion` — a measured claim is a statement about single-instance conditions), 1 corpus-import lane (runs alone — its AC-57/NFR-02 claims are measured while nothing else runs; it follows the measured phase so its cover-queue disk flush cannot bleed into the first reader lane — the flake mechanism DR-168 records), and 39 flood lanes (the remaining 36 functional and 3 scale lanes, cap 10, `SMOKE_VERIFY_LANES`; the measured-phase cap is `SMOKE_VERIFY_MEASURE_LANES`, default 1, clamped 1..8) — 56 lanes total. The groups are barrier-separated: each starts only after the previous group's last lane exits. Every lane runs against its own data directory (`%APPDATA%\com.pdfkeeper.app\parallel\lanes\<flow>`, via `PDFKEEPER_DATA_DIR`, the same variable the app's resolver reads), its own tauri-driver/WebDriver ports (4444+i / 17556+i; reader lanes also their own CDP debug port 9323+i and per-port WebView2 profile directory), and scoped cleanup that touches only its own process tree (the shared image name and shared WebView2 profile belong to all lanes). The combined clock runs from the build owner's session line to the last lane exit and is asserted against the same ≤ 300 s budget; exit 0 only if every lane passes within it. Global image-name sweeps run only before anything starts and after all lanes are done. `--coarse` selects the documented triage fallback: the two-suite split of DR-162 (this suite as the `core` lane at `…\parallel\core`, the 10k suite as the `docs` lane at `…\parallel\docs`; core owns the build, docs is released on its session line). Direct runs of either suite keep working unscoped (the app's own data directory, global cleanup); `SMOKE_FLOW`/`SMOKE_SET`/`SMOKE_10K_FLOW` select standalone runs. `--report [path]` (DR-167) additionally writes one final summary file — verdict, mode + caps, lanes ran, check tallies, combined wall vs the budget, the per-lane table, and the failed check names per failed lane (no per-check transcript); default `tmp/test-reports/verify-<UTC stamp>.md` (gitignored); a write failure is reported on stdout and never changes the exit code.
+**Full verification: `node scripts/ui-verify.mjs` (DR-162 lanes, DR-163 per-flow split, DR-164 phases, DR-165 isolation, DR-168 phase order).** The entry point that runs every UI test case as its own lane: 1 prefix lane (the two prefix test cases, checks ON, owns the build, runs alone first), 17 measured lanes run **one at a time** (the twelve reader lanes - the ten PDF ones plus `flowEpubReader` and `flowEpubPerformance` (v0.0.9, DR-300); the bounded-job lanes `flowStatusBar`, `flowProgressTransform`, `flowMissingAndRelink`; the picker-request lane `flowSearchField`; the window-strip double-click lane `flowDragRegion` — a measured claim is a statement about single-instance conditions), 1 corpus-import lane (runs alone — its AC-57/NFR-02 claims are measured while nothing else runs; it follows the measured phase so its cover-queue disk flush cannot bleed into the first reader lane — the flake mechanism DR-168 records), and 39 flood lanes (the remaining 36 functional and 3 scale lanes, cap 10, `SMOKE_VERIFY_LANES`; the measured-phase cap is `SMOKE_VERIFY_MEASURE_LANES`, default 1, clamped 1..8) — 58 lanes total. The groups are barrier-separated: each starts only after the previous group's last lane exits. Every lane runs against its own data directory (`%APPDATA%\com.pdfkeeper.app\parallel\lanes\<flow>`, via `PDFKEEPER_DATA_DIR`, the same variable the app's resolver reads), its own tauri-driver/WebDriver ports (4444+i / 17556+i; reader lanes also their own CDP debug port 9323+i and per-port WebView2 profile directory), and scoped cleanup that touches only its own process tree (the shared image name and shared WebView2 profile belong to all lanes). The combined clock runs from the build owner's session line to the last lane exit and is asserted against the same ≤ 300 s budget; exit 0 only if every lane passes within it. Global image-name sweeps run only before anything starts and after all lanes are done. `--coarse` selects the documented triage fallback: the two-suite split of DR-162 (this suite as the `core` lane at `…\parallel\core`, the 10k suite as the `docs` lane at `…\parallel\docs`; core owns the build, docs is released on its session line). Direct runs of either suite keep working unscoped (the app's own data directory, global cleanup); `SMOKE_FLOW`/`SMOKE_SET`/`SMOKE_10K_FLOW` select standalone runs. `--report [path]` (DR-167) additionally writes one final summary file — verdict, mode + caps, lanes ran, check tallies, combined wall vs the budget, the per-lane table, and the failed check names per failed lane (no per-check transcript); default `tmp/test-reports/verify-<UTC stamp>.md` (gitignored); a write failure is reported on stdout and never changes the exit code.
 
 **Prefix rule (AC-60):** every named set starts with the mandatory prefix flows (the app-shell check and the drop-pipeline check the other flows reuse); the 10k suite runs the same prefix, selected or not. With `SMOKE_PREFIX_QUIET=1` — set for every lane of `ui-verify.mjs` — the prefix runs as setup: its passing checks log but are not recorded, a failed setup check is recorded as the lane's failure. The `AREAS` table below and the run sequences are maintained together; the suite itself enforces that every flow appears in at least one area.
 
@@ -380,7 +466,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-68: the external open of a present file surfaces no failure
 - AC-68: the in-app item calls app_open_reader_window and never app_open_document
 - AC-68: opening a present file in the reader surfaces no failure
-- AC-68: the row action line is unchanged — no Open action appears on rows
+- AC-68: no open action appears on rows — the open path stays in the context menu (the shipped UI-43 row set is intact)
 
 **`flowDelete`** — opening-and-deleting · covers AC-04
 - AC-04 UI: Delete key opens the confirmation dialog
@@ -440,7 +526,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-42: the fill keeps width 100% of the bar — the progress rides the transform
 - AC-49: the progress row gap is a multiple of 4 px
 
-**`flowMissingAndRelink`** — missing-files-relinking · covers FR-15, AC-05, AC-47, UI-25, AC-37, AC-22, UI-02
+**`flowMissingAndRelink`** — missing-files-relinking · covers FR-15, AC-05, AC-47, UI-25, AC-37, AC-22, UI-02, AC-124, AC-128 (v0.0.9)
 - job progress completes; Rescan re-enables after the bounded job drains (FR-15)
 - AC-05 UI: manual Rescan reports the missing file
 - AC-05 UI: the row is flagged missing
@@ -454,10 +540,17 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-22: with a missing file the status bar shows the warning
 - failed command produces a toast with its action (Relink)
 - AC-05 UI: the toast action opens the relink dialog
+- AC-128: the relink picker for a PDF document presents the PDF filter only
 - Esc closes the innermost overlay
 - UI-02: the editor's Relink opens the relink dialog
 - AC-05 UI: Rescan finds the file again and clears the flag
 - AC-22: the status bar stops saying it once nothing is missing
+- AC-124: a present EPUB document's menu carries the same capabilities as any document's (no relink path while the file exists)
+- AC-124: the rescan flags the moved-out EPUB document as missing
+- AC-124: the missing EPUB document's menu carries the relink path and no rename
+- AC-128: the relink picker for an EPUB document presents the EPUB filter only
+- AC-124: the rescan finds the EPUB file again and clears the flag
+- relink flow: the EPUB probe record is removed again
 
 **`flowOpenFolder`** — opening-containing-folder · covers UI-40, AC-111 (v0.0.8; imports its own probe document and removes its record again — the reveal itself is observed in the real app, the harness asserts the typed request at the command boundary)
 - AC-111: the context menu carries Open containing folder
@@ -467,7 +560,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-111: a missing document's menu shows no Open containing folder
 - open-folder flow: the probe record is removed again
 
-**`flowRename`** — renaming-a-documents-file · covers FR-21, AC-107, AC-108 (v0.0.8; renames its own probe copy on disk and removes both records again; runs after the flows that touch its fixture)
+**`flowRename`** — renaming-a-documents-file · covers FR-21, AC-107, AC-108, AC-124 (v0.0.8; renames its own probe copy on disk and removes both records again; runs after the flows that touch its fixture; the extension-swap half is the FR-21 MODIFIED behavior, v0.0.9)
 - AC-107: Rename opens the dialog prefilled with the current name, the folder shown read-only above it
 - AC-108: an invalid name is refused with the typed inline error and the dialog keeps the field open
 - AC-108: a colliding name is refused with the typed inline error and nothing on disk or in the record changes
@@ -475,6 +568,9 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-107: the rename changes the file on disk and the record together — the row keeps its id and shows the new name
 - AC-107: the Details editor shows the renamed file's path
 - AC-107: a rename from the Details footer keeps the editor open and it follows the new name (path line and title field)
+- FR-21 (MODIFIED): a rename between supported extensions is accepted — the file moves to the new extension
+- FR-21 (MODIFIED): the record follows the new type — the Details path line carries the .epub name
+- FR-21 (MODIFIED): a name outside the supported extensions is refused with the typed error and nothing changes
 - §3.4: a missing document's menu carries Relink and no Rename
 - rename flow: both probe records are removed again
 
@@ -614,13 +710,13 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-20: the same tooltip appears on pointer hover
 - AC-26: no standalone Sort control renders anywhere
 
-**`flowSearchField`** — searching · covers AC-21, UI-14, AC-25, UI-16, UI-44, AC-114, AC-115 (v0.0.8)
+**`flowSearchField`** — searching · covers AC-21, UI-14, AC-25, UI-16, UI-44, AC-114, AC-115 (v0.0.8), AC-126 (v0.0.9)
 - AC-21: the field is magnifier, input, divider, one trailing control
-- AC-21: the trailing control is the import control, named (UI-44: Import PDFs)
-- AC-21 / AC-114: the plus opens exactly Import PDFs and Import folder; AC-115: each item names its shortcut
+- AC-21: the trailing control is the import control, named (UI-44 option A: Import files)
+- AC-21 / AC-114: the plus opens exactly Import files and Import folder; AC-115: each item names its shortcut
 - AC-21: while the field holds text the clear button occupies that slot
 - AC-25: the placeholder names the current scope while the accessible name stays Search
-- AC-21: both items reach their picker — files with the PDF filter, folder as a directory
+- AC-21 / AC-126 (UI-44 option A, UI-46): both items reach their picker — files with the two-type filter, folder as a directory
 
 **`flowRowDesign`** — sorting-and-views · covers UI-03, AC-24, AC-88, AC-122, DR-188, DR-189, UI-45, DR-278
 - AC-24: a row renders no selection checkbox and no tag badge
@@ -774,18 +870,21 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-34: the View menu panel stays wholly inside the viewport
 - AC-34: a row context menu opened beside the window bottom stays wholly inside the viewport
 
-### 3.4 Reader flows (10, CDP runtime, own instance, multi tier imported through the app)
+### 3.4 Reader flows (12, CDP runtime, own instance, multi tier imported through the app; the two EPUB flows build their own library state from the fixtures/epub tier and delete it again at their end)
 
-**`flowReaderOpen`** — reading-pdfs · covers AC-64, AC-72, AC-76, AC-87, AC-93, DR-206, DR-215
+**`flowReaderOpen`** — reading-pdfs · covers AC-64, AC-72, AC-76, AC-87, AC-93, DR-206, DR-215, DR-315, DR-316, DR-318, DR-319
 - NFR-08 / AC-72: activation → first page (192-page core fixture) within 800 ms — *measured through the shared `timingRow()` helper, the pattern for all AC-72 rows below*
 - AC-64: a double-click opens a reader window on page 1 with the true page count
 - AC-64: Enter opens a reader window for the focused row
 - AC-64: the Enter-opened window shows page 1
 - AC-76: the control strip renders at the window's bottom edge below the page stack, the chrome strip at the top edge
 - AC-87: the reader chrome name shows the app's own tooltip on the ramp's --surface-1 ground with its shadow
+- DR-318: the first-paint page image node is tagged for the guard below
+- DR-316 + DR-318 + DR-319: at open, the full raster arrives as a cross-fade overlay over the preview (base preview image stays at the preview width, overlay carries the full-stage width on the same rect) and the base image is the same node as at first paint — no rebuild, no re-decode gap; with coinciding stages (dpr 1) no overlay renders and the node is likewise never rebuilt
 - AC-93: the reader window title property stays the full filename
 - AC-93: hovering the ellipsized name opens the app tooltip carrying the full name
 - AC-93: the chrome name shows in full while the strip has room and truncates with an ellipsis only on real overflow (DR-206)
+- DR-315: the window controls keep their 44 px width while a long title ellipsizes, at the narrow viewport and after restoring
 - AC-64: re-activating the same document opens no second window
 - AC-64: a second document opens its own reader window
 - AC-64: the library window stayed interactive throughout
@@ -931,6 +1030,50 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-75: warm-scroll cleanliness — app-process CPU ≤ 0.1 s, ScriptDuration ≤ 0.2 s, 0 dropped frames, 0 long tasks
 - D24 / NFR-08: first-open activation stays inside the 800 ms budget across 10 fresh windows (the D24 measurement row, DR-271 — the run records the ten rows; run 1 is the process-cold open in a lane run)
 
+**`flowEpubReader`** — reading-epubs · covers AC-125, AC-132…AC-137 (v0.0.9; builds its own library state from the fixtures/epub tier and deletes it again at its end; every activation goes through the real card double-click path, AC-64's discipline)
+- AC-125: activating an EPUB opens the in-app reader window with the EPUB type in its route (never a PDF reader window)
+- AC-125: no PDF reader machinery runs in the EPUB reader window — no page images, no zoom readout, no page field, no view-mode control
+- AC-135: the strip carries exactly the three controls — the ToC control first (the package has a ToC), the position readout, the text-size control — and nothing else
+- AC-132: activating the same EPUB again keeps one window per document — the activation re-runs the app's own command and no second window opens
+- AC-135: at the book top the readout reports 0% of the first chapter
+- AC-135: scrolled to the top of chapter 2 the readout reports the model's percent from the archive's entry sizes
+- AC-135: inside a chapter the readout rises with the scroll and stays within the chapter's percent range
+- AC-135: the jump field resolves 60% to the start of the chapter containing it (chapter 3) and mounts it
+- AC-135: the text-size control steps the ladder and applies live (the reading column reflows at 20 px) and persists globally (the settings store carries 20)
+- AC-135: the text-size walk returns to the default step and the setting follows
+- AC-132: the ToC control presents the package's table of contents — every top-level entry with its title and target
+- AC-132: the ToC tree nests the package's sub-entry (expandable, indented under its parent)
+- AC-132: a ToC entry jumps to its chapter (chapter 4 mounts, the readout follows)
+- AC-135: the ToC panel highlights the entry the reader's scroll currently sits on
+- AC-135: an internal link in the fixture jumps to its target chapter and fragment (chapter 3 mounts, #sec-32 lands at the top of the view)
+- AC-135: a fragment-only link scrolls to the target inside the current chapter
+- AC-135: an external link in book content routes to the OS default browser (the opener call is observed) and the reader window does not navigate
+- AC-136: the fixture's image renders through the content protocol (the src is a protocol URL, the pixels arrive)
+- AC-136: the fixture's stylesheet applies (the marker paragraph carries the author color through the delivery mechanism)
+- AC-136: the fixture's embedded font is delivered through the content protocol and used by the rendered text (the request fires only for rendered text)
+- AC-135: PageDown moves exactly one viewport
+- AC-135: ArrowDown moves exactly one wheel notch (100 px)
+- AC-135: the named exclusions stay excluded — ArrowRight and Ctrl+zoom keys do nothing to the flow
+- AC-135: End reaches the book end — the flow bottom with the last chapter mounted and the readout at 100%
+- AC-135: Home reaches the book start
+- AC-136: no package content was copied to disk outside the delivery mechanism (the app data directory gains none of the archive's entry names)
+- AC-137: none of the hostile corpus runs or loads — no body script mutation, no SVG script effect, no on-handler attribute, no javascript: href, no iframe, no script element
+- AC-137: the data:-URI image renders through the content protocol
+- AC-137: the author CSS url() to a remote host produces no request
+- AC-133: a malformed EPUB shows the typed error with the Open-with-the-default-app action (never a silent open)
+- AC-133: the error action opens the document through the external-open command (the OS-application path stays available)
+- AC-134: the row's Open-in-external-viewer action routes an EPUB to the OS application (the app's own command fires)
+
+**`flowEpubPerformance`** — reading-epubs · covers AC-138, NFR-08, AC-72 (v0.0.9, the DR-300 measured flow; takes fresh windows like the PDF measured flow before it; the budgets are the DR-300 rows, calibrated before the reading code)
+- NFR-08 / AC-72: EPUB first paint (1 MB chapter, 3 fresh windows) within 800 ms (the DR-300 row 1 timing measurement — open → first visible text of chapter 1; the run records its rows)
+- AC-138 / DR-300-4: the 1 MB-chapter window stays under the Nodes ceiling (12 000) and the heap delta ceiling (+40 MB) across its scroll
+- AC-138 / DR-300-2: cold forward scroll on the 500-chapter book serves every chapter the mount window requested (no mounted chapter is empty; every fetch belongs to the run; remounts are served from the parse cache)
+- AC-138 / DR-300-2: the cold scroll costs ≤ 100 ms of app-process CPU per chapter mounted during the run (the run reports its full detail)
+- AC-138 / DR-300-4: the mounted DOM holds a window of spine items, not the book — flow elements ≤ 2 500 during the 500-chapter scroll
+- AC-138 / DR-300-4: the 500-chapter window stays under the heap delta ceiling (+40 MB) across the scroll
+- AC-138 / DR-300-3: the warm back-and-forth scroll re-requests 0 chapters it already served (the cache holds everything the mount window asks for)
+- AC-138 / DR-300-3: warm-scroll cleanliness — app-process CPU ≤ 100 ms, ScriptDuration ≤ 200 ms, 0 dropped frames, 0 long tasks
+
 ### 3.5 Area → flow mapping (the `SMOKE_SET` vocabulary; suite-enforced against orphans)
 
 |Area (= guide page name)|Flows|
@@ -944,6 +1087,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 |reading-collection|flowReading|
 |opening-and-deleting|flowOpen, flowDelete, flowContextMenu|
 |reading-pdfs|flowReaderOpen, flowReaderNavigation, flowReaderZoom, flowReaderClose, flowReaderErrors, flowReaderToc, flowReaderViewModes, flowReaderPerformance|
+|reading-epubs|flowEpubReader, flowEpubPerformance|
 |password-protected-pdfs|flowProtected|
 |metadata-editing|flowMetadata, flowMetadataDisplay, flowMetaColumn, flowTooltipSurfaces|
 |missing-files-relinking|flowMissingAndRelink|
@@ -961,17 +1105,19 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 
 ## 4. 10 000-document suite — `scripts/ui-10k.mjs` (DR-159, consolidated by DR-161)
 
-Separated runner holding **every UI test case against the 10 000-document corpus** — no regular ui-smoke run pays the corpus any more. Same app, same tauri-driver session; imports the shared plumbing (`prepareEnvironment`, `startDriver`, `openSession`, `runFlow`, `check`, tier helpers) **and the three exported scale flows** from `ui-smoke.mjs`, which only runs its own suite when executed as the program. Runs the mandatory prefix flows first (AC-60), then its four flows in fixed order: the measured import (it loads the corpus the scale flows then run against), virtualization, the width matrix, empty/skeleton last (it empties the library through the app's own bulk path). Exit 0/1.
+Separated runner holding **every UI test case against the 10 000-document corpus** — since AC-131 (SPEC-v0.0.9 §3.8) the corpus is the mixed one: 9 000 single-page PDFs + 1 000 single-chapter EPUBs from the docs tier, so every scale claim below runs against both document types. No regular ui-smoke run pays the corpus any more. Same app, same tauri-driver session; imports the shared plumbing (`prepareEnvironment`, `startDriver`, `openSession`, `runFlow`, `check`, tier helpers) **and the three exported scale flows** from `ui-smoke.mjs`, which only runs its own suite when executed as the program. Runs the mandatory prefix flows first (AC-60), then its four flows in fixed order: the measured import (it loads the corpus the scale flows then run against), virtualization, the width matrix, empty/skeleton last (it empties the library through the app's own bulk path). Exit 0/1.
 
 **Run modes (DR-163).** No selection: the full fixed-order run above — the corpus is paid exactly once (DR-161), the measured import doubling as the corpus the scale flows run against. `SMOKE_10K_FLOW=<flow>[,<flow>…]`: selects exactly those flows (unknown names error out before any app work; the relative order above is preserved). In both modes the prefix flows run; with `SMOKE_PREFIX_QUIET=1` — set for every lane — they run as setup (passing checks log but are not recorded, failures are recorded). A selection that does not include `flowImport10k` pays the corpus with `prepareCorpus` instead: the same import, check-quiet (internal asserts only, a deliberately more patient 90 s completion wait) — the measured claims (AC-01 ×2, AC-22, NFR-02, FR-11, FR-15, AC-57) belong to the import lane's test case only. The suite-level budget check records in **every** mode, including a single-flow lane.
 
 **Suite-level check (DR-162):** wall-time budget — suite total ≤ 300 s, the same NFR-06/AC-58 assertion the core suite makes, now on this side too. Under `scripts/ui-verify.mjs` full mode each of the four flows is its own lane with its own data directory (`%APPDATA%\com.pdfkeeper.app\parallel\lanes\flowImport10k` and `…\lanes\flowVirtualization` / `…flowWidthMatrix` / `…flowEmptyAndSkeleton`); a lane's directory starts empty, so the three scale lanes each pay the corpus as their `prepareCorpus` setup phase (§4 Run modes) — the corpus is imported four times per full-mode run, measured once and as setup three times. The lane's own budget check is its single suite-level check (the +1 over its flow's call sites). In `--coarse` mode the whole suite runs as the `docs` lane (`…\parallel\docs`). Either way the run is scoped: its own driver ports, and cleanup that touches only its own process tree.
 
-**`flowImport10k`** · covers UI-15, AC-22, AC-57, AC-01, NFR-02, FR-15, FR-11, DR-134 — 6 checks
+**`flowImport10k`** · covers UI-15, AC-22, AC-57, AC-01, NFR-02, FR-15, FR-11, AC-131, DR-134 — 8 checks
 - AC-01 UI: 10,000 documents listed via the app *(count claim derived from the fixture tier size)*
 - AC-22: the status bar shows the progress bar while a job runs
 - AC-01 UI: whole import completes < 30 s (NFR-02)
 - import result toast reports the batch (FR-15)
+- AC-131: the 10 000-document corpus is the mixed one (9 000 PDF + 1 000 EPUB from the 5001..10000 band)
+- AC-131: an EPUB of the mixed band imported with its declared metadata (title from the package)
 - AC-01 UI: duplicate import is skipped with a notice (FR-11)
 - AC-57: cover backfill throughput ≥ 2× the 27/s baseline (real app, 10 000-document corpus) — sampled from the run's own status-bar cover progress; the 27/s baseline is the v0.0.4 serial queue measured in SPEC-v0.0.5 §5
 
@@ -994,7 +1140,7 @@ Separated runner holding **every UI test case against the 10 000-document corpus
 - AC-51 / AC-115: every keycap is monospace, on a surface-2 ground, with a hairline border and 6 px radius
 - AC-49: the empty state's vertical rhythm, the action row gap and the per-action column gaps are multiples of 4 px
 - AC-115 (DR-272): pressing the *Import folder* button opens the folder picker — the app requests it as a directory
-- AC-115: Ctrl+I opens the file picker — the app requests it with the PDF filter
+- AC-115: Ctrl+I opens the file picker — the app requests it with the documents filter (UI-44 as modified: PDF and EPUB together)
 - AC-115: Ctrl+O opens the folder picker — the app requests it as a directory
 - AC-115 (DR-276): Ctrl+Shift+I opens neither picker — the plain import bindings ignore Shift
 - AC-115: neither shortcut fires while a text field owns focus
@@ -1007,7 +1153,7 @@ Separated runner holding **every UI test case against the 10 000-document corpus
 
 |Script|Role|
 |---|---|
-|`scripts/make-fixtures.mjs`|generates every fixture: docs tier (10 000 single-page PDFs), core tier (100, equal byte sizes, one without Info, manifests for the harness), multi-page fixtures (12/24/48/96/192-page core + the 1 000-page scale fixture), and the special fixtures (encrypted-looking, malformed, non-PDF, the differently-named meta-column probe, the 72-character long-name fixture the AC-93 chrome-ellipsis half of `flowReaderOpen` imports and deletes). D15: fixtures are generated, never committed|
+|`scripts/make-fixtures.mjs`|generates every fixture: docs tier (the AC-131 mixed corpus: 9 000 single-page PDFs + 1 000 single-chapter EPUBs — every fifth index from 5005 to 10000 is an EPUB carrying the same "Fixture Doc …" title/author shape, a band chosen so no named fixture path the flows reference individually changes type), core tier (100, equal byte sizes, one without Info, manifests for the harness), multi-page fixtures (12/24/48/96/192-page core + the 1 000-page scale fixture), and the special fixtures (encrypted-looking, malformed, non-PDF, the differently-named meta-column probe, the 72-character long-name fixture the AC-93 chrome-ellipsis half of `flowReaderOpen` imports and deletes). D15: fixtures are generated, never committed|
 |`scripts/fetch-pdfium.mjs`|fetches the bundled pdfium the reader engine links against|
 |`scripts/make-app-icon.mjs`|generates the packaged app icon|
 
