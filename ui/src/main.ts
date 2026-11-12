@@ -14,14 +14,22 @@ applyTheme("system");
 // Window routing (SPEC-v0.0.6 §3.3): `app_open_reader_window` loads this
 // same entry with a `?reader=<docId>` parameter. A window carrying it renders
 // the reader surface only — no toolbar, no menus, no status bar — and is its
-// own JS context, so no UI state crosses windows.
-const readerRoute = new URLSearchParams(window.location.search).get("reader");
+// own JS context, so no UI state crosses windows. Since SPEC-v0.0.9 §3.5 /
+// DR-303 item 1 the command also names the document kind (`&kind=epub|pdf`,
+// decided on the resolved path before the window exists): the route renders
+// exactly one reader surface, and a missing parameter is the released PDF
+// window unchanged.
+const params = new URLSearchParams(window.location.search);
+const readerRoute = params.get("reader");
 
 const app =
   readerRoute !== null && /^\d+$/.test(readerRoute)
     ? mount(ReaderApp, {
         target: document.getElementById("app")!,
-        props: { docId: Number(readerRoute) },
+        props: {
+          docId: Number(readerRoute),
+          kind: params.get("kind") === "epub" ? ("epub" as const) : ("pdf" as const),
+        },
       })
     : mount(App, { target: document.getElementById("app")! });
 

@@ -67,6 +67,9 @@ export interface SettingsDto {
   /** Color ramp override, `"system" | "light" | "dark"` (UI-17). */
   theme: string;
   last_filter: string;
+  /** EPUB reading text size, one ladder step in px as a string
+   *  (SPEC-v0.0.9 §3.9 consequence 6, DR-303 item 5). */
+  epub_text_size: string;
 }
 
 export interface AboutDto {
@@ -99,6 +102,30 @@ export interface OutlineEntry {
   title: string;
   page: number;
   depth: number;
+}
+
+/** One spine item as `app_epub_manifest` reports it (SPEC-v0.0.9 §3.9
+ *  consequence 8, DR-301 item 2): `index` is 1-based reading order, `entry`
+ *  the package path, `size` the uncompressed entry bytes the position model
+ *  uses (0 for an entry missing from the archive). */
+export interface EpubSpineItem {
+  index: number;
+  entry: string;
+  media_type: string;
+  size: number;
+}
+
+/** `app_epub_manifest` payload (SPEC-v0.0.9 §3.9): the reading facts of an
+ *  EPUB. `toc` reuses the `OutlineEntry` shape with `page` carrying the
+ *  1-based spine index; `base_url` is the content-protocol prefix the
+ *  reader window builds chapter URLs from; `language`/`direction` are the
+ *  package's declarations — null means the app default (LTR). */
+export interface EpubManifestDto {
+  spine: EpubSpineItem[];
+  toc: OutlineEntry[];
+  base_url: string;
+  language: string | null;
+  direction: string | null;
 }
 
 export interface AppErrorPayload {

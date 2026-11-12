@@ -1,7 +1,10 @@
 <script lang="ts">
   // Relink dialog (UI-05, FR-15): opened from a row action or from the
   // missing-file toast action (feedback.relinkTargetId is the single entry
-  // point). Choosing a non-PDF shows the inline error, not a toast.
+  // point). UI-46/AC-128 (SPEC-v0.0.9 §3.4): the picker presents the file
+  // type matching the document's own extension; a mismatch chosen anyway
+  // (native dialogs allow "All files") still shows the typed inline error,
+  // never a toast.
   import { open } from "@tauri-apps/plugin-dialog";
   import * as api from "../api";
   import { library } from "$lib/state/library.svelte";
@@ -10,7 +13,16 @@
   import { t } from "$lib/i18n";
   import Modal from "./Modal.svelte";
 
-  const PDF_FILTERS = [{ name: "PDF", extensions: ["pdf"] }];
+  // The presented filter follows the document's extension — the same type
+  // derivation the service applies (`is_document_path`), mirrored for the
+  // picker only; the service stays the authority on acceptance.
+  function documentFilters(filename: string): { name: string; extensions: string[] }[] {
+    const dot = filename.lastIndexOf(".");
+    const extension = dot === -1 ? "" : filename.slice(dot + 1).toLowerCase();
+    return extension === "epub"
+      ? [{ name: "EPUB", extensions: ["epub"] }]
+      : [{ name: "PDF", extensions: ["pdf"] }];
+  }
 
   const targetId = $derived(feedback.relinkTargetId);
 
@@ -44,7 +56,7 @@
 
   async function chooseFile() {
     if (!targetId) return;
-    const selected = await open({ filters: PDF_FILTERS });
+    const selected = await open({ filters: documentFilters(doc?.filename ?? "") });
     if (typeof selected !== "string") return;
     busy = true;
     const failure = await library.relink(targetId, selected);
@@ -52,7 +64,7 @@
     if (failure === null) {
       dialogOpen = false; // the store effect closes the dialog via closeRelink
     } else {
-      error = failure.kind === "not_pdf" ? t("relink.errorMissing") : null;
+      error = failure.kind === "unsupported_type" ? t("relink.errorMissing") : null;
     }
   }
 </script>

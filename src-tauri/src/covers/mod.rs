@@ -7,6 +7,12 @@
 //! service, unchanged math. Any render failure simply leaves the document
 //! without a cached cover — the UI shows the generic glyph (R5.3) and
 //! nothing else fails.
+//!
+//! SPEC-v0.0.9 §3.3: the render stage branches on the extension — `.pdf`
+//! through the service, untouched; `.epub` through `epubmeta::cover_image`
+//! composed onto the cover canvas (contain-fit, transparent letterbox per
+//! DR-299, never cropped). Both branches feed the same encode pool, the same
+//! cache key and the same glyph fallback.
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -14,8 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, mpsc};
 
+use image::GenericImageView;
 use rusqlite::Connection;
 
+use crate::epubmeta;
 use crate::error::AppError;
 use crate::library::EventSink;
 use crate::library::JobProgress;
@@ -186,6 +194,13 @@ fn start_pool_with_workers(
             // miss is a cover request on the single pdfium owner (§3.1).
             let rendered = if target.exists() {
                 None
+            } else if is_epub_path(&job.path) {
+                // §3.3: pdfium cannot open an EPUB — the declared cover is
+                // the render. Every failure (no declared cover, SVG or other
+                // non-raster declaration, undecodable entry, malformed
+                // package) lands on the same glyph fallback as a failed
+                // render (R5.3).
+                epubmeta::cover_image(&job.path).map(compose_epub_cover)
             } else {
                 service.render_cover(
                     &job.path,
@@ -218,6 +233,44 @@ fn start_pool_with_workers(
         pending,
         dir,
     }
+}
+
+/// The cover pipeline's type dispatch (§3.3): the extension is the type.
+fn is_epub_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("epub"))
+}
+
+/// §3.3 + DR-299: contain-fit composition of a declared EPUB cover onto the
+/// cover canvas — scaled to fit the frame with its aspect preserved (never
+/// cropped: a jacket cover's text must not silently vanish), centered, on a
+/// fully transparent ground so the letterbox bars show the card surface in
+/// whatever theme is active. Output is the pipeline's fixed target; the
+/// encode pool and cache key are the released ones.
+fn compose_epub_cover(source: image::DynamicImage) -> image::DynamicImage {
+    let (width, height) = source.dimensions();
+    let scale = (RENDER_TARGET_WIDTH as f64 / width as f64)
+        .min(RENDER_TARGET_HEIGHT as f64 / height as f64);
+    let fitted_width = ((width as f64 * scale).round().max(1.0) as u32).min(RENDER_TARGET_WIDTH);
+    let fitted_height = ((height as f64 * scale).round().max(1.0) as u32).min(RENDER_TARGET_HEIGHT);
+    let fitted = source.resize_exact(
+        fitted_width,
+        fitted_height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let mut canvas = image::RgbaImage::from_pixel(
+        RENDER_TARGET_WIDTH,
+        RENDER_TARGET_HEIGHT,
+        image::Rgba([0, 0, 0, 0]),
+    );
+    image::imageops::overlay(
+        &mut canvas,
+        &fitted.to_rgba8(),
+        ((RENDER_TARGET_WIDTH - fitted_width) / 2) as i64,
+        ((RENDER_TARGET_HEIGHT - fitted_height) / 2) as i64,
+    );
+    image::DynamicImage::ImageRgba8(canvas)
 }
 
 /// The cache key IS the staleness check (FR-16 as modified by DR-113):
@@ -493,6 +546,105 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         assert_eq!(queue.pending.load(Ordering::Relaxed), 0, "pool drains");
+    }
+
+    #[test]
+    fn epub_cover_renders_through_the_pipeline_by_contain_fit() {
+        // AC-127: a declared raster cover produces a real cover through the
+        // released pipeline — contain-fit, never cropped, the pipeline's
+        // 640 px target, the DR-113 cache key — and no pdfium is involved
+        // in the EPUB branch (§3.3).
+        let temp = TempDir::new("covers-epub");
+        let book = temp.copy_fixture("epub-meta.epub");
+        let sink: Arc<dyn EventSink> = Arc::new(RecordingSink::default());
+        let queue =
+            start_pool_with_workers(temp.path().to_path_buf(), sink, 1, RenderService::shared());
+
+        let metadata = std::fs::metadata(&book).unwrap();
+        let key = (
+            book.to_string_lossy().into_owned(),
+            metadata.len() as i64,
+            epoch_secs(&metadata),
+        );
+        queue.enqueue(CoverJob {
+            doc_id: 1,
+            path: key.0.clone(),
+            size: key.1,
+            mtime: key.2,
+            password: None,
+        });
+        drain(&queue, 90);
+
+        let cover_file = cache_path(temp.path(), &key.0, key.1, key.2);
+        let cover = image::open(&cover_file)
+            .expect("AC-127: the declared cover produces a cached cover")
+            .to_rgba8();
+        assert_eq!(
+            (cover.width(), cover.height()),
+            (RENDER_TARGET_WIDTH, RENDER_TARGET_HEIGHT),
+            "the pipeline's fixed target canvas, unchanged"
+        );
+        // The fixture cover is 120×160; contain-fit scales it to 640×853 and
+        // centers it — the 26 px bars top and bottom are transparent
+        // letterbox (DR-299), and every source edge survives (no crop).
+        let corner = cover.get_pixel(0, 0);
+        assert_eq!(corner[3], 0, "the letterbox bar is transparent");
+        let inside_cover = cover.get_pixel(320, 40);
+        assert_eq!(
+            (inside_cover[3], inside_cover[2]),
+            (255, 128),
+            "the cover's top edge is visible (the fixture carries blue 128 everywhere)"
+        );
+        let near_bottom = cover.get_pixel(320, 870);
+        assert_eq!(
+            (near_bottom[3], near_bottom[2]),
+            (255, 128),
+            "the cover's bottom edge is visible — contain-fit never crops"
+        );
+    }
+
+    #[test]
+    fn epub_without_a_usable_declared_cover_leaves_the_glyph_fallback() {
+        // AC-127 (fallback half): no cover declaration, an SVG declaration,
+        // and an unreadable package each end the job with no cached cover —
+        // the UI glyph path, exactly like a failed render (R5.3) — and the
+        // queue still drains.
+        let temp = TempDir::new("covers-epub-glyph");
+        let sink: Arc<dyn EventSink> = Arc::new(RecordingSink::default());
+        let queue =
+            start_pool_with_workers(temp.path().to_path_buf(), sink, 1, RenderService::shared());
+        let mut keys = Vec::new();
+        for (index, name) in [
+            "epub-no-cover.epub",
+            "epub-svg-cover.epub",
+            "epub-malformed.epub",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let book = temp.copy_fixture(name);
+            let metadata = std::fs::metadata(&book).unwrap();
+            let key = (
+                book.to_string_lossy().into_owned(),
+                metadata.len() as i64,
+                epoch_secs(&metadata),
+            );
+            queue.enqueue(CoverJob {
+                doc_id: index as i64 + 1,
+                path: key.0.clone(),
+                size: key.1,
+                mtime: key.2,
+                password: None,
+            });
+            keys.push((name, key));
+        }
+        drain(&queue, 90);
+        for (name, key) in &keys {
+            assert!(
+                !cache_path(temp.path(), &key.0, key.1, key.2).exists(),
+                "{name}: no usable declared cover means no cached cover (the glyph stands)"
+            );
+        }
     }
 
     #[test]

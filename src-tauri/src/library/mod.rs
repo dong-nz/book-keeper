@@ -88,6 +88,9 @@ pub struct SettingsDto {
     /// Color ramp override, `"system"` when unset — follows the OS (UI-17).
     pub theme: String,
     pub last_filter: String,
+    /// EPUB reading text size, one ladder step (SPEC-v0.0.9 §3.9 consequence 6,
+    /// DR-303 item 5); the default is the ladder's default step.
+    pub epub_text_size: String,
 }
 
 /// Backend → UI events (`status_updated`, `library_job_progress`,
@@ -110,7 +113,7 @@ pub struct SettingsChanged {
     pub value: String,
 }
 
-pub const SETTINGS_KEYS: [&str; 7] = [
+pub const SETTINGS_KEYS: [&str; 8] = [
     "view",
     "sort",
     "dir",
@@ -118,6 +121,7 @@ pub const SETTINGS_KEYS: [&str; 7] = [
     "grid_columns",
     "theme",
     "last_filter",
+    "epub_text_size",
 ];
 
 /// Absolute + lexically normalized path (RULES R2.5). Never touches the
@@ -157,10 +161,12 @@ pub fn normalize_path(input: &str) -> String {
     out.to_string_lossy().into_owned()
 }
 
-pub fn is_pdf_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+/// The library's document acceptance predicate (§3.4, UI-46): the two
+/// supported types, case-insensitive.
+pub fn is_document_path(path: &str) -> bool {
+    Path::new(path).extension().is_some_and(|ext| {
+        ext.eq_ignore_ascii_case("pdf") || ext.eq_ignore_ascii_case("epub")
+    })
 }
 
 pub fn filename_of(path: &str) -> String {
@@ -170,7 +176,8 @@ pub fn filename_of(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-/// Fallback title: filename without the `.pdf` extension (FR-05).
+/// Fallback title: filename without its extension (FR-05; both document
+/// types, §3.4).
 pub fn title_from_filename(filename: &str) -> String {
     Path::new(filename)
         .file_stem()
@@ -208,10 +215,14 @@ mod tests {
     }
 
     #[test]
-    fn pdf_detection_is_extension_based_and_case_insensitive() {
-        assert!(is_pdf_path("/a/b/file.PDF"));
-        assert!(!is_pdf_path("/a/b/file.pdf.txt"));
-        assert!(!is_pdf_path("/a/b/noext"));
+    fn document_detection_is_extension_based_and_case_insensitive() {
+        // AC-126 (predicate half): both supported types, nothing else.
+        assert!(is_document_path("/a/b/file.PDF"));
+        assert!(is_document_path("/a/b/file.EPUB"));
+        assert!(is_document_path("/a/b/file.epub"));
+        assert!(!is_document_path("/a/b/file.pdf.txt"));
+        assert!(!is_document_path("/a/b/file.epub.zip"));
+        assert!(!is_document_path("/a/b/noext"));
     }
 
     #[test]

@@ -207,6 +207,26 @@
   <div class="page" style="width: {width}px; height: {height}px">
     {#if image && image.width === width}
       <img src={image.src} alt={t("reader.pageAlt", { page })} style="width: {width}px; height: {height}px" />
+      <!-- DR-316: the full-resolution stage overlays the preview and fades
+           in at its own decode completion — the resolution swap reads as
+           sharpening, not a flash. Decorative: the base image carries the
+           page's accessible name. DR-318: the overlay element is ALWAYS
+           present (its src simply appears with the full stage) — the branch
+           never changes shape, so an entry update is an attribute-only
+           patch: the base image node is never rebuilt, and the painted
+           preview is never torn down (a rebuilt <img> must decode again —
+           that gap was the surviving flash). -->
+      <img
+        class="page-full"
+        src={image.full}
+        alt=""
+        aria-hidden="true"
+        data-loaded={undefined}
+        style="width: {width}px; height: {height}px"
+        onload={(e) => {
+          e.currentTarget.setAttribute("data-loaded", "");
+        }}
+      />
     {:else}
       <!-- The honest skeleton (UI-29): a neutral ground while the
            request is in flight — no fake content, no spinner copy. -->
@@ -321,6 +341,8 @@
     border-radius: var(--radius-control);
     box-shadow: var(--shadow-overlay);
     overflow: hidden;
+    /* DR-316: the positioning base for the full-stage overlay. */
+    position: relative;
     /* DR-205: horizontal centering in the continuous stack — auto margins
        center a page below fit width and collapse to zero above it. */
     margin-inline: auto;
@@ -328,6 +350,23 @@
 
   .page img {
     display: block;
+  }
+
+  /* DR-316: the full-resolution stage over the preview (the two-stage
+     pipeline DR-151/DR-153 is unchanged — only its seam is hidden).
+     Invisible until its own load event; then a short fade to 1. The
+     top/left origin is the padding box — the same origin the base image
+     lays at, so the two rasters coincide pixel for pixel. */
+  .page-full {
+    position: absolute;
+    top: 0;
+    left: 0;
+    opacity: 0;
+    transition: opacity 160ms ease-out;
+  }
+
+  .page-full[data-loaded] {
+    opacity: 1;
   }
 
   .page-placeholder {

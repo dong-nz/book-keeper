@@ -8,6 +8,7 @@ import type {
   AppErrorPayload,
   AboutDto,
   DocumentDto,
+  EpubManifestDto,
   ImportResult,
   OpenedReaderDto,
   OutlineEntry,
@@ -49,6 +50,7 @@ export const COMMANDS = [
   "app_pdf_document",
   "app_pdf_page",
   "app_pdf_outline",
+  "app_epub_manifest",
   "app_open_containing_folder",
   "app_about",
   "app_data_dir",
@@ -198,6 +200,14 @@ export function appPdfPage(id: number, page: number, targetWidth: number): Promi
  *  the empty list for documents without one. */
 export function appPdfOutline(id: number): Promise<OutlineEntry[]> {
   return invoke("app_pdf_outline", { id });
+}
+
+/** Reading manifest for the EPUB reader window (SPEC-v0.0.9 §3.9, FR-23):
+ *  spine order with entry sizes, the ToC in the `OutlineEntry` shape, the
+ *  content-protocol base URL, and the declared language/direction. Typed
+ *  errors precede any file read like every reader command. */
+export function appEpubManifest(id: number): Promise<EpubManifestDto> {
+  return invoke("app_epub_manifest", { id });
 }
 
 /** Application name + version as the packaged app reports them (UI-12). */

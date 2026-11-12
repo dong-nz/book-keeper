@@ -26,10 +26,25 @@ function parseGridColumns(value: string): GridOverride {
   return Number.isInteger(count) && count >= GRID_MIN && count <= GRID_MAX ? count : "auto";
 }
 
+/** The EPUB reading text-size ladder (SPEC-v0.0.9 §3.13, DR-303 item 5),
+ *  restated here exactly as the View-menu clamp above restates the range it
+ *  guards: the Rust validator (`is_valid_text_size`) is the authority, this
+ *  only keeps a corrupt row from reaching the reader. */
+const TEXT_SIZE_STEPS = [14, 16, 18, 20, 24, 28];
+const DEFAULT_TEXT_SIZE = 18;
+
+function parseTextSize(value: string): number {
+  const size = Number(value);
+  return TEXT_SIZE_STEPS.includes(size) ? size : DEFAULT_TEXT_SIZE;
+}
+
 class SettingsStore {
   view = $state<ViewMode>("list");
   gridColumns = $state<GridOverride>("auto");
   theme = $state<Theme>("system");
+  /** The EPUB reading text size (§3.13): the ladder step the reader windows
+   *  render at; only the EPUB strip writes it. */
+  epubTextSize = $state<number>(DEFAULT_TEXT_SIZE);
   loaded = $state(false);
 
   // Settings writes are debounced (R4.3) as one batch: a 300 ms window collects
@@ -70,6 +85,9 @@ class SettingsStore {
         break;
       case "theme":
         this.theme = value === "light" || value === "dark" ? value : "system";
+        break;
+      case "epub_text_size":
+        this.epubTextSize = parseTextSize(value);
         break;
       default:
         break;
@@ -116,6 +134,7 @@ class SettingsStore {
       // behavior — follow the OS (UI-17).
       this.theme =
         settings.theme === "light" || settings.theme === "dark" ? settings.theme : "system";
+      this.epubTextSize = parseTextSize(settings.epub_text_size);
       this.loaded = true;
       return {
         sort: settings.sort,
@@ -145,6 +164,16 @@ class SettingsStore {
   setTheme(value: Theme): void {
     this.theme = value;
     this.#persist("theme", value);
+  }
+
+  /** The EPUB strip's text-size control (§3.13, DR-303 item 5): the only
+   *  writer of this key. The value is a ladder step — the reader store walks
+   *  the ladder, this store persists the choice globally and the
+   *  `settings_changed` broadcast re-applies it in every reader window. */
+  setEpubTextSize(value: number): void {
+    const size = TEXT_SIZE_STEPS.includes(value) ? value : DEFAULT_TEXT_SIZE;
+    this.epubTextSize = size;
+    this.#persist("epub_text_size", String(size));
   }
 
   /** Called from the library store on every query change — the single

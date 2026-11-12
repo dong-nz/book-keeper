@@ -32,13 +32,20 @@
   import Icon from "./Icon.svelte";
   import OverlayAnchor from "./OverlayAnchor.svelte";
   import Tooltip from "./Tooltip.svelte";
-  import { type ReaderStore } from "$lib/state/reader.svelte";
+  import { type TocStore } from "$lib/state/reader.svelte";
   import { t } from "$lib/i18n";
 
+  // DR-303 item 7: the panel is one component for both readers — it reads the
+  // structural `TocStore` shape (the tree math is shared, the `page` field is
+  // the target in both readers). `current` is optional: the EPUB strip passes a
+  // reader-derived current-entry resolver (§3.13 highlight rule); the released
+  // PDF strip does not, and its panel behavior is unchanged.
   let {
     store,
+    current,
   }: {
-    store: ReaderStore;
+    store: TocStore;
+    current?: () => number;
   } = $props();
 </script>
 
@@ -118,6 +125,7 @@
         <DropdownMenu.Item
           class="menu-item toc-entry"
           data-tauri-drag-region="false"
+          data-current={current?.() === item.index || undefined}
           onSelect={() => store.goToPage(item.entry.page)}
           onkeydown={(event) => {
             // ArrowRight / ArrowLeft toggle a focused parent's subtree
@@ -198,6 +206,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* The current-entry highlight (§3.13, EPUB reader only — the released PDF
+     panel passes no `current` and never matches): the entry the reader's
+     scroll source currently sits on, named the way the strip's active states
+     are named (the accent, no extra decoration). */
+  .toc-entry[data-current] .toc-title {
+    color: var(--accent);
   }
 
   /* The page number sits at the item's trailing end (UI-33: right-

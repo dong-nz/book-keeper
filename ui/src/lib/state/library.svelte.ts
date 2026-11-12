@@ -356,9 +356,9 @@ class LibraryStore {
     }
   }
 
-  /** Resolves `null` on success; otherwise the rejection payload. A
-   *  `not_pdf` rejection is shown inline by the relink dialog, so it is
-   *  deliberately not reported as a toast (status-feedback.md). */
+  /** Resolves `null` on success; otherwise the rejection payload. An
+   *  `unsupported_type` rejection is shown inline by the relink dialog, so it
+   *  is deliberately not reported as a toast (status-feedback.md). */
   async relink(id: number, newPath: string): Promise<AppErrorPayload | null> {
     try {
       const doc = await api.libraryRelinkDocument(id, newPath);
@@ -367,7 +367,7 @@ class LibraryStore {
       return null;
     } catch (error) {
       const payload = asAppError(error);
-      if (payload.kind !== "not_pdf") feedback.reportError(payload);
+      if (payload.kind !== "unsupported_type") feedback.reportError(payload);
       return payload;
     }
   }

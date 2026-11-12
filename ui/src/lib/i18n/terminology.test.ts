@@ -5,6 +5,11 @@
 // after a file: every catalog value containing the word "file" must be one
 // of the audited keys (the physical set, or the two possessive rows that
 // speak of a document's own file).
+// The physical set as pinned here is the v0.0.9 state: UI-44 MODIFIED
+// (OQ-55 closed → A) and DR-304 returned the import labels, the delete
+// copy, the drop title, the empty-state hint and the relink refusal to
+// type-neutral wording — the audit's rule stands unchanged; the pinned
+// values follow the approved copy.
 
 import { describe, expect, it } from "vitest";
 import en from "./en";
@@ -29,18 +34,26 @@ const DOCUMENT_PHASED: Record<string, string> = {
   "toolbar.sort.size": "Size",
 };
 
-// Values whose subject is the physical file — unchanged by the audit (exact).
-// ("toolbar.importFiles" left this set with UI-44 / AC-114: the import
-// labels now name PDFs, not "files" — the flow's menu assertions pin them.)
+// Values whose subject is the physical file — the type-neutral wording the
+// library ships since v0.0.9 (UI-44 MODIFIED option A, DR-304). The import
+// labels rejoin this set with the option-A revert: "Import files" is the
+// general wording, true for every managed type.
 const PHYSICAL_FILE: Record<string, string> = {
+  "toolbar.import": "Import files",
+  "toolbar.importFiles": "Import files",
+  "empty.library.action": "Import files",
+  "empty.tag.action": "Import files",
+  "drop.title": "Drop files to add them",
+  "toast.imported.one": "Imported {count} file",
+  "toast.imported.other": "Imported {count} files",
   "relink.chooseNew": "Choose new file",
   "relink.body": "The document is in the library, but its file was not found.",
-  "relink.errorMissing": "The file you chose is not a readable PDF.",
+  "relink.errorMissing": "The file you chose is not a readable PDF or EPUB.",
   "delete.withFiles": "Delete with files",
-  "delete.fileNote": "This also deletes the PDF files themselves.",
-  "delete.body": "The PDF files stay on disk unless you choose to delete them too.",
+  "delete.fileNote": "This also deletes the files themselves.",
+  "delete.body": "The files stay on disk unless you choose to delete them too.",
   "details.pathLabel": "File",
-  "empty.library.body": "Import PDFs to get started — files stay where they are.",
+  "empty.library.body": "Import PDFs or EPUBs to get started — files stay where they are.",
   "job.rescan": "Checking files…",
   "error.openFailed": "The operating system could not open the file.",
   "error.io": "A file operation failed: {path}",

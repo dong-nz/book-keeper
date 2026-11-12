@@ -84,6 +84,9 @@
     display: grid;
     place-items: center;
     width: 44px;
+    /* DR-315: the controls never share the flex shrink with a long title —
+       the title (min-width: 0 + ellipsis) absorbs all of it. */
+    flex-shrink: 0;
     height: var(--toolbar-height);
     color: var(--text-secondary);
     border-radius: 0;

@@ -43,12 +43,12 @@ import { basename } from "node:path";
 import {
   check, docCount, emitDrop, execute, openSession, prepareEnvironment,
   NFR06_BUDGET_MS, results, runFlow, runPrefixFlows, SCOPED, sessionId, sleep, startDriver,
-  tierPdfPaths, toastContains, timings, wd, EVAL, FIXTURE_DOCS,
+  tierDocPaths, toastContains, timings, wd, EVAL, FIXTURE_DOCS, searchFor, clearSearch, waitForEval,
   flowVirtualization, flowWidthMatrix, flowEmptyAndSkeleton,
 } from "./ui-smoke.mjs";
 
 async function flowImport10k(dropOk) {
-  const paths = tierPdfPaths(FIXTURE_DOCS);
+  const paths = tierDocPaths(FIXTURE_DOCS);
   // The count claim is derived, not hard-coded: the batch must add exactly
   // the corpus size to whatever the library held before (a fresh library in
   // this runner — prepareEnvironment wiped it).
@@ -95,8 +95,30 @@ async function flowImport10k(dropOk) {
   check("AC-01 UI: 10,000 documents listed via the app", total === target, `status bar count: ${total}, ${elapsed} ms`);
   check("AC-22: the status bar shows the progress bar while a job runs", progressSeen, `progress bar seen during the import: ${progressSeen}`);
   check("AC-01 UI: whole import completes < 30 s (NFR-02)", elapsed < 30000, `${elapsed} ms`);
-  const toast = await toastContains("Imported 10,000 PDFs");
+  const toast = await toastContains("Imported 10,000 files");
   check("import result toast reports the batch (FR-15)", !!toast);
+
+  // AC-131 (v0.0.9 §3.8): the corpus the import above ran against is the
+  // mixed one — every fifth document of the 5001..10000 band is an EPUB.
+  // The count and budget checks are the "within the existing import budget"
+  // half; this half names the mixed part: the corpus really carries both
+  // types, and an EPUB of the band landed as a library document carrying the
+  // metadata its file declares — same pipeline, same batch, same budget.
+  const mixFrom = 5005, mixStep = 5, mixTo = 10000; // the §3.8 band
+  const expectedEpubs = (mixTo - mixFrom) / mixStep + 1;
+  const epubPaths = paths.filter((p) => p.endsWith(".epub"));
+  const pdfPaths = paths.filter((p) => p.endsWith(".pdf"));
+  check("AC-131: the 10 000-document corpus is the mixed one (9 000 PDF + 1 000 EPUB from the 5001..10000 band)",
+    paths.length === 10000 && epubPaths.length === expectedEpubs && pdfPaths.length === 10000 - expectedEpubs,
+    `corpus: ${pdfPaths.length} PDF + ${epubPaths.length} EPUB (total ${paths.length})`);
+  await searchFor("doc05005"); // the first mixed-band document is an EPUB
+  const mixedRow = await waitForEval(`
+    const title = document.querySelector('[data-row-id] .title-line');
+    return title && title.textContent.trim() === 'Fixture Doc doc05005' ? true : null;
+  `, { timeout: 15000 });
+  check("AC-131: an EPUB of the mixed band imported with its declared metadata (title from the package)",
+    !!mixedRow, `row title: ${JSON.stringify(await execute(`return document.querySelector('[data-row-id] .title-line')?.textContent ?? null;`))}`);
+  await clearSearch();
 
   // Duplicate import: same paths again — every one skipped with a notice (FR-11).
   if (dropOk) await emitDrop(paths);
@@ -150,7 +172,7 @@ function resolveWanted10k() {
 // import is setup: internal asserts only, no check recorded. The wait is more
 // patient than the measured window because a setup must not fail on load.
 async function prepareCorpus(dropOk) {
-  const paths = tierPdfPaths(FIXTURE_DOCS);
+  const paths = tierDocPaths(FIXTURE_DOCS);
   const before = await docCount();
   if (!Number.isFinite(before)) throw new Error(`prepareCorpus could not read the library count: ${before}`);
   const target = (before + paths.length).toLocaleString("en-US");

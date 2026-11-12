@@ -15,10 +15,13 @@
   import WindowControls from "./components/WindowControls.svelte";
   import ReaderControls from "./components/ReaderControls.svelte";
   import ReaderView from "./components/ReaderView.svelte";
+  import EpubReaderControls from "./components/EpubReaderControls.svelte";
+  import EpubReaderView from "./components/EpubReaderView.svelte";
   import ToastStack from "./components/ToastStack.svelte";
   import Icon from "./components/Icon.svelte";
   import Tooltip from "./components/Tooltip.svelte";
   import { ReaderStore, SCROLL_NOTCH } from "$lib/state/reader.svelte";
+  import { EpubReaderStore } from "$lib/state/epubReader.svelte";
   import { settings } from "$lib/state/settings.svelte";
   import { feedback } from "$lib/state/feedback.svelte";
   import { applyTheme, onSystemThemeChange } from "$lib/theme";
@@ -28,12 +31,19 @@
   import * as api from "./api";
   import { asAppError } from "$lib/types";
 
-  let { docId }: { docId: number } = $props();
-  // One store per reader window: `docId` is the route parameter this window
-  // was created with and never changes for its lifetime, so capturing it at
-  // construction is the intent (the warning is about reactive re-reads).
+  // SPEC-v0.0.9 §3.5 / DR-303 item 1: the window kind arrives with the route
+  // (the command decided it on the resolved path before the window existed).
+  // Exactly one store is constructed — no PDF reader machinery ever runs for
+  // an EPUB, none for a PDF (AC-125) — and it is the window's only state
+  // owner. One store per reader window: `docId` is the route parameter this
+  // window was created with and never changes for its lifetime, so capturing
+  // it at construction is the intent (the warning is about reactive re-reads).
+  let { docId, kind }: { docId: number; kind: "pdf" | "epub" } = $props();
   // svelte-ignore state_referenced_locally
-  const store = new ReaderStore(docId);
+  const pdfStore = kind === "epub" ? null : new ReaderStore(docId);
+  // svelte-ignore state_referenced_locally
+  const epubStore = kind === "epub" ? new EpubReaderStore(docId) : null;
+  const store = $derived(epubStore ?? pdfStore);
   const win = getCurrentWindow();
 
   // Theme through the released path (DR-101): the stored choice wins,
@@ -55,7 +65,7 @@
     void (async () => {
       await settings.initEvents();
       await settings.load();
-      await store.load();
+      await (epubStore ?? pdfStore)?.load();
     })();
   });
 
@@ -66,6 +76,9 @@
   // only after the current task — covers the window listener in the same
   // dispatch). With no overlay open the behavior is unchanged. The
   // navigation keys are guarded (typing in the page field owns them).
+  // The EPUB map (§3.13, UI-39 semantics with page → flow): ArrowUp/Down
+  // one notch, PgUp/PgDn one viewport, Home/End book start/end — and
+  // nothing else: no page arrows, no zoom keys (the named exclusions).
   function onKeydown(event: KeyboardEvent) {
     if (event.key === "Escape") {
       if (event.defaultPrevented || feedback.overlayCount > 0) return;
@@ -73,32 +86,42 @@
       return;
     }
     if (isTextTarget(event.target)) return;
+    const reader = epubStore ?? pdfStore;
+    if (!reader) return;
     if (event.key === "PageDown") {
       event.preventDefault();
-      store.scrollViewport(1);
+      reader.scrollViewport(1);
     } else if (event.key === "PageUp") {
       event.preventDefault();
-      store.scrollViewport(-1);
+      reader.scrollViewport(-1);
     } else if (event.key === "Home") {
       event.preventDefault();
-      store.goToPage(1);
+      reader.goToPage(1);
     } else if (event.key === "End") {
       event.preventDefault();
-      store.goToPage(store.doc?.page_count ?? 1);
+      // Book end (UI-39/§3.13): the last page (PDF) / the bottom of the
+      // flow (EPUB — `scrollToEnd`, not the last chapter's start).
+      if (epubStore !== null) {
+        epubStore.scrollToEnd();
+      } else {
+        reader.goToPage(pdfStore?.doc?.page_count ?? 1);
+      }
     } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-      // Page navigation (UI-39/DR-228): exactly the strip's prev/next —
-      // the same `stepPage` path. With an overlay open the arrows belong
-      // to it (the ToC panel's entry keys, every menu's own keys).
-      if (feedback.overlayCount > 0) return;
+      // Page navigation (UI-39/DR-228): exactly the strip's prev/next — the
+      // same `stepPage` path. With an overlay open the arrows belong to it
+      // (the ToC panel's entry keys, every menu's own keys). The EPUB
+      // surface has no page navigation (§3.13): the keys do nothing.
+      if (epubStore !== null || feedback.overlayCount > 0) return;
       event.preventDefault();
-      store.stepPage(event.key === "ArrowRight" ? 1 : -1);
+      pdfStore?.stepPage(event.key === "ArrowRight" ? 1 : -1);
     } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
       // The wheel's keyboard counterpart (UI-39/DR-228): one notch. The
       // store routes the mode — stack scroll in continuous/facing, the
-      // view's edge rule in single (DR-227).
+      // view's edge rule in single (DR-227); the EPUB store scrolls the
+      // flow.
       if (feedback.overlayCount > 0) return;
       event.preventDefault();
-      store.scrollNotch(event.key === "ArrowDown" ? SCROLL_NOTCH : -SCROLL_NOTCH);
+      reader.scrollNotch(event.key === "ArrowDown" ? SCROLL_NOTCH : -SCROLL_NOTCH);
     } else if (
       event.ctrlKey &&
       !event.altKey &&
@@ -108,8 +131,10 @@
       // Zoom keys (UI-30/DR-221, AC-96): Ctrl + / Ctrl − walk the ladder —
       // the same `changeZoom` path the − / + buttons use. `=` is the
       // unshifted pair of `+` on every layout; the numpad sends it directly.
+      // The EPUB surface has no zoom control (§3.13): the keys do nothing.
+      if (epubStore !== null) return;
       event.preventDefault();
-      store.changeZoom(event.key === "-" ? -1 : 1);
+      pdfStore?.changeZoom(event.key === "-" ? -1 : 1);
     } else if (
       event.ctrlKey &&
       !event.altKey &&
@@ -117,17 +142,19 @@
       (event.key === "0" || event.key === "1" || event.key === "2")
     ) {
       // Ctrl 0 / 1 / 2 = Fit width / Fit page / Actual Size (AC-96).
+      if (epubStore !== null) return;
       event.preventDefault();
-      store.setZoomMode(
+      pdfStore?.setZoomMode(
         event.key === "0" ? "fit-width" : event.key === "1" ? "fit-page" : "actual",
       );
     }
   }
 
   // The error state's action (AC-69): the external path, its own command —
-  // the same call the library window's "Open in external viewer" makes.
+  // the same call the library window's "Open in external viewer" makes, and
+  // the action FR-23/AC-133 keeps for an unrenderable EPUB (AC-134).
   function openExternally(): void {
-    void api.appOpenDocument(store.docId).catch((error: unknown) => {
+    void api.appOpenDocument(docId).catch((error: unknown) => {
       feedback.reportError(asAppError(error));
     });
   }
@@ -139,7 +166,7 @@
   // password* checked keeps it; an unchecked one is temporary and this
   // window clears it again on its close paths (the close control, Esc and
   // the OS close all reach the same intercepted close request).
-  const needsPassword = $derived(store.error?.kind === "password-required");
+  const needsPassword = $derived(store?.error?.kind === "password-required");
   let passwordField = $state("");
   let remember = $state(false);
   let unlockError = $state<string | null>(null);
@@ -151,7 +178,7 @@
   // remembered password reaches the next open; a stored one that no longer
   // fits is what the prefill and *Remove password* are for).
   $effect(() => {
-    if (store.error?.kind === "password-required") {
+    if (store?.error?.kind === "password-required") {
       passwordField = store.error.password ?? "";
     }
   });
@@ -167,10 +194,10 @@
     unlocking = true;
     unlockError = null;
     try {
-      await api.librarySetPassword(store.docId, passwordField);
+      await api.librarySetPassword(docId, passwordField);
       tempStored = !remember;
-      await store.load();
-      if (store.error?.kind === "password-required") {
+      await (epubStore ?? pdfStore)?.load();
+      if (store?.error?.kind === "password-required") {
         // A wrong password keeps the form with an inline error (AC-104);
         // the window stays usable — the external action stands below.
         unlockError = t("reader.password.wrong");
@@ -183,13 +210,13 @@
   }
 
   async function removeStoredPassword(): Promise<void> {
-    await api.librarySetPassword(store.docId, "");
+    await api.librarySetPassword(docId, "");
     tempStored = false;
     passwordField = "";
     remember = false;
     unlockError = null;
     // Still protected: the prompt re-appears with an empty field (AC-105).
-    await store.load();
+    await (epubStore ?? pdfStore)?.load();
   }
 
   let unlistenClose: (() => void) | undefined;
@@ -199,7 +226,7 @@
         if (!tempStored) return;
         event.preventDefault();
         void api
-          .librarySetPassword(store.docId, "")
+          .librarySetPassword(docId, "")
           .catch(() => {
             /* the row keeps the temporary value; the next open presents it */
           })
@@ -228,19 +255,26 @@
 <div class="reader">
   <header class="chrome" data-tauri-drag-region="deep">
     <Icon name="book-open" />
-    <Tooltip text={store.documentName}>
+    <Tooltip text={store?.documentName ?? ""}>
       {#snippet control({ props })}
-        <span class="name" {...props}>{store.documentName}</span>
+        <span class="name" {...props}>{store?.documentName}</span>
       {/snippet}
     </Tooltip>
     <span class="chrome-spacer"></span>
     <WindowControls />
   </header>
 
-  {#if store.status === "ready"}
-    <ReaderView {store} />
-    <ReaderControls {store} />
-  {:else if store.status === "error"}
+  <!-- Exactly one surface per window (§3.5, AC-125): the kind the route
+       carried decides it — the PDF window renders the released surface
+       unchanged, the EPUB window the flow surface. The loading state renders
+       nothing in both (the released rule). -->
+  {#if pdfStore && pdfStore.status === "ready"}
+    <ReaderView store={pdfStore} />
+    <ReaderControls store={pdfStore} />
+  {:else if epubStore && epubStore.status === "ready"}
+    <EpubReaderView store={epubStore} />
+    <EpubReaderControls store={epubStore} />
+  {:else if store?.status === "error"}
     {#if needsPassword}
       <!-- The unlock form (FR-20/AC-104): a `password-required` payload
            renders a form, not the error copy — the window stays usable, and
@@ -271,7 +305,7 @@
             <button type="submit" class="control control-primary" disabled={passwordField === "" || unlocking}>
               {t("reader.password.unlock")}
             </button>
-            {#if store.error?.password}
+            {#if store?.error?.password}
               <button type="button" class="control" onclick={() => void removeStoredPassword()}>
                 {t("reader.password.remove")}
               </button>
@@ -288,8 +322,11 @@
            unrenderable file. -->
       <div class="error-state">
         <Icon name="alert-triangle" />
-        <p class="error-title">{t("reader.error")}</p>
-        <p class="error-detail">{store.error?.message}</p>
+        <!-- The error state (UI-31/AC-69/AC-133): the typed failure rendered
+             in the window, with the external-open action; the copy names the
+             kind this window was opened for (§3.13). -->
+        <p class="error-title">{epubStore ? t("reader.epub.error") : t("reader.error")}</p>
+        <p class="error-detail">{store?.error?.message}</p>
         <button type="button" class="control control-primary" onclick={openExternally}>
           {t("row.openExternal")}
         </button>

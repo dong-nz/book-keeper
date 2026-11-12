@@ -6,6 +6,8 @@ pub mod commands;
 pub mod covers;
 pub mod data_dir;
 pub mod db;
+pub mod epubmeta;
+pub mod epubsrv;
 pub mod error;
 pub mod library;
 pub mod pdf;
@@ -209,11 +211,64 @@ fn startup(app: &AppHandle) {
     });
 }
 
+/// The content protocol's response (DR-301 items 6/9): the probe's header
+/// set on a hit — `Cache-Control: no-cache`, the mtime+size ETag, the CORS
+/// pair (DR-297: the engine re-requests every load; the LRU carries the
+/// cost) — and 404 with an empty body for every typed error, which is the
+/// protocol form of an `AppErrorPayload` (the reader window's
+/// chapter-error surface handles a failed chapter, §3.13).
+fn epub_protocol_response(
+    app: &AppHandle,
+    authority: &str,
+    path: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    let empty = |status: u16| {
+        tauri::http::Response::builder()
+            .status(status)
+            .body(Vec::new())
+            .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+    };
+    let Some((doc_id, entry)) = epubsrv::parse_request(authority, path) else {
+        return empty(404);
+    };
+    let db = app.state::<Db>();
+    let srv = app.state::<epubsrv::EpubSrv>();
+    let Ok(served) = db.with_raw(|conn| epubsrv::serve(conn, &srv, doc_id, &entry)) else {
+        return empty(404);
+    };
+    tauri::http::Response::builder()
+        .status(200)
+        .header("content-type", served.content_type)
+        .header("cache-control", "no-cache")
+        .header("etag", served.etag)
+        .header("access-control-allow-origin", "*")
+        .header("access-control-expose-headers", "ETag")
+        .body(served.bytes)
+        .unwrap_or_else(|_| empty(404))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // The EPUB content protocol (§3.10 option A; the probe confirmed this
+        // exact async shape, DR-297). The handler is a thin wrapper (R1.2
+        // discipline applied to the protocol, DR-302 item 6): parse the URI,
+        // move the work to a worker thread (R3.5), answer. All serving logic
+        // is `epubsrv::serve`.
+        .register_asynchronous_uri_scheme_protocol("pdfkeeper-epub", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let authority = request
+                .uri()
+                .authority()
+                .map_or("", |authority| authority.as_str())
+                .to_string();
+            let path = request.uri().path().to_string();
+            std::thread::spawn(move || {
+                responder.respond(epub_protocol_response(&app, &authority, &path));
+            });
+        })
         .setup(|app| {
             // The data directory is decided exactly once (DR-162): the
             // harness override when PDFKEEPER_DATA_DIR is set, otherwise the
@@ -246,6 +301,10 @@ pub fn run() {
                 render: render.clone(),
             });
             app.manage(Covers(covers::start_pool(covers_dir, sink, render)));
+            // The EPUB serving LRU (§3.12 rule 4, DR-302 item 5): the same
+            // managed-state pattern as Db/Covers/Reader, consumed only by the
+            // protocol handler below.
+            app.manage(epubsrv::EpubSrv::new());
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || startup(&handle));
@@ -279,6 +338,7 @@ pub fn run() {
             commands::app_pdf_document,
             commands::app_pdf_page,
             commands::app_pdf_outline,
+            commands::app_epub_manifest,
             commands::app_open_containing_folder,
             commands::app_about,
             commands::app_data_dir,

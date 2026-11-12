@@ -88,6 +88,11 @@ export interface PageImage {
    *  entry stale and the view re-requests. */
   width: number;
   src: string;
+  /** The full-resolution stage (DR-151/DR-153; the seam fix DR-316):
+   *  null until the full raster's request resolves, and null whenever the
+   *  two stages coincide (single-stage request). The view overlays it on
+   *  the preview and cross-fades — the preview is never replaced in place. */
+  full: string | null;
 }
 
 /** The image request width for a CSS width: device pixels, capped 2×,
@@ -119,6 +124,65 @@ export function stepZoom(current: number, delta: number): number {
     if (Math.abs(step - current) < Math.abs(nearest - current)) nearest = step;
   }
   return nearest;
+}
+
+// ------------------------------------------------------------------ ToC tree
+
+/** The flat depth-encoding's parent test (UI-33/§3.17): an entry is a parent
+ *  exactly when the next entry is deeper. Pure — the PDF reader store and the
+ *  EPUB reader store both call it through their own methods (DR-303 item 7),
+ *  so the tree rule has exactly one implementation. */
+export function tocParentsOf(outline: OutlineEntry[]): number[] {
+  const parents: number[] = [];
+  for (let i = 0; i < outline.length - 1; i++) {
+    if (outline[i + 1].depth > outline[i].depth) parents.push(i);
+  }
+  return parents;
+}
+
+export function isTocParentOf(outline: OutlineEntry[], index: number): boolean {
+  const entry = outline[index];
+  const next = outline[index + 1];
+  return entry !== undefined && next !== undefined && next.depth > entry.depth;
+}
+
+/** The entries the panel renders, in order, under the current collapse
+ *  state: an entry is hidden when ANY ancestor is in the hidden set (the
+ *  subtree rule - collapsing a parent hides everything below it until the
+ *  next entry at its own level or shallower; a nested parent's own state
+ *  never overrides a collapsed ancestor above it). */
+export function tocVisibleOf(
+  outline: OutlineEntry[],
+  collapsed: ReadonlySet<number>,
+): { entry: OutlineEntry; index: number }[] {
+  const visible: { entry: OutlineEntry; index: number }[] = [];
+  const ancestors: { depth: number; collapsed: boolean }[] = [];
+  for (let i = 0; i < outline.length; i++) {
+    const entry = outline[i];
+    while (ancestors.length > 0 && ancestors[ancestors.length - 1].depth >= entry.depth) {
+      ancestors.pop();
+    }
+    if (!ancestors.some((ancestor) => ancestor.collapsed)) {
+      visible.push({ entry, index: i });
+    }
+    ancestors.push({ depth: entry.depth, collapsed: collapsed.has(i) });
+  }
+  return visible;
+}
+
+/** The structural shape `TocPanel` reads (DR-303 item 7): both reader stores
+ *  satisfy it. `outline` is the flat depth-encoded tree; `goToPage` names the
+ *  target an entry carries — a 1-based page in the PDF reader, a 1-based spine
+ *  index in the EPUB reader (the manifest's ToC encoding, §3.9 consequence 8). */
+export interface TocStore {
+  outline: OutlineEntry[];
+  tocCollapsed: ReadonlySet<number>;
+  tocExpandMode: boolean;
+  tocVisible(): { entry: OutlineEntry; index: number }[];
+  isTocParent(index: number): boolean;
+  toggleTocEntry(index: number): void;
+  tocToggleAll(): void;
+  goToPage(page: number): void;
 }
 
 export class ReaderStore {
@@ -255,38 +319,15 @@ export class ReaderStore {
    *  test (UI-33/§3.17): an entry is a parent exactly when the next entry
    *  is deeper. */
   tocParents(): number[] {
-    const parents: number[] = [];
-    for (let i = 0; i < this.outline.length - 1; i++) {
-      if (this.outline[i + 1].depth > this.outline[i].depth) parents.push(i);
-    }
-    return parents;
+    return tocParentsOf(this.outline);
   }
 
   isTocParent(index: number): boolean {
-    const entry = this.outline[index];
-    const next = this.outline[index + 1];
-    return entry !== undefined && next !== undefined && next.depth > entry.depth;
+    return isTocParentOf(this.outline, index);
   }
 
-  /** The entries the panel renders, in order, under the current collapse
-   *  state: an entry is hidden when ANY ancestor is in the hidden set (the
-   *  subtree rule - collapsing a parent hides everything below it until the
-   *  next entry at its own level or shallower; a nested parent's own state
-   *  never overrides a collapsed ancestor above it). */
   tocVisible(): { entry: OutlineEntry; index: number }[] {
-    const visible: { entry: OutlineEntry; index: number }[] = [];
-    const ancestors: { depth: number; collapsed: boolean }[] = [];
-    for (let i = 0; i < this.outline.length; i++) {
-      const entry = this.outline[i];
-      while (ancestors.length > 0 && ancestors[ancestors.length - 1].depth >= entry.depth) {
-        ancestors.pop();
-      }
-      if (!ancestors.some((ancestor) => ancestor.collapsed)) {
-        visible.push({ entry, index: i });
-      }
-      ancestors.push({ depth: entry.depth, collapsed: this.tocCollapsed.has(i) });
-    }
-    return visible;
+    return tocVisibleOf(this.outline, this.tocCollapsed);
   }
 
   toggleTocEntry(index: number): void {
@@ -543,13 +584,18 @@ export class ReaderStore {
     void api
       .appPdfPage(this.docId, page, preview)
       .then((path) => {
-        this.#setImage(page, width, path);
+        this.#setImage(page, width, path, null);
         if (preview === target) {
           settlePending();
           return undefined;
         }
+        // DR-319: superseded mid-flight (the fit changed) — the current-width
+        // request re-renders; skip the pointless full render of this chain.
+        if (this.pageWidth(page) !== width) return undefined;
         return api.appPdfPage(this.docId, page, target).then((full) => {
-          this.#setImage(page, width, full);
+          // DR-316: the full stage is published as an overlay source, not
+          // as a replacement of the preview src — the view cross-fades it.
+          this.#setImage(page, width, path, full);
           settlePending();
         });
       })
@@ -564,9 +610,18 @@ export class ReaderStore {
       });
   }
 
-  #setImage(page: number, width: number, path: string): void {
+  #setImage(page: number, width: number, path: string, full: string | null): void {
+    // DR-319: a stage whose request was superseded (the fit changed while it
+    // was in flight) never publishes — its width would not match what the
+    // view mounts, and writing it would flip the mounted page back to the
+    // skeleton until the current request lands (the open-time flash).
+    if (this.pageWidth(page) !== width) return;
     const next = new Map(this.images);
-    next.set(page, { width, src: convertFileSrc(path) });
+    next.set(page, {
+      width,
+      src: convertFileSrc(path),
+      full: full === null ? null : convertFileSrc(full),
+    });
     this.images = next;
   }
 }

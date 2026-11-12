@@ -26,6 +26,9 @@ static FIXTURES_READY: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
         root.join("special").join("info-title.pdf"),
         root.join("special").join("protected.pdf"),
         root.join("multi").join("manifest.json"),
+        // The v0.0.9 EPUB tier (SPEC-v0.0.9 §3.8) — a tree without it is
+        // from an older generator and takes the same regeneration path.
+        root.join("epub").join("manifest.json"),
     ];
     // The v0.0.7 generator records the multi-192 outline in the manifest
     // (SPEC-v0.0.7 §3.5); a manifest without it is from an older generator
@@ -60,13 +63,25 @@ pub fn fixture(name: &str) -> PathBuf {
 }
 
 pub fn fixture_doc(index: u32) -> PathBuf {
-    fixtures().join("docs").join(format!("doc{:05}.pdf", index))
+    // AC-131 (SPEC-v0.0.9 §3.8): the docs tier is the mixed corpus — every
+    // fifth index from 5005 on is an EPUB. Same band scripts/make-fixtures.mjs
+    // writes; tests that address the whole corpus address both document types.
+    const MIX_FROM: u32 = 5005;
+    const MIX_STEP: u32 = 5;
+    let ext = if index >= MIX_FROM && index % MIX_STEP == 0 { "epub" } else { "pdf" };
+    fixtures().join("docs").join(format!("doc{:05}.{ext}", index))
 }
 
 /// Multi-page tier fixture (SPEC-v0.0.6 §3.5): `multi-<pages>.pdf` from
 /// `fixtures/multi/`, the same tree the UI harness reads.
 pub fn fixture_multi(name: &str) -> PathBuf {
     fixtures().join("multi").join(name)
+}
+
+/// EPUB tier fixture (SPEC-v0.0.9 §3.8): `<name>.epub` from `fixtures/epub/`,
+/// the same tree the UI harness reads.
+pub fn fixture_epub(name: &str) -> PathBuf {
+    fixtures().join("epub").join(name)
 }
 
 /// The outline entries `fixtures/multi/manifest.json` records for one
@@ -135,10 +150,19 @@ impl TempDir {
     }
 
     /// Copy a fixture into this directory (mutation tests never touch the
-    /// shared fixture tree).
+    /// shared fixture tree). The source tier follows the extension: `.epub`
+    /// names come from the EPUB tier (§3.8), everything else from `special/`.
     pub fn copy_fixture(&self, name: &str) -> PathBuf {
+        let source = if Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("epub"))
+        {
+            fixture_epub(name)
+        } else {
+            fixture(name)
+        };
         let target = self.0.join(name);
-        std::fs::copy(fixture(name), &target).expect("copy fixture");
+        std::fs::copy(&source, &target).expect("copy fixture");
         target
     }
 }

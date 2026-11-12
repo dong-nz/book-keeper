@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'",
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost pdfkeeper-epub: http://pdfkeeper-epub.localhost; style-src 'self' 'unsafe-inline' pdfkeeper-epub: http://pdfkeeper-epub.localhost; font-src 'self' pdfkeeper-epub: http://pdfkeeper-epub.localhost; connect-src 'self' pdfkeeper-epub: http://pdfkeeper-epub.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": [

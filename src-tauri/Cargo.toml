@@ -10,6 +10,11 @@ lopdf = "0.47.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 pdfium-render = "0.9.5"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
+# DR-294 (OQ-53 A): EPUB parsing. `zip` with only the deflate backend — the
+# flate2 already in the tree via lopdf/png (M14); no new codec crates, no C
+# build deps. `quick-xml` is the version the lockfile already resolves.
+zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
+quick-xml = "0.42"
 serde = { version = "1.0.229", features = ["derive"] }
 tauri = { version = "2.12.5", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.8.4"

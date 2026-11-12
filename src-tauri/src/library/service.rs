@@ -18,7 +18,8 @@ use crate::Db;
 use super::query::{self, Query};
 use super::{
     CountsDto, DocumentDto, EventSink, ImportResult, JobProgress, RescanResult, SETTINGS_KEYS,
-    SearchPage, SettingsDto, TagDto, filename_of, is_pdf_path, normalize_path, title_from_filename,
+    SearchPage, SettingsDto, TagDto, filename_of, is_document_path, normalize_path,
+    title_from_filename,
 };
 
 /// Chunk bound of the import/rescan pipeline (DR-233 as revised by DR-279):
@@ -296,7 +297,8 @@ fn validate_tags(conn: &Connection, tag_ids: &[i64]) -> Result<(), AppError> {
 
 // ------------------------------------------------------------------ import
 
-/// Import pipeline (importing-pdfs.md): filter to `.pdf`, stat, insert in
+/// Import pipeline (importing-pdfs.md): filter to the supported document
+/// types — `.pdf` and `.epub` (§3.4, UI-46), stat, insert in
 /// short per-chunk transactions with duplicate skip (FR-11), metadata
 /// extraction with filename fallback (FR-05), tag auto-assignment
 /// (FR-10), cover jobs enqueued after each commit — the command returns as
@@ -322,7 +324,7 @@ pub fn import_paths(
     let mut seen: HashSet<String> = HashSet::new();
     for path in paths {
         let normalized = normalize_path(path);
-        if !is_pdf_path(&normalized) {
+        if !is_document_path(&normalized) {
             skipped.push(normalized);
             continue;
         }
@@ -354,11 +356,9 @@ pub fn import_paths(
     for chunk in candidates.chunks(CHUNK) {
         // Extraction is the slow stage (M3): it runs with no connection
         // held, so every other command keeps answering while an import does.
-        let prepared: Vec<(String, i64, i64, crate::pdfmeta::Extracted)> = chunk
+        let prepared: Vec<(String, i64, i64, ExtractedFacts)> = chunk
             .iter()
-            .map(|(path, size, mtime)| {
-                (path.clone(), *size, *mtime, crate::pdfmeta::extract(path))
-            })
+            .map(|(path, size, mtime)| (path.clone(), *size, *mtime, extract_facts(path)))
             .collect();
         let (added, jobs, duplicates) = db.with_raw(|conn| import_chunk(conn, &prepared, tag_ids))?;
         skipped.extend(duplicates);
@@ -378,12 +378,46 @@ pub fn import_paths(
     Ok(ImportResult { imported, skipped })
 }
 
+/// The facts the import pipeline stores per document (§3.4 extraction
+/// dispatch): `.pdf` → `pdfmeta` untouched, `.epub` → the two-phase package
+/// read (§3.2, FR-22). An unreadable EPUB is the filename fallback here like
+/// any other unreadable file (M17); its typed error surfaces when the app is
+/// asked to open the package. The cover reference needs no carrying here:
+/// the cover worker dispatches on the path's extension (§3.3).
+struct ExtractedFacts {
+    title: Option<String>,
+    author: Option<String>,
+}
+
+fn extract_facts(path: &str) -> ExtractedFacts {
+    if Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("epub"))
+    {
+        return match crate::epubmeta::extract(path) {
+            Ok(meta) => ExtractedFacts {
+                title: meta.title,
+                author: meta.author,
+            },
+            Err(_) => ExtractedFacts {
+                title: None,
+                author: None,
+            },
+        };
+    }
+    let extracted = crate::pdfmeta::extract(path);
+    ExtractedFacts {
+        title: extracted.title,
+        author: extracted.author,
+    }
+}
+
 /// One candidate chunk inside one short transaction (DR-233). The insertion
 /// semantics are the released ones unchanged: `INSERT OR IGNORE` carries the
 /// duplicate skip (FR-11) exactly as the released tests assert it.
 fn import_chunk(
     conn: &mut Connection,
-    prepared: &[(String, i64, i64, crate::pdfmeta::Extracted)],
+    prepared: &[(String, i64, i64, ExtractedFacts)],
     tag_ids: &[i64],
 ) -> Result<(i64, Vec<CoverJob>, Vec<String>), AppError> {
     let tx = conn.transaction()?;
@@ -430,7 +464,8 @@ fn import_chunk(
     Ok((imported, jobs, skipped))
 }
 
-/// One-time folder import: recursive walk for `*.pdf` (DR-50a) — the walk
+/// One-time folder import: recursive walk for both document types
+/// (`*.pdf`, `*.epub` — DR-50a extended by §3.4/AC-126) — the walk
 /// is filesystem-only and happens before any connection is acquired
 /// (DR-233) — then the same pipeline.
 pub fn import_folder(
@@ -441,11 +476,11 @@ pub fn import_folder(
     tag_ids: &[i64],
 ) -> Result<ImportResult, AppError> {
     let mut paths: Vec<String> = Vec::new();
-    collect_pdfs(Path::new(dir), &mut paths);
+    collect_documents(Path::new(dir), &mut paths);
     import_paths(db, sink, covers_queue, &paths, tag_ids)
 }
 
-fn collect_pdfs(dir: &Path, out: &mut Vec<String>) {
+fn collect_documents(dir: &Path, out: &mut Vec<String>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -455,10 +490,10 @@ fn collect_pdfs(dir: &Path, out: &mut Vec<String>) {
             continue;
         };
         if file_type.is_dir() {
-            collect_pdfs(&path, out);
+            collect_documents(&path, out);
         } else if file_type.is_file()
             && let Some(text) = path.to_str()
-            && is_pdf_path(text)
+            && is_document_path(text)
         {
             out.push(text.to_string());
         }
@@ -701,7 +736,8 @@ pub fn delete_documents(
 /// FR-12: point an entry at a new path. Validation errors are typed so the
 /// Relink dialog can show them inline (not a bare toast). Auto-titled
 /// documents re-derive their title from the new filename; user titles are
-/// preserved.
+/// preserved. Relink is type-matched (AC-128, §3.4): the new path must
+/// carry the stored document's own extension.
 pub fn relink_document(
     conn: &mut Connection,
     sink: &dyn EventSink,
@@ -710,27 +746,30 @@ pub fn relink_document(
     new_path: &str,
 ) -> Result<DocumentDto, AppError> {
     let normalized = normalize_path(new_path);
-    if !is_pdf_path(&normalized) {
-        return Err(AppError::NotPdf { path: normalized });
+    if !is_document_path(&normalized) {
+        return Err(AppError::UnsupportedType { path: normalized });
     }
     let metadata = fs::metadata(&normalized).map_err(|error| AppError::Io {
         path: normalized.clone(),
         message: error.to_string(),
     })?;
     if !metadata.is_file() {
-        return Err(AppError::NotPdf { path: normalized });
+        return Err(AppError::UnsupportedType { path: normalized });
     }
 
-    let title_source: Option<String> = conn
+    let stored: Option<(String, String)> = conn
         .query_row(
-            "SELECT title_source FROM documents WHERE id = ?1",
+            "SELECT path, title_source FROM documents WHERE id = ?1",
             params![id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .ok();
-    let Some(title_source) = title_source else {
+    let Some((stored_path, title_source)) = stored else {
         return Err(AppError::DocumentNotFound { id });
     };
+    if !same_document_extension(&stored_path, &normalized) {
+        return Err(AppError::UnsupportedType { path: normalized });
+    }
 
     let filename = filename_of(&normalized);
     let size = metadata.len() as i64;
@@ -765,6 +804,18 @@ pub fn relink_document(
     });
     emit_status(conn, sink)?;
     get_document(conn, &covers_queue.dir, id)
+}
+
+/// AC-128 (§3.4): a relink keeps the document's type — the stored path's
+/// extension and the candidate's extension must agree, case-insensitively.
+fn same_document_extension(stored: &str, candidate: &str) -> bool {
+    match (
+        Path::new(stored).extension(),
+        Path::new(candidate).extension(),
+    ) {
+        (Some(stored_ext), Some(candidate_ext)) => stored_ext.eq_ignore_ascii_case(candidate_ext),
+        _ => false,
+    }
 }
 
 // ------------------------------------------------------------- password (FR-20)
@@ -825,7 +876,9 @@ pub fn set_password(
 /// notes, Reading membership and the stored password belong to the row, not
 /// the name. Validation per DR-266(d): the name is used exactly as entered
 /// (leading/trailing whitespace is a rejection, not a trim); renaming to the
-/// same name is a no-op success. A failed DB write renames the file back —
+/// same name is a no-op success. The extension must stay in the supported
+/// set (FR-21 MODIFIED, DR-285): `.pdf` ↔ `.epub` is a rename, anything
+/// else is the typed rejection. A failed DB write renames the file back —
 /// record and disk stay consistent (spec §3.4 step 4).
 pub fn rename_document(
     conn: &mut Connection,
@@ -878,6 +931,21 @@ pub fn rename_document(
         || new_name.ends_with(' ');
     if rejected {
         return Err(AppError::InvalidName(new_name.to_string()));
+    }
+
+    // FR-21 MODIFIED (§2, DR-285): in a two-type library the extension is
+    // part of the name the user may change. A rename between supported
+    // extensions (`.pdf` ↔ `.epub`) is accepted — the document behaves as
+    // its new type from that moment: the title re-derives under the same
+    // `auto` gate below (the filename fallback rule is identical for both
+    // types), the cover re-enqueues under the new type's parser through the
+    // re-key the released rename already performs (the worker dispatches on
+    // the extension, §3.3). A name outside the supported set is the typed
+    // rejection, before anything moves.
+    if !is_document_path(new_name) {
+        return Err(AppError::UnsupportedType {
+            path: new_name.to_string(),
+        });
     }
 
     // Same name: no-op success, the row returned unchanged (DR-266(d)).
@@ -1101,6 +1169,9 @@ pub fn get_settings(conn: &Connection) -> Result<SettingsDto, AppError> {
         last_filter: db::get_setting(conn, "last_filter")?
             .filter(|v| is_valid_filter(v))
             .unwrap_or_else(|| "all".into()),
+        epub_text_size: db::get_setting(conn, "epub_text_size")?
+            .filter(|v| is_valid_text_size(v))
+            .unwrap_or_else(|| DEFAULT_TEXT_SIZE.into()),
     })
 }
 
@@ -1151,6 +1222,16 @@ fn is_valid_theme(value: &str) -> bool {
     matches!(value, "system" | "light" | "dark")
 }
 
+/// The EPUB reading text-size ladder (SPEC-v0.0.9 §3.13, DR-303 item 5):
+/// exactly the six px steps the reader offers. Anything else is a corrupt
+/// row, never a size — the same pattern as the grid-column clamp.
+const TEXT_SIZE_STEPS: [u32; 6] = [14, 16, 18, 20, 24, 28];
+const DEFAULT_TEXT_SIZE: &str = "18";
+
+fn is_valid_text_size(value: &str) -> bool {
+    value.parse::<u32>().is_ok_and(|v| TEXT_SIZE_STEPS.contains(&v))
+}
+
 pub fn set_setting(
     conn: &Connection,
     sink: &dyn EventSink,
@@ -1168,6 +1249,7 @@ pub fn set_setting(
         "grid_columns" => is_valid_grid_columns(value),
         "theme" => is_valid_theme(value),
         "last_filter" => is_valid_filter(value),
+        "epub_text_size" => is_valid_text_size(value),
         _ => false,
     };
     if !valid {
@@ -1185,7 +1267,7 @@ mod tests {
     use super::*;
     use crate::db::open_in_memory;
     use crate::library::query::{Query, SortDir, SortKey};
-    use crate::testutil::{RecordingSink, TempDir, fixture, fixture_doc};
+    use crate::testutil::{RecordingSink, TempDir, fixture, fixture_doc, fixture_epub};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
@@ -1278,6 +1360,111 @@ mod tests {
     }
 
     #[test]
+    fn import_accepts_epub_documents_and_uses_the_package_metadata() {
+        // AC-126 (pipeline half) + AC-139 (pipeline half): one pipeline,
+        // both types; the EPUB title/author come from the package (§3.2),
+        // an unreadable package lands on the filename fallback like any
+        // other unreadable file (M17), and non-documents are skipped.
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("import-epub");
+        let sink = RecordingSink::default();
+        let (queue, receiver) = covers::test_queue(temp.path().join("covers"));
+        let paths = [
+            "epub-meta.epub",
+            "epub-no-meta.epub",
+            "epub-malformed.epub",
+            "info-title.pdf",
+            "notes.txt",
+        ]
+        .iter()
+        .map(|name| temp.copy_fixture(name).to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+        let result = import_paths(&db, &sink, &queue, &paths, &[]).unwrap();
+        drop(receiver);
+
+        assert_eq!(result.imported, 4);
+        assert_eq!(
+            result.skipped,
+            vec![paths[4].clone()],
+            "non-document is skipped with notice"
+        );
+
+        let rows = on(&db, |conn| {
+            search_document(conn, &queue.dir, &list_query(""), 0, 100)
+                .unwrap()
+                .rows
+        });
+        let by_title = |needle: &str| {
+            rows.iter()
+                .find(|row| row.title == needle)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no row titled {needle} in {:?}",
+                        rows.iter().map(|r| &r.title).collect::<Vec<_>>()
+                    )
+                })
+        };
+        let epub = by_title("Real EPUB Title");
+        assert_eq!(epub.author, "Real EPUB Author");
+        assert_eq!(epub.title_source, "auto");
+        // M17: the unreadable package is imported under its filename.
+        let fallback = by_title("epub-malformed");
+        assert_eq!(fallback.author, "");
+        assert_eq!(fallback.title_source, "auto");
+        // AC-140: a package without metadata follows the filename rule.
+        let no_meta = by_title("epub-no-meta");
+        assert_eq!(no_meta.author, "");
+        assert_eq!(no_meta.title_source, "auto");
+        // The PDF path is untouched by the dispatch.
+        let pdf = by_title("Real Info Title");
+        assert_eq!(pdf.author, "Real Info Author");
+    }
+
+    #[test]
+    fn folder_walk_collects_both_document_types() {
+        // AC-126 (walk half): the recursive walk accepts `.epub` alongside
+        // `.pdf` in one tree and still ignores everything else.
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("walk-epub");
+        let sink = RecordingSink::default();
+        fs::create_dir(temp.path().join("sub")).unwrap();
+        fs::copy(fixture("info-none.pdf"), temp.path().join("root-copy.pdf")).unwrap();
+        fs::copy(fixture("info-none.pdf"), temp.path().join("sub/kept.pdf")).unwrap();
+        fs::copy(
+            fixture_epub("epub-meta.epub"),
+            temp.path().join("sub/book.epub"),
+        )
+        .unwrap();
+        fs::write(temp.path().join("sub/notes.txt"), b"not a document").unwrap();
+        let (queue, receiver) = covers::test_queue(temp.path().join("covers"));
+        let result = import_folder(
+            &db,
+            &sink,
+            &queue,
+            &temp.path().to_string_lossy(),
+            &[],
+        )
+        .unwrap();
+        drop(receiver);
+
+        assert_eq!(result.imported, 3, "pdf at the root, pdf nested, epub nested");
+        assert!(result.skipped.is_empty(), "the walk collects documents only");
+        let titles = on(&db, |conn| {
+            search_document(conn, &queue.dir, &list_query(""), 0, 100)
+                .unwrap()
+                .rows
+                .iter()
+                .map(|row| row.title.clone())
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            titles.contains(&"Real EPUB Title".to_string()),
+            "the nested EPUB entered the pipeline with its package title: {titles:?}"
+        );
+        assert_eq!(titles.iter().filter(|t| t.as_str() == "root-copy").count(), 1);
+    }
+
+    #[test]
     fn import_skips_duplicates_and_auto_assigns_the_selected_tag() {
         let db = test_db(open_in_memory().unwrap());
         let temp = TempDir::new("import-dup");
@@ -1335,6 +1522,10 @@ mod tests {
     #[test]
     fn import_of_ten_thousand_fixtures_stays_within_budget() {
         // AC-01 + NFR-02 (DR-42): the batch completes in under 30 s.
+        // AC-131 (SPEC-v0.0.9 §3.8): the corpus is the mixed one — 9 000
+        // PDFs + 1 000 EPUBs; the budget claim covers the mix, and the
+        // title probe checks one document of each type so the EPUB metadata
+        // path is exercised at the same scale as the PDF path.
         let db = test_db(open_in_memory().unwrap());
         let temp = TempDir::new("import-10k");
         let sink = RecordingSink::default();
@@ -1358,6 +1549,13 @@ mod tests {
         .unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.rows[0].title, "Fixture Doc doc00042");
+        // The EPUB half: the OPF title indexed through epubmeta (AC-129).
+        let epub_page = on(&db, |conn| {
+            search_document(conn, &queue.dir, &list_query("Fixture Doc doc05005"), 0, 10)
+        })
+        .unwrap();
+        assert_eq!(epub_page.total, 1);
+        assert_eq!(epub_page.rows[0].title, "Fixture Doc doc05005");
         assert!(
             elapsed.as_secs() < 30,
             "10 000-document import took {elapsed:?}, budget is 30 s"
@@ -1944,6 +2142,140 @@ mod tests {
             "a missing document cannot be renamed"
         );
     }
+
+    #[test]
+    fn rename_between_supported_extensions_is_accepted_and_re_derives() {
+        // FR-21 MODIFIED (AC-124 rename half, DR-285): `.pdf` ↔ `.epub` is
+        // a rename. The record follows the new name, the `auto` title
+        // re-derives under the same gate (the filename fallback rule is the
+        // same for both types), and the cover re-enqueues under the new key
+        // — the worker picks the new type's parser from the extension (§3.3).
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("rename-type");
+        let sink = RecordingSink::default();
+        let covers_dir = temp.path().join("covers");
+        let (queue, receiver) = covers::test_queue(covers_dir.clone());
+        let as_pdf = import_copy_with(&db, &temp, "info-none.pdf", &sink, &covers_dir);
+        let as_epub = import_copy_with(&db, &temp, "epub-meta.epub", &sink, &covers_dir);
+
+        let to_epub = on(&db, |conn| {
+            rename_document(conn, &sink, &queue, as_pdf.id, "renamed-book.epub")
+        })
+        .expect("a supported extension swap is a rename");
+        assert_eq!(to_epub.filename, "renamed-book.epub");
+        assert_eq!(to_epub.title, "renamed-book", "auto title follows the name");
+        assert!(!fs::exists(&as_pdf.path).unwrap(), "the old path is gone");
+        assert!(fs::exists(&to_epub.path).unwrap(), "the file moved in place");
+
+        let to_pdf = on(&db, |conn| {
+            rename_document(conn, &sink, &queue, as_epub.id, "now-a-pdf.pdf")
+        })
+        .expect("the other direction is the same rule");
+        assert_eq!(to_pdf.filename, "now-a-pdf.pdf");
+        assert_eq!(
+            to_pdf.title, "now-a-pdf",
+            "the package title was auto-derived, so the rename re-derives from the name"
+        );
+
+        // The covers re-enqueue carries the new paths (the released rename
+        // already re-keys; only the two renames enqueued).
+        let mut enqueued = Vec::new();
+        while let Ok(job) = receiver.try_recv() {
+            enqueued.push(job.path);
+        }
+        assert_eq!(
+            enqueued,
+            vec![to_epub.path.clone(), to_pdf.path.clone()],
+            "both renames re-enqueue the cover under the new key"
+        );
+    }
+
+    #[test]
+    fn rename_to_an_unsupported_extension_is_rejected_and_changes_nothing() {
+        // FR-21 MODIFIED (AC-124 rename half): an extension outside the
+        // supported set is the typed rejection naming the supported types —
+        // file, record and covers untouched.
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("rename-unsupported");
+        let sink = RecordingSink::default();
+        let covers_dir = temp.path().join("covers");
+        let (queue, receiver) = covers::test_queue(covers_dir.clone());
+        let document = import_copy_with(&db, &temp, "epub-meta.epub", &sink, &covers_dir);
+
+        for name in ["notes.txt", "book.epub.pdf.txt", "no-extension"] {
+            let result = on(&db, |conn| rename_document(conn, &sink, &queue, document.id, name));
+            assert!(
+                matches!(result, Err(AppError::UnsupportedType { .. })),
+                "{name:?} must be the typed rejection"
+            );
+        }
+
+        assert!(fs::exists(&document.path).unwrap(), "the file did not move");
+        let row = on(&db, |conn| get_document(conn, &covers_dir, document.id)).unwrap();
+        assert_eq!(row.filename, "epub-meta.epub");
+        assert_eq!(row.title, "Real EPUB Title", "the record is untouched");
+        assert!(
+            receiver.try_recv().is_err(),
+            "a rejected rename enqueues nothing"
+        );
+    }
+
+    #[test]
+    fn library_capabilities_work_on_an_epub_document() {
+        // AC-124 (capabilities half): the released capabilities are keyed by
+        // row id and behave identically on an EPUB row — search by title and
+        // by author, tag add/remove, bulk tags, favorite, Reading toggle,
+        // missing detection. (The rename and relink halves are the two tests
+        // above; the UI flows are the UI stage's.)
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("epub-capabilities");
+        let sink = RecordingSink::default();
+        let covers_dir = temp.path().join("covers");
+        let epub = import_copy_with(&db, &temp, "epub-meta.epub", &sink, &covers_dir);
+        let pdf = import_copy_with(&db, &temp, "info-none.pdf", &sink, &covers_dir);
+
+        let found_by = |needle: &str| {
+            on(&db, |conn| {
+                search_document(conn, &covers_dir, &list_query(needle), 0, 100)
+            })
+            .unwrap()
+            .rows
+            .iter()
+            .any(|row| row.id == epub.id)
+        };
+        assert!(found_by("Real EPUB Title"), "search by title");
+        assert!(found_by("Real EPUB Author"), "search by author");
+
+        let tag = on(&db, |conn| tags_create(conn, "shelf")).unwrap();
+        on(&db, |conn| set_document_tags(conn, &sink, epub.id, &[tag.id])).unwrap();
+        let tagged = on(&db, |conn| get_document(conn, &covers_dir, epub.id)).unwrap();
+        assert_eq!(tagged.tags, vec!["shelf".to_string()], "tag add");
+
+        // Bulk operation over a mixed selection: both rows lose the tag.
+        on(&db, |conn| {
+            bulk_tags(conn, &sink, &[epub.id, pdf.id], &[], &[tag.id])
+        })
+        .unwrap();
+        let untagged = on(&db, |conn| get_document(conn, &covers_dir, epub.id)).unwrap();
+        assert!(untagged.tags.is_empty(), "tag remove through bulk_tags");
+
+        let favored = on(&db, |conn| set_favorite(conn, &sink, &covers_dir, epub.id, true)).unwrap();
+        assert!(favored.favorite, "favorite");
+        let reading = on(&db, |conn| set_reading(conn, &sink, &covers_dir, &[epub.id], true))
+            .unwrap();
+        assert!(reading[0].reading, "Reading toggle");
+
+        // Missing detection (AC-124's rescan half; §3.4 verified rescan
+        // carries no extension filter): the EPUB row marks missing exactly
+        // like a PDF row.
+        fs::remove_file(&epub.path).unwrap();
+        let (queue, receiver) = covers::test_queue(covers_dir.clone());
+        let result = rescan(&db, &sink, &queue, false).unwrap();
+        assert_eq!(result.missing_found, 1);
+        let marked = on(&db, |conn| get_document(conn, &covers_dir, epub.id)).unwrap();
+        assert!(marked.missing);
+        drop(receiver);
+    }
     #[test]
     fn delete_library_only_keeps_the_file_delete_with_file_removes_it_and_its_cover() {
         // AC-04 + R5.2, and AC-62's delete half: the reader page cache of
@@ -2071,7 +2403,7 @@ mod tests {
         assert_eq!(on(&db, |conn| get_counts(conn)).unwrap().missing, 0);
 
         // Typed validation for the Relink dialog (relinking.md).
-        let not_pdf = on(&db, |conn| {
+        let unsupported = on(&db, |conn| {
             relink_document(
                 conn,
                 &sink,
@@ -2080,7 +2412,7 @@ mod tests {
                 &temp.path().join("x.txt").to_string_lossy(),
             )
         });
-        assert!(matches!(not_pdf, Err(AppError::NotPdf { .. })));
+        assert!(matches!(unsupported, Err(AppError::UnsupportedType { .. })));
 
         let other = temp.path().join("other.pdf");
         fs::copy(fixture("info-none.pdf"), &other).unwrap();
@@ -2098,6 +2430,48 @@ mod tests {
         assert!(
             matches!(taken, Err(AppError::PathTaken { .. })),
             "a path already in the library is refused"
+        );
+        drop(receiver);
+    }
+
+    #[test]
+    fn relink_is_type_matched() {
+        // AC-128 (§3.4): a missing EPUB is relinked to an EPUB; a type
+        // mismatch — in either direction — is the typed rejection.
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("relink-type");
+        let sink = RecordingSink::default();
+        let epub = import_copy(&db, &temp, "epub-meta.epub", &sink);
+        let pdf = import_copy(&db, &temp, "info-none.pdf", &sink);
+        let (queue, receiver) = covers::test_queue(temp.path().join("covers"));
+
+        let moved_epub = temp.path().join("moved-book.epub");
+        fs::copy(fixture_epub("epub-no-cover.epub"), &moved_epub).unwrap();
+        let moved = on(&db, |conn| {
+            relink_document(conn, &sink, &queue, epub.id, &moved_epub.to_string_lossy())
+        })
+        .expect("an EPUB relinks to an EPUB");
+        assert_eq!(moved.path, moved_epub.to_string_lossy());
+        assert!(!moved.missing);
+
+        let pdf_file = temp.path().join("wrong-type.pdf");
+        fs::copy(fixture("info-none.pdf"), &pdf_file).unwrap();
+        let epub_to_pdf = on(&db, |conn| {
+            relink_document(conn, &sink, &queue, epub.id, &pdf_file.to_string_lossy())
+        });
+        assert!(
+            matches!(epub_to_pdf, Err(AppError::UnsupportedType { .. })),
+            "an EPUB is never relinked to a PDF"
+        );
+
+        let epub_file = temp.path().join("wrong-type.epub");
+        fs::copy(fixture_epub("epub-no-cover.epub"), &epub_file).unwrap();
+        let pdf_to_epub = on(&db, |conn| {
+            relink_document(conn, &sink, &queue, pdf.id, &epub_file.to_string_lossy())
+        });
+        assert!(
+            matches!(pdf_to_epub, Err(AppError::UnsupportedType { .. })),
+            "a PDF is never relinked to an EPUB"
         );
         drop(receiver);
     }
@@ -2404,6 +2778,34 @@ mod tests {
             ]
             .to_vec()
         );
+    }
+
+    #[test]
+    fn epub_text_size_accepts_only_the_ladder_steps() {
+        // SPEC-v0.0.9 §3.9 consequence 6 / §3.13, DR-303 item 5.
+        let conn = open_in_memory().unwrap();
+        let sink = RecordingSink::default();
+        // Nothing written: the ladder's default step.
+        assert_eq!(get_settings(&conn).unwrap().epub_text_size, "18");
+
+        for value in ["14", "16", "18", "20", "24", "28"] {
+            set_setting(&conn, &sink, "epub_text_size", value).unwrap();
+            assert_eq!(get_settings(&conn).unwrap().epub_text_size, value);
+        }
+
+        for value in ["13", "19", "100", "0", "18px", "18 ", ""] {
+            assert!(
+                matches!(
+                    set_setting(&conn, &sink, "epub_text_size", value),
+                    Err(AppError::Validation(_))
+                ),
+                "epub_text_size={value} should be rejected"
+            );
+        }
+
+        // A corrupt row written outside this boundary reads back as the default.
+        db::set_setting(&conn, "epub_text_size", "999").unwrap();
+        assert_eq!(get_settings(&conn).unwrap().epub_text_size, "18");
     }
 
     #[test]

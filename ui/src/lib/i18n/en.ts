@@ -25,10 +25,12 @@ const en = {
 
   // Toolbar
   "toolbar.clearSearch": "Clear search",
-  // UI-44 (AC-114): every import entry point names the thing that is imported
-  // — PDFs — and the folder picker names its container.
-  "toolbar.import": "Import PDFs",
-  "toolbar.importFiles": "Import PDFs",
+  // UI-44 (AC-114/AC-130): every import entry point names the thing that is
+  // imported — "files", the general wording, per OQ-55 closed → A (option A):
+  // no control names one type while the library accepts both. The folder
+  // picker names its container.
+  "toolbar.import": "Import files",
+  "toolbar.importFiles": "Import files",
   "toolbar.importFolder": "Import folder",
   // UI-29 (AC-115): the import menu shows the shortcut each item opens.
   "toolbar.importFiles.keys": "Ctrl+I",
@@ -95,8 +97,9 @@ const en = {
   "window.restore": "Restore",
   "window.close": "Close",
 
-  // Drag-and-drop overlay (importing-pdfs spec, UI section)
-  "drop.title": "Drop PDFs to add them",
+  // Drag-and-drop overlay (importing-pdfs spec, UI section). DR-304: the
+  // drop target is an import entry point (UI-46) — its title names no type.
+  "drop.title": "Drop files to add them",
   "drop.toTag": "Adds to {tags}",
 
   // Selection and bulk bar
@@ -125,8 +128,8 @@ const en = {
 
   // Empty states
   "empty.library.title": "Your library is empty",
-  "empty.library.body": "Import PDFs to get started — files stay where they are.",
-  "empty.library.action": "Import PDFs",
+  "empty.library.body": "Import PDFs or EPUBs to get started — files stay where they are.",
+  "empty.library.action": "Import files",
   // UI-29 (DR-118): the key combinations are catalog values, not markup (R4.1).
   "empty.library.keys": "Ctrl+I",
   // UI-29 as modified (AC-115, DR-272/DR-275): the folder path is an action
@@ -143,7 +146,7 @@ const en = {
   "empty.reading.body": "Use the Reading action on a document to gather it here.",
   "empty.tag.title": "This tag is empty",
   "empty.tag.body": "Import into this tag or assign documents to it.",
-  "empty.tag.action": "Import PDFs",
+  "empty.tag.action": "Import files",
   "empty.missing.title": "No missing documents",
   "empty.missing.body": "Every document's file was found.",
 
@@ -205,24 +208,26 @@ const en = {
   "renameDialog.errorInvalid": "This name can't be used as a file name",
   "renameDialog.errorConflict": "A file with this name already exists in that folder",
 
-  // Delete dialog
+  // Delete dialog. DR-304: the copy names no type — the dialog is reachable
+  // for every managed document type.
   "delete.title.one": "Delete {count} document?",
   "delete.title.other": "Delete {count} documents?",
-  "delete.body": "The PDF files stay on disk unless you choose to delete them too.",
+  "delete.body": "The files stay on disk unless you choose to delete them too.",
   "delete.fromLibrary": "Delete from library",
   "delete.withFiles": "Delete with files",
-  "delete.fileNote": "This also deletes the PDF files themselves.",
+  "delete.fileNote": "This also deletes the files themselves.",
 
   // Relink dialog
   "relink.title": "Relink missing document",
   "relink.body": "The document is in the library, but its file was not found.",
   "relink.storedPath": "Last known location",
   "relink.chooseNew": "Choose new file",
-  "relink.errorMissing": "The file you chose is not a readable PDF.",
+  "relink.errorMissing": "The file you chose is not a readable PDF or EPUB.",
 
-  // Toasts and confirmations
-  "toast.imported.one": "Imported {count} PDF",
-  "toast.imported.other": "Imported {count} PDFs",
+  // Toasts and confirmations. DR-304: the import-complete toast names no
+  // type — it reports what actually happened for every managed type.
+  "toast.imported.one": "Imported {count} file",
+  "toast.imported.other": "Imported {count} files",
   "toast.importSkipped.one": "{count} document skipped (already in library)",
   "toast.importSkipped.other": "{count} documents skipped (already in library)",
   "toast.deleted.one": "Deleted {count} document",
@@ -274,6 +279,16 @@ const en = {
   "reader.password.unlock": "Unlock",
   "reader.password.remove": "Remove password",
   "reader.password.wrong": "That password does not open this document",
+  // v0.0.9: the EPUB reading surface (FR-21, UI-48, SPEC-v0.0.9 §3.13).
+  "reader.epub.error": "This book cannot be opened in the reader.",
+  "reader.epub.chapter": "Chapter {number}",
+  "reader.epub.chapterError": "This chapter could not be read.",
+  "reader.epub.position": "Book position: {percent}% of {chapter}",
+  "reader.epub.positionReadout": "{percent}% · {chapter}",
+  "reader.epub.positionJump": "Jump to a book position (percent)",
+  "reader.epub.textSize": "Text size: {size} px",
+  "reader.epub.textSizeDecrease": "Decrease text size",
+  "reader.epub.textSizeIncrease": "Increase text size",
 
   // Accessibility
   "a11y.documentList": "Document list",

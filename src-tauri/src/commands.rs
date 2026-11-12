@@ -5,6 +5,7 @@
 use tauri::{AppHandle, Manager, State};
 
 use crate::error::{AppError, AppErrorPayload};
+use crate::epubsrv;
 use crate::library::query::{self, Query};
 use crate::library::service;
 use crate::library::{
@@ -465,10 +466,19 @@ pub async fn app_open_reader_window(
         return Ok(OpenedReaderDto { opened: "focused" });
     }
     let reader_dir = app.state::<Reader>().dir.clone();
+    // DR-303 item 1 (SPEC-v0.0.9 §3.5): the type branch happens here, on the
+    // resolved path, before the window exists — the window URL names the kind
+    // the route renders, so no PDF reader machinery can run for an EPUB and
+    // none for a PDF (AC-125). Same window kind, same plumbing.
+    let kind = if epubsrv::is_epub_path(&target.path) {
+        "epub"
+    } else {
+        "pdf"
+    };
     let built = tauri::WebviewWindowBuilder::new(
         &app,
         &label,
-        tauri::WebviewUrl::App(format!("index.html?reader={id}").into()),
+        tauri::WebviewUrl::App(format!("index.html?reader={id}&kind={kind}").into()),
     )
     .title(&target.filename) // DR-140: the window title is the document filename
     .decorations(false) // UI-30/OQ-40-B: frameless like the shipped main window
@@ -577,6 +587,28 @@ pub async fn app_pdf_outline(
     background(app, move |db, _covers, _sink| {
         let target = db.with(|conn| service::open_target(conn, id))?;
         pdfmeta::outline(&target.path).map_err(|error| error.payload())
+    })
+    .await
+}
+
+/// Reading manifest for the EPUB reader window (§3.9 consequence 8, FR-23,
+/// DR-301 item 11): resolved through `service::open_target` first — a
+/// missing row or file yields the typed payload before any file read
+/// (the AC-77 pattern) — then the extension check (a PDF document asked for
+/// an EPUB manifest is the typed `UnsupportedType`), then the reading-stage
+/// package read (an unreadable package is `EpubUnopenable`, DR-298). The
+/// reading facts are read once at first open, never by import (§3.12 rule 1).
+#[tauri::command]
+pub async fn app_epub_manifest(
+    app: AppHandle,
+    id: i64,
+) -> Result<epubsrv::ManifestDto, AppErrorPayload> {
+    background(app, move |db, _covers, _sink| {
+        let target = db.with(|conn| service::open_target(conn, id))?;
+        if !epubsrv::is_epub_path(&target.path) {
+            return Err(AppError::UnsupportedType { path: target.path }.payload());
+        }
+        epubsrv::manifest(id, &target.path).map_err(|error| error.payload())
     })
     .await
 }

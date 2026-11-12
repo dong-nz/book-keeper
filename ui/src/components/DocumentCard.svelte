@@ -206,6 +206,14 @@
     position: absolute;
     right: 8px;
     bottom: 8px;
+    /* DR-309 (D27, user option A): the pill's ground must not steal the
+       hover of the text lines it overlaps — the slot is transparent to
+       pointer events; the action buttons themselves stay interactive. */
+    pointer-events: none;
+  }
+
+  .actions-slot :global(button) {
+    pointer-events: auto;
   }
 
   /* UI-03 as modified (DR-184, §3.8): the action ground — one compact pill

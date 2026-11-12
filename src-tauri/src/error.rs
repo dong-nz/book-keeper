@@ -17,10 +17,12 @@ pub enum AppError {
     DocumentNotFound { id: i64 },
     #[error("Missing from disk: {path}")]
     MissingFile { path: String, document_id: i64 },
-    #[error("Not a PDF file: {path}")]
-    NotPdf { path: String },
+    #[error("Unsupported document type (PDF or EPUB): {path}")]
+    UnsupportedType { path: String },
     #[error("Cannot read PDF: {path}")]
     PdfUnopenable { path: String },
+    #[error("Cannot read EPUB: {path}")]
+    EpubUnopenable { path: String },
     #[error("Password required: {path}")]
     PasswordRequired {
         path: String,
@@ -67,8 +69,9 @@ impl AppError {
             AppError::MissingFile { path, document_id } => {
                 ("missing_file", path.clone(), Some(*document_id), None)
             }
-            AppError::NotPdf { path } => ("not_pdf", path.clone(), None, None),
+            AppError::UnsupportedType { path } => ("unsupported_type", path.clone(), None, None),
             AppError::PdfUnopenable { path } => ("pdf_unopenable", path.clone(), None, None),
+            AppError::EpubUnopenable { path } => ("epub_unopenable", path.clone(), None, None),
             AppError::PasswordRequired { path, stored } => (
                 "password-required",
                 path.clone(),
