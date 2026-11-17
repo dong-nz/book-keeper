@@ -1,6 +1,6 @@
 # Sorting and views
 
-> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.7 and v0.0.8** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.7, v0.0.8 and v0.0.10** — verified by running the app.
 
 ## Sorting
 Toolbar selector offers: title, date added, file size — ascending or descending. Default is title A→Z. Favorites are pinned above everything else. Your choice is remembered between sessions.
@@ -50,3 +50,10 @@ The sidebar has a collapse control (its chevron, at the bottom of the sidebar). 
 > - The star / details / delete icons stay in their straight column, and the row's text keeps its left/right margins — only the cover and the row's height change.
 >
 > Grid cards, their cover fitting, and the 12 px gap under the toolbar are unchanged; sorting, column controls and grid sizing are unchanged.
+
+> **Amendment (2026-11-17, v0.0.10): list covers are bigger again** (verified by running the app, at both ordinary and 10 000-document scale).
+>
+> - **A plain list row is 157 px** instead of 122, and its cover thumbnail is **100×141** with the same even 8 px margin above and below it. A row that shows an author and notes is still taller by one line each.
+> - The star / details / delete icons stay in their straight column, the text keeps its margins, and the loading placeholders match the new row exactly. The list stays smooth at 10 000 documents — measured again on the test machine.
+>
+> Grid cards, sorting, column controls and everything else on this page are unchanged.

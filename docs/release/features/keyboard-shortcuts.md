@@ -1,6 +1,6 @@
 # Keyboard shortcuts
 
-> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.6, v0.0.7 and v0.0.8** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.6, v0.0.7, v0.0.8, v0.0.9 and v0.0.10** — verified by running the app.
 
 | Keys | Action |
 |---|---|
@@ -66,3 +66,14 @@ The full app is keyboard-operable: sidebar, toolbar, document rows, dialogs (foc
 > | `Esc` | Closes the contents panel first if it's open; otherwise the window |
 >
 > There is no page-turn key set and no zoom keys in a book window: a book adapts to the window, and its text size is changed with the size buttons in the bottom bar, not with keys. The guard rule holds here too: while you're typing in the jump-to-position field, or while the contents panel or a menu is open, these keys belong to that thing. `Ctrl+I` / `Ctrl+O` now accept both file types; every shortcut in the tables above and in the earlier amendments is unchanged.
+
+> **Amendment (2026-11-17, v0.0.10): the Continuous horizontal reading mode has its keys** (verified in the running app). In a PDF reading window switched to **Continuous horizontal** — pages in one sideways row ([reading-pdfs.md](reading-pdfs.md)) — the keys run along the row:
+>
+> | Keys (in a Continuous horizontal window) | Action |
+> |---|---|
+> | `←` / `→` | Previous / next page along the row — exactly like the strip's buttons |
+> | `↑` / `↓` | Scroll the row sideways one notch — the keyboard counterpart of the wheel |
+> | `PageUp` / `PageDown` | Travel one window-width along the row |
+> | `Home` / `End` | Jump to the first / last page |
+>
+> The zoom keys (`Ctrl` + `+` / `Ctrl` + `−`, `Ctrl+0` / `Ctrl+1` / `Ctrl+2`) and `Esc` work as before, and the guard rule is unchanged: while you're typing in the page field, or while the contents panel or a menu is open, these keys belong to that thing. The keys of the other reading modes, the book window, and the library are unchanged.

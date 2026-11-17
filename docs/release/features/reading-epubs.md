@@ -1,6 +1,6 @@
 # Reading books (EPUBs)
 
-> **Status: ✅ Shipped in v0.0.9** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.9, updated in v0.0.10** — verified by running the app.
 
 PDF Keeper now reads **EPUB books inside itself**, in their own window, the way it reads PDFs ([reading-pdfs.md](reading-pdfs.md)). A book is one continuous, flowing text — it adapts to the window's width and to the text size you choose, and you read it by scrolling, the way you'd read it on any e-reader.
 
@@ -35,3 +35,10 @@ The strip at the bottom of the window holds everything for working with a book:
 ## Speed
 
 Books open quickly. Measured on the test machine: a book with a 1 MB chapter shows its first readable text about 0.3 s after opening, and scrolling a long book keeps up with the wheel.
+
+> **Amendment (2026-11-17, v0.0.10): the book window gets the same two conveniences the PDF reader has** (verified by running the app).
+>
+> - **You can pin the contents panel.** The contents panel's top bar carries the **pin** control, exactly as in a PDF reading window ([reading-pdfs.md](reading-pdfs.md)). Pinned, it docks as a permanent side panel at the left edge of the book window, and the text re-wraps to fill the narrower reading area — you can keep jumping through the book's contents while the panel stays open. `Esc` closes the panel first; a pinned panel returns at the same docked spot when shown again; the pin lasts for that window, and unpinning restores the temporary behavior.
+> - **The book window has a settings control.** A settings button sits at the right end of the window's top bar, just left of the window buttons — the same menu as in a PDF reading window and in the library: appearance (Light / Dark / Auto), **Settings**, **Check for updates**.
+>
+> Everything else about reading books — the text, its size, position, links, selection — is unchanged.

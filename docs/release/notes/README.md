@@ -16,6 +16,8 @@ Pages are written **in the release Ship commit**, from that release's change sum
 | v0.0.6 | [v0.0.6.md](v0.0.6.md) | ✅ Released 2026-11-07 |
 | v0.0.7 | [v0.0.7.md](v0.0.7.md) | ✅ Released 2026-11-09 |
 | v0.0.8 | [v0.0.8.md](v0.0.8.md) | ✅ Released 2026-11-10 |
+| v0.0.9 | [v0.0.9.md](v0.0.9.md) | ✅ Released 2026-11-12 (the post-Ship Phase C skipped at the user's decision, recorded in the page's known-issues section) |
+| v0.0.10 | [v0.0.10.md](v0.0.10.md) | ✅ Released 2026-11-17 |
 
 ## Rules (AGENTS §2a, RULES R8.5)
 

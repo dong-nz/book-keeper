@@ -1,6 +1,6 @@
 # Settings and appearance
 
-> **Status: ✅ Shipped in v0.0.3, updated in v0.0.4, v0.0.6 and v0.0.7** — verified by running the app, including what survives a restart.
+> **Status: ✅ Shipped in v0.0.3, updated in v0.0.4, v0.0.6, v0.0.7 and v0.0.10** — verified by running the app, including what survives a restart.
 
 At the right end of the top bar, just left of the window buttons, is the **Settings** button. It opens a small menu with everything that changes how the application looks and where to find out what it is.
 
@@ -51,3 +51,9 @@ The menu's last item, **About PDF Keeper…**, opens the window that shows the a
 > - **The Settings dialog changed shape.** Its *Library* section (counts, name, version) is gone — those counts live in the Browse menu, and the version is in *About PDF Keeper*. The dialog now holds the appearance controls and a new **Data location** section: the exact folder holding your index and cover thumbnails, shown as before (selectable text, not changeable), plus an icon button that **opens that folder in your system's file manager**.
 >
 > Everything else — the Settings button's place, *About PDF Keeper*, the shared View settings, `Esc` closing dialogs, scrollbars following your choice — is unchanged.
+
+> **Amendment (2026-11-17, v0.0.10): the Settings menu is now also in the reading windows** (verified by running the app, in a PDF window and in a book window).
+>
+> - At the right end of a reading window's top bar, just left of the window buttons, there's a **settings button**. Its menu is the same Settings menu as in the library window — the appearance choice (System / Light / Dark, the same cycling action) and *Settings* — and the *Check for updates* item ([keeping-the-app-updated.md](keeping-the-app-updated.md)).
+> - *Settings* opens the same Settings window, inside the reading window you opened it from. The appearance choice works from there exactly as from the library: the change applies live to every open window, including other reading windows, and is remembered as before.
+> - Nothing about the menu in the library window changed, and the Settings window holds the same settings as before.

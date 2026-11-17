@@ -9,7 +9,7 @@ How the application works for you: what it does and how to use it. Written in pl
 | 📝 **Draft** | Planned for a future release, but the application does not do this yet — the text describes planned behavior, not verified behavior |
 | ✅ **Shipped in v…** | Implemented and tested; the text describes real behavior |
 
-**Current state: v0.0.1 through v0.0.9 are shipped.** Pages below marked ✅ describe the built application, verified by running it (Windows). v0.0.9 ships for Windows only; macOS and Linux builds come with a later release, and their behavior is described from the same design rather than from a test on that hardware. Pages marked *updated in v…* carry dated Amendment notes describing what changed for the user in those releases; the original text stays so you can see what changed. For what a release changed as a whole, read [the release notes](../notes/).
+**Current state: v0.0.1 through v0.0.10 are shipped.** Pages below marked ✅ describe the built application, verified by running it (Windows). v0.0.10 ships for Windows only; macOS and Linux builds come with a later release, and their behavior is described from the same design rather than from a test on that hardware. Pages marked *updated in v…* carry dated Amendment notes describing what changed for the user in those releases; the original text stays so you can see what changed. For what a release changed as a whole, read [the release notes](../notes/).
 
 ## Pages
 
@@ -23,16 +23,17 @@ How the application works for you: what it does and how to use it. Written in pl
 | [searching.md](searching.md) | Finding documents | ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.8 and v0.0.9 |
 | [metadata-editing.md](metadata-editing.md) | Titles, authors, notes | ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.8 and v0.0.9 |
 | [favorites.md](favorites.md) | Starring documents you use often | ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4 and v0.0.8 |
-| [sorting-and-views.md](sorting-and-views.md) | Ordering, list and grid views, columns | ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.7 and v0.0.8 |
+| [sorting-and-views.md](sorting-and-views.md) | Ordering, list and grid views, columns | ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.7, v0.0.8 and v0.0.10 |
 | [covers.md](covers.md) | Cover thumbnails in the list | ✅ Shipped in v0.0.1, updated in v0.0.3, v0.0.4, v0.0.5, v0.0.7, v0.0.8 and v0.0.9 |
 | [opening-and-deleting.md](opening-and-deleting.md) | Opening a document, removing documents | ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.6, v0.0.8 and v0.0.9 |
-| [reading-pdfs.md](reading-pdfs.md) | Reading documents inside PDF Keeper: the reading window, view modes, navigation, contents, zoom | ✅ Shipped in v0.0.6, updated in v0.0.7, v0.0.8 and v0.0.9 |
-| [reading-epubs.md](reading-epubs.md) | Reading books (EPUBs) inside PDF Keeper: the book window, contents, position, text size | ✅ Shipped in v0.0.9 |
+| [reading-pdfs.md](reading-pdfs.md) | Reading documents inside PDF Keeper: the reading window, view modes, navigation, contents, zoom | ✅ Shipped in v0.0.6, updated in v0.0.7, v0.0.8, v0.0.9 and v0.0.10 |
+| [reading-epubs.md](reading-epubs.md) | Reading books (EPUBs) inside PDF Keeper: the book window, contents, position, text size | ✅ Shipped in v0.0.9, updated in v0.0.10 |
 | [missing-files-relinking.md](missing-files-relinking.md) | When a file moved or disappeared | ✅ Shipped in v0.0.1, updated in v0.0.3, v0.0.4, v0.0.7, v0.0.8 and v0.0.9 |
 | [status-feedback.md](status-feedback.md) | Library counts and action results | ✅ Shipped in v0.0.1, updated in v0.0.3, v0.0.4, v0.0.7, v0.0.8 and v0.0.9 |
-| [keyboard-shortcuts.md](keyboard-shortcuts.md) | Keyboard shortcuts | ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.6, v0.0.7, v0.0.8 and v0.0.9 |
+| [keyboard-shortcuts.md](keyboard-shortcuts.md) | Keyboard shortcuts | ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.6, v0.0.7, v0.0.8, v0.0.9 and v0.0.10 |
 | [selecting-documents.md](selecting-documents.md) | Clicking, selecting, and working with a selection | ✅ Shipped in v0.0.3, updated in v0.0.4, v0.0.7 and v0.0.8 |
-| [settings-and-appearance.md](settings-and-appearance.md) | Light or dark, the settings window, About | ✅ Shipped in v0.0.3, updated in v0.0.4, v0.0.6 and v0.0.7 |
+| [settings-and-appearance.md](settings-and-appearance.md) | Light or dark, the settings window, About | ✅ Shipped in v0.0.3, updated in v0.0.4, v0.0.6, v0.0.7 and v0.0.10 |
+| [keeping-the-app-updated.md](keeping-the-app-updated.md) | The app finding and installing newer versions of itself | ✅ Shipped in v0.0.10 |
 | [reading-collection.md](reading-collection.md) | Keeping the documents you're reading in one collection | ✅ Shipped in v0.0.8 |
 | [password-protected-pdfs.md](password-protected-pdfs.md) | Opening PDFs that need a password | ✅ Shipped in v0.0.8 |
 | [renaming-a-documents-file.md](renaming-a-documents-file.md) | Changing a document's file name from inside the app | ✅ Shipped in v0.0.8, updated in v0.0.9 |

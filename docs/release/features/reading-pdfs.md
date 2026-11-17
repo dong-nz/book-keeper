@@ -1,6 +1,6 @@
 # Reading PDFs
 
-> **Status: ✅ Shipped in v0.0.6, updated in v0.0.7, v0.0.8 and v0.0.9** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.6, updated in v0.0.7, v0.0.8, v0.0.9 and v0.0.10** — verified by running the app.
 
 PDF Keeper now opens documents **inside itself**. Double-click a document (or press `Enter` on a focused row, or choose **Open** in its right-click menu) and the document opens in its own reading window — no other application needs to start.
 
@@ -55,3 +55,12 @@ Opening a document with your system's PDF application is still there — it just
 > Everything else about reading — view modes, contents, navigation, keys, the strip — is unchanged.
 
 > **Amendment (2026-11-12, v0.0.9): opening a document no longer flashes** (verified in the running app). Earlier, a reading window showed an empty moment for a beat before the first page appeared — a visible flash. The first page now arrives with a short, smooth cross-fade: the document appears as one continuous motion, and the same fade covers switching a document's view mode. Opening speed is unchanged — measured on the test machine, the first page of a 192-page document still appears in about 0.37 s from the double-click. Everything else about reading is unchanged. Books (EPUBs) open in their own window, described in [reading-epubs.md](reading-epubs.md).
+
+> **Amendment (2026-11-17, v0.0.10): a fourth view mode, a pinnable contents panel, and a settings menu in the reading window** (all verified by running the app).
+>
+> - **Continuous horizontal.** The view control now offers a fourth mode: **Continuous horizontal** — pages side by side in one long row, like a film strip, and you read it by scrolling sideways (with the wheel or by dragging). It suits wide, landscape-shaped documents and comparing pages next to each other. Its keys run along the row: `←` / `→` move to the previous / next page, `PageUp` / `PageDown` travel one window-width along the row, `↑` / `↓` scroll the row sideways by one notch, `Home` / `End` jump to the first / last page, and the page field jumps to the page you type. *Fit width* fits the page you're currently looking at. Switching into or out of the mode keeps the page you were reading exactly where it was. Like the other modes, the choice applies to that window only and is not remembered — a new window still starts in Continuous. Pages arrive at the same measured speed as in the other modes.
+> - **You can pin the contents panel.** The contents panel's top bar now carries a **pin** control at its right end (its icon shows which state you're in). Clicking it docks the panel as a permanent side panel at the left edge of the reading window: the pages re-arrange into the remaining space, *Fit width* follows the narrower area, and clicking a contents entry no longer closes the panel — you can keep jumping through a book while its contents stay open. `Esc` still closes the panel first, and a pinned panel comes back at the same docked spot when you show it again; the pin lasts as long as that reading window is open (a new window starts unpinned). Unpinning through the pin control restores the old temporary behavior.
+> - **The reading window has a settings control.** A settings button now sits at the right end of the top bar, just left of the window buttons. Its menu is the same Settings menu you know from the library window: choose the appearance (Light / Dark / Auto — the change applies everywhere, live), open the **Settings** window inside the reading window, or **Check for updates** ([settings-and-appearance.md](settings-and-appearance.md), [keeping-the-app-updated.md](keeping-the-app-updated.md)).
+> - **A small drawing fix while pages arrive.** Pages fade in as before (v0.0.9); during the fade no placeholder icon ever shows — earlier a small "broken image" icon could flash.
+>
+> Everything else about reading — the other modes, navigation, zoom, page speed, opening with another application — is unchanged.
