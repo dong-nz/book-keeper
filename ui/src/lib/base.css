@@ -296,6 +296,14 @@ textarea {
   border-radius: var(--radius-menu) var(--radius-menu) 0 0;
   background: var(--surface-0);
   border-bottom: 1px solid var(--border-hairline);
+  /* UI-49: the row recipe IS a flex row — the pin's `margin-left: auto`
+     needs a flex container, and the docked presentation carries this class
+     without `.menu-item` (it is not a menu item; DR-342). The overlay row
+     already flexed through `.menu-item`; now both rows lay out identically
+     from one rule. */
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .toc-panel .toc-toolbar[data-highlighted],

@@ -1,15 +1,15 @@
 // The reader's core invariants (SPEC-v0.0.6 §3.3, view-mode semantics per
-// SPEC-v0.0.7 §3.6 including the DR-224 navigation direction, the zoom
-// re-anchor per §3.16 and the ToC tree per §3.5 including the DR-223
-// toolbar toggle): page geometry is exact math from the document's own
-// point sizes, the zoom model anchors to the page's actual size and walks
-// only the fixed steps, image requests stay inside the command's accepted
-// range, a typed page failure becomes the window's error state, the view
-// modes keep one state source and the current page across a mode switch,
-// the ToC tree hides whole subtrees under the collapse set and its toolbar
-// toggle alternates, and navigation records the direction the last movement
-// took. These are the numbers AC-65/72/78/79/80/96 measure in the real
-// app; the math itself is proven here.
+// SPEC-v0.0.7 §3.6 including the DR-224 navigation direction, the continuous
+// horizontal row per SPEC-v0.0.10 §3.2, the zoom re-anchor per §3.16 and the
+// ToC tree per §3.5 including the DR-223 toolbar toggle): page geometry is
+// exact math from the document's own point sizes, the zoom model anchors to
+// the page's actual size and walks only the fixed steps, image requests stay
+// inside the command's accepted range, a typed page failure becomes the
+// window's error state, the view modes keep one state source and the current
+// page across a mode switch, the ToC tree hides whole subtrees under the
+// collapse set and its toolbar toggle alternates, and navigation records the
+// direction the last movement took. These are the numbers AC-65/72/78/79/80/
+// 96 and AC-143…146 measure in the real app; the math itself is proven here.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -213,6 +213,72 @@ describe("view modes (UI-34)", () => {
     expect(store.currentPage).toBe(3);
   });
 
+  it("horizontal fit-width fits the current page to the viewport — the released fit base, not half a row", () => {
+    const store = storeAt(816);
+    store.setViewMode("horizontal");
+    // AC-146: the row does not halve the fit base (the facing rule is a
+    // pair-row rule); the current page fits the viewport width.
+    expect(store.pageWidth(1)).toBeCloseTo(816, 6);
+  });
+
+  it("the row's offsets are the pages' display widths plus the gap — per-page for mixed sizes", () => {
+    const store = storeAt(816);
+    store.setViewMode("horizontal");
+    store.setZoomPercent(100); // actual sizes: the landscape page is wider than the portrait ones
+    const offsets = store.rowXOffsets();
+    const widths = [1, 2, 3].map((page) => store.pageWidth(page));
+    expect(widths[2]).toBeGreaterThan(widths[0]);
+    expect(offsets[1]).toBeCloseTo(widths[0] + PAGE_GAP, 6); // the x-axis counterpart of the row step
+    expect(offsets[2]).toBeCloseTo(widths[0] + widths[1] + 2 * PAGE_GAP, 6);
+  });
+
+  it("the field follows the viewport's horizontal center; jumps and steps move one page along the row", () => {
+    const store = storeAt(816);
+    store.setViewMode("horizontal");
+    store.viewportWidth = 1000;
+    const offsets = store.rowXOffsets();
+    store.scrollLeft = offsets[1] - 500; // the center lands on the second page's left edge
+    expect(store.currentPage).toBe(2);
+    const delivered: number[] = [];
+    store.onScrollTo = (offset) => delivered.push(offset);
+    store.goToPage(3);
+    expect(delivered[0]).toBeCloseTo(offsets[2] + 1, 6); // the +1 px rule unchanged (DR-148)
+    store.scrollLeft = delivered[0];
+    expect(store.currentPage).toBe(3);
+    store.stepPage(-1); // prev/next move one page along the row, not a row of two (UI-39)
+    expect(delivered[1]).toBeCloseTo(offsets[1] + 1, 6);
+    store.scrollLeft = delivered[1];
+    expect(store.currentPage).toBe(2);
+    store.stepPage(1);
+    store.stepPage(1); // past the last page: clamped, the position stands
+    expect(delivered[3]).toBeCloseTo(offsets[2] + 1, 6);
+  });
+
+  it("PgUp/PgDn travel one viewport along the row (UI-30 on the x-axis)", () => {
+    const store = storeAt(816);
+    store.setViewMode("horizontal");
+    store.viewportWidth = 1000;
+    const scrolled: number[] = [];
+    store.onScrollBy = (delta) => scrolled.push(delta);
+    store.scrollViewport(1);
+    store.scrollViewport(-2);
+    expect(scrolled).toEqual([1000, -2000]);
+  });
+
+  it("in horizontal a zoom change anchors to the page at the row's left edge; at the row's end it names the last page", () => {
+    const store = storeAt(816);
+    store.setViewMode("horizontal");
+    store.viewportWidth = 1000;
+    const offsets = store.rowXOffsets();
+    store.scrollLeft = offsets[1] + 5; // page 2 at the viewport's left edge
+    store.setZoomPercent(150);
+    expect(store.pendingReveal).toBe(2); // the left-edge anchor (D23 unchanged, x-axis)
+    const wide = store.rowXOffsets(); // the maximum belongs to the geometry the user is looking at
+    store.scrollLeft = wide[wide.length - 1] - 1000; // the row's maximum scroll
+    store.setZoomPercent(100);
+    expect(store.pendingReveal).toBe(3); // the right-edge anchor in the clamped case (AC-119's rule)
+  });
+
   it("single mounts the index instead of scrolling; its navigation moves pages", () => {
     const store = storeAt(816);
     const delivered: number[] = [];
@@ -241,6 +307,22 @@ describe("view modes (UI-34)", () => {
     store.setViewMode("facing"); // a scroll-driven mode records it (the view jumps once mounted)
     expect(store.pendingReveal).toBe(2);
     expect(store.revealNonce).toBe(1);
+  });
+
+  it("through the row and back: continuous → horizontal → continuous keeps page 2 in view (AC-144)", () => {
+    const store = storeAt(816);
+    store.scrollTop = store.pageOffsets()[1] + 1; // scrolled to page 2 in continuous
+    expect(store.currentPage).toBe(2);
+    store.setViewMode("horizontal"); // the row records it the same way (v0.0.10)
+    expect(store.pendingReveal).toBe(2);
+    const delivered: number[] = [];
+    store.onScrollTo = (offset) => delivered.push(offset);
+    store.viewportWidth = 1000;
+    store.goToPage(store.pendingReveal); // the view's jump, once the row is mounted
+    store.scrollLeft = delivered[0];
+    expect(store.currentPage).toBe(2); // the row shows the kept page
+    store.setViewMode("continuous"); // and back: the kept page is recorded again
+    expect(store.pendingReveal).toBe(2);
   });
 });
 
@@ -442,6 +524,45 @@ describe("the ToC tree (UI-33 as revised by DR-218)", () => {
   });
 });
 
+describe("the ToC pin (FR-24 / UI-49, SPEC-v0.0.10 §3.8, revised by DR-337)", () => {
+  it("is session state of the window store: unpinned by default, closed through the reset", () => {
+    const store = storeAt(816);
+    expect(store.tocPinned).toBe(false); // every new reader window starts unpinned (OQ-60 → A)
+    expect(store.tocDockedOpen).toBe(false); // the docked panel is shown only while pinned (DR-337)
+    store.setTocPinned(true);
+    expect(store.tocPinned).toBe(true);
+    expect(store.tocDockedOpen).toBe(true); // pinning writes visibility with the mode
+    // The single un-pin path (DR-337): the pin control writes false here,
+    // and the panel closes with the mode.
+    store.setTocPinned(false);
+    expect(store.tocPinned).toBe(false);
+    expect(store.tocDockedOpen).toBe(false);
+    // Per window, not inherited: a second store — a new reader window — is
+    // unaffected by the first one's pin.
+    expect(new ReaderStore(1).tocPinned).toBe(false);
+    expect(new ReaderStore(1).tocDockedOpen).toBe(false);
+  });
+
+  it("separates visibility from the pin: the strip control and Esc hide and re-show the panel keeping the pinned position", () => {
+    const store = storeAt(816);
+    store.setTocPinned(true);
+    // Hide through the visibility path — the pin is untouched.
+    store.setTocDockedOpen(false);
+    expect(store.tocDockedOpen).toBe(false);
+    expect(store.tocPinned).toBe(true);
+    // Re-show — the panel comes back in the pinned state (the same docked
+    // position; the layout is derived from the same two booleans).
+    store.setTocDockedOpen(true);
+    expect(store.tocDockedOpen).toBe(true);
+    expect(store.tocPinned).toBe(true);
+    // Visibility writes never change the pin mode, in either direction.
+    store.setTocDockedOpen(false);
+    store.setTocDockedOpen(false); // idempotent — hiding an already hidden panel
+    expect(store.tocPinned).toBe(true);
+    expect(store.tocDockedOpen).toBe(false);
+  });
+});
+
 describe("the navigation direction (UI-34 as extended by DR-224)", () => {
   it("it follows the delta of each navigation and defaults to forward", () => {
     const store = storeAt(816);
@@ -506,9 +627,11 @@ describe("the edge rule and the keyboard notch (UI-34/UI-39 as re-derived by DR-
     store.scrollNotch(-SCROLL_NOTCH);
     store.setViewMode("facing");
     store.scrollNotch(SCROLL_NOTCH);
+    store.setViewMode("horizontal"); // the row scrolls through the same callback (UI-39 MODIFIED)
+    store.scrollNotch(SCROLL_NOTCH);
     store.setViewMode("single");
     store.scrollNotch(-SCROLL_NOTCH);
-    expect(scrolled).toEqual([SCROLL_NOTCH, -SCROLL_NOTCH, SCROLL_NOTCH]);
+    expect(scrolled).toEqual([SCROLL_NOTCH, -SCROLL_NOTCH, SCROLL_NOTCH, SCROLL_NOTCH]);
     expect(notched).toEqual([-SCROLL_NOTCH]);
   });
 });
@@ -560,7 +683,7 @@ describe("page serving through the store", () => {
     expect(store.images.get(1)!.width).toBeCloseTo(612, 6);
   });
 
-  it("a target above the fast-render cap previews first and refines in place (DR-151)", async () => {
+  it("a target above the fast-render cap previews first; the view's previewShown promotes the full stage after the release window (DR-151 as re-derived by DR-316/DR-323)", async () => {
     const store = storeAt(816);
     store.setZoomPercent(200); // a 1 632 px target, above the 1 400 px cap
     const full = Promise.withResolvers<string>();
@@ -574,7 +697,11 @@ describe("page serving through the store", () => {
     await vi.waitFor(() => expect(appPdfPage.mock.calls.length).toBe(2));
     expect(appPdfPage.mock.calls[1]).toEqual([1, 1, 1632]); // the full target follows
     full.resolve("C:/appdata/reader/1/1-1632.png");
-    await vi.waitFor(() => expect(store.images.get(1)!.src).toContain("1-1632.png"));
+    // DR-316: the full stage lands as the overlay source, not as a replacement.
+    await vi.waitFor(() => expect(store.images.get(1)!.full).toContain("1-1632.png"));
+    store.previewShown(1, 1632); // the view's call from the overlay's load event (DR-323)
+    await vi.waitFor(() => expect(store.images.get(1)!.src).toContain("1-1632.png"), { timeout: 2000 });
+    expect(store.images.get(1)!.full).toBeNull(); // the mounted page carries one raster again
     expect(store.images.get(1)!.width).toBeCloseTo(1632, 6); // the entry stays at the CSS width
   });
 
@@ -607,7 +734,10 @@ describe("page serving through the store", () => {
       await vi.waitFor(() => expect(appPdfPage.mock.calls.length).toBe(2));
       expect(appPdfPage.mock.calls[1]).toEqual([1, 1, 1692]); // the full device target follows
       full.resolve("C:/appdata/reader/1/1-1692.png");
-      await vi.waitFor(() => expect(store.images.get(1)!.src).toContain("1-1692.png"));
+      await vi.waitFor(() => expect(store.images.get(1)!.full).toContain("1-1692.png")); // the overlay source (DR-316)
+      store.previewShown(1, 967); // the view's call, at the page's CSS width (DR-323)
+      await vi.waitFor(() => expect(store.images.get(1)!.src).toContain("1-1692.png"), { timeout: 2000 });
+      expect(store.images.get(1)!.full).toBeNull(); // one raster again
       expect(store.images.get(1)!.width).toBeCloseTo(967, 6); // the entry stays at the CSS width
     } finally {
       Object.defineProperty(globalThis, "devicePixelRatio", { value: ratio, configurable: true });

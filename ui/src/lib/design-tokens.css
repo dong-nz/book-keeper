@@ -67,11 +67,12 @@
      the container width by `virtual.ts` on every resize (§3.10, DR-99), so a
      fixed card token would be a second source of truth. */
   --toolbar-height: 52px;
-  /* UI-03 as modified (DR-189, §3.12), re-derived by UI-45/DR-278: the cover
-     width is the design constant (75 px, ROW_COVER_WIDTH in virtual.ts), its
-     height follows the A4 ratio (106 px), and the row base is the cover plus
-     the 8 px insets (--row-cover-gap, mirrored by ROW_COVER_GAP): 122 px. */
-  --row-height: 122px;
+  /* UI-03 as modified (DR-189, §3.12), re-derived by UI-45/DR-278 and again
+     by UI-51/DR-320: the cover width is the design constant (100 px,
+     ROW_COVER_WIDTH in virtual.ts), its height follows the A4 ratio (141 px),
+     and the row base is the cover plus the 8 px insets (--row-cover-gap,
+     mirrored by ROW_COVER_GAP): 157 px. */
+  --row-height: 157px;
   --row-cover-gap: 8px;
   --row-line: 18px;
   --status-height: 28px;
@@ -91,6 +92,11 @@
   /* D5 (AC-34): the gap a menu keeps from the window edge; the max-height
      bound uses the same number the positioner aims for, not a second guess. */
   --menu-edge: 12px;
+  /* FR-24 / UI-49 (SPEC-v0.0.10 §3.8, DR-331 item 3): the pinned ToC panel's
+     fixed column width — sized to the released overlay panel's own width so
+     the docked and overlay presentations are the same panel. The token exists
+     only for the docked layout; the overlay keeps its released sizing. */
+  --toc-panel-width: 300px;
   --radius-menu: 10px;
   --radius-modal: 14px;
   --radius-control: 6px;

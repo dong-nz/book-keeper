@@ -2,13 +2,13 @@
 
 **Living document, not a release spec.** It has no lifecycle status and is not a requirements source: requirements and acceptance criteria stay in the release specs (this file never restates them as definitions). It is the factual inventory of every test case the repository implements *today*, per `docs/specs/INDEX.md` → current spec → `AGENTS.md` §2a maintenance rules (DR-160).
 
-Regenerated 2026-11-12 by extracting the sources directly: `#[test]` items under `src-tauri/src/`, `it()`/`test()` items under `ui/src/`, and every `check()`/`skip()` call site in `scripts/ui-smoke.mjs` and `scripts/ui-10k.mjs`. Counts below are call sites in the current working tree; parameterized checks (width matrix, contrast matrix) run once per case, and a lane run additionally asserts its own suite-level checks — core lanes four (AC-49 source scan, AC-56 sleep scan, AC-58 wall time, AC-60 area coverage), docs lanes their own budget check — so a full run asserts more than the number of listed call sites (the per-lane pattern is exact: each lane reports its flow's call sites plus those suite-level checks, the width matrix doubling at its two tested widths). The v0.0.7 full-mode lane run (Phase C, DR-192) will record its lane tallies here when it completes; the previous full-mode reference is the v0.0.6 Ship run (44/44 lanes green, 474/474 check executions, combined wall 130.7 s — inside the NFR-06 300 s budget).
+Regenerated 2026-11-12 by extracting the sources directly: `#[test]` items under `src-tauri/src/`, `it()`/`test()` items under `ui/src/`, and every `check()`/`skip()` call site in `scripts/ui-smoke.mjs` and `scripts/ui-10k.mjs`. Re-extracted 2026-11-17 for the v0.0.10 test deltas (the `flowReaderHorizontal` flow, the `flowReaderToc` and `flowEpubReader` extensions, the `flowReaderSettings` flow, the store unit additions, the `flowAppUpdate` flow and its fixture-build harness wiring) and verified against the tree by count; re-verified the same day after the Phase-B repairs (the re-pinned `flowReaderToc` 34 / `flowEpubReader` 42 / `flowReaderSettings` 9 call sites, the revised row texts per DR-337/DR-338, the "separates visibility from the pin" store units — all matched, and the reading-pdfs + reading-epubs lanes run passed 233/233); re-extracted the same day after the second Phase-B round (the DR-341 decodable-overlay regression check in `flowReaderOpen`, the DR-342 docked-position checks in `flowReaderToc` and `flowEpubReader`, the DR-343 dialog-over-panel hit test in `flowReaderSettings` — the flows now carry 16 / 35 / 43 / 13 call sites; the lanes runs passed 237/237; the AC-67 delete-cache check gained the same bounded wait its close-path siblings use — a check-side fix, no new call site); the DR-344 extension adds three more `flowReaderSettings` call sites (the EPUB-host control and menu checks, the functional *Check for updates* proof in a reader window). Counts below are call sites in the current working tree; parameterized checks (width matrix, contrast matrix) run once per case, and a lane run additionally asserts its own suite-level checks — core lanes four (AC-49 source scan, AC-56 sleep scan, AC-58 wall time, AC-60 area coverage), docs lanes their own budget check — so a full run asserts more than the number of listed call sites (the per-lane pattern is exact: each lane reports its flow's call sites plus those suite-level checks, the width matrix doubling at its two tested widths). The v0.0.7 full-mode lane run (Phase C, DR-192) will record its lane tallies here when it completes; the previous full-mode reference is the v0.0.6 Ship run (44/44 lanes green, 474/474 check executions, combined wall 130.7 s — inside the NFR-06 300 s budget).
 
 |Layer|Runner|Test call sites|
 |---|---|---|
 |Rust core|`cargo test` (in `src-tauri/`)|131 `#[test]` in 11 files|
-|Frontend units|`pnpm -C ui test` (Vitest)|149 test call sites in 18 files (the design-tokens checks iterate the role-pair and token lists: vitest reports **235** test cases at run time - 91 from those 5 call sites; every other file runs exactly its call-site count)|
-|UI smoke harness|`node scripts/ui-smoke.mjs`|58 flows (55 run directly - 53 internal + the two exported prefix flows; the three exported scale flows are executed only by the 10k suite and its lanes), 548 check call sites in flow bodies and their helper functions - 528 belong to the direct-run shape, of which four are the suite-level checks (AC-49 source scan, AC-56 sleep scan, AC-60 area coverage, AC-58 wall time); plus 4 conditional `skip()` call sites and the AC-72 timing rows, asserted through the shared `timingRow()` helper (6 call sites). A direct full run asserts exactly the 528; under `scripts/ui-verify.mjs` full mode each core lane additionally asserts its own suite-level checks, which is why the full lane run reports more executions - see §3|
+|Frontend units|`pnpm -C ui test` (Vitest)|157 test call sites in 18 files (the design-tokens checks iterate the role-pair and token lists: vitest reports **243** test cases at run time - 91 from those 5 call sites; every other file runs exactly its call-site count)|
+|UI smoke harness|`node scripts/ui-smoke.mjs`|61 flows (58 run directly - 56 internal + the two exported prefix flows; the three exported scale flows are executed only by the 10k suite and its lanes), 614 check call sites in flow bodies and their helper functions - 594 belong to the direct-run shape, of which four are the suite-level checks (AC-49 source scan, AC-56 sleep scan, AC-58 wall time, AC-60 area coverage); plus 5 conditional `skip()` call sites and the AC-72 timing rows, asserted through the shared `timingRow()` helper (6 call sites). A direct full run asserts exactly the 594; under `scripts/ui-verify.mjs` full mode each core lane additionally asserts its own suite-level checks, which is why the full lane run reports more executions - see §3|
 |10 000-document suite|`node scripts/ui-10k.mjs`|1 flow (8 check call sites) + 2 suite-level checks (abort guard, NFR-06 budget) = 10 in the file; the suite additionally runs the shared 4-check prefix (flowStartup, flowDropAndSkip) and the three exported scale flows (20 call sites) — a full run asserts 38: the width matrix runs its four checks per tested window width|
 |Full-verification orchestrator|`node scripts/ui-verify.mjs`|1 scheduler gate (every lane green + combined wall ≤ 300 s) — implemented as its own exit gate, not a `check()` call site, so it is not in the counts above; §3|
 
@@ -279,7 +279,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - sizes the cover placeholder from the constants, not from its own numbers
 - the cover's own CSS rule defines no dimensions
 
-### `ui/src/lib/state/epubReader.test.ts` — 25 · *the EPUB reader store's math (SPEC-v0.0.9 §3.13, DR-288/DR-303): the text-size ladder · the position model (cumulative uncompressed entry sizes → chapter byte starts, percent ↔ chapter resolution both directions) · the bounded mount window (§3.12 rule 3) · height bookkeeping (estimate → measured → deltas) · link routing through the sanitizer's protocol URLs · the ToC label and current-entry derivations · chapter fetching and failure marking · the strip's walk persistence*
+### `ui/src/lib/state/epubReader.test.ts` — 27 · *the EPUB reader store's math (SPEC-v0.0.9 §3.13, DR-288/DR-303): the text-size ladder · the position model (cumulative uncompressed entry sizes → chapter byte starts, percent ↔ chapter resolution both directions) · the bounded mount window (§3.12 rule 3) · height bookkeeping (estimate → measured → deltas) · link routing through the sanitizer's protocol URLs · the ToC label and current-entry derivations · the ToC pin and its visibility state (UI-48 MODIFIED / UI-49, SPEC-v0.0.10 §3.8, revised by DR-337) · chapter fetching and failure marking · the strip's walk persistence*
 - walks the six fixed steps in both directions
 - clamps at the ladder ends and resets an unknown value to the default
 - estimates a chapter's height from the uncompressed entry size with a floor
@@ -297,6 +297,8 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - labels a chapter with the first ToC entry targeting it, else nothing
 - highlights the last entry (document order) the scroll has reached
 - prefers the ToC label, falls back to the chapter's own heading, else none
+- is session state of the window store: unpinned by default, closed through the reset (UI-48 MODIFIED / UI-49, SPEC-v0.0.10 §3.8, OQ-60 → A; DR-337: pin and visibility written together)
+- separates visibility from the pin: the strip control and Esc hide and re-show the panel keeping the pinned position (UI-48 MODIFIED as revised by DR-337)
 - lands at a chapter's start with the released +1 px snap tolerance, clamped
 - resolves a percent jump to the start of the chapter containing it
 - routes viewport and notch scrolls through the view's callbacks
@@ -314,7 +316,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - finds store imports to check
 - every store import uses the canonical $lib/state/… spelling
 
-### `ui/src/lib/state/reader.test.ts` — 52 · *page geometry (exact, never measured)* · *navigation* · *view modes (UI-34)* · *zoom walk (UI-30 as re-anchored by DR-221)* · *the zoom anchor handoff (D23 / AC-119, v0.0.8)* · *the ToC tree (UI-33 as revised by DR-218 and DR-223)* · *the navigation direction (UI-34 as extended by DR-224)* · *the edge rule and the keyboard notch (UI-34/UI-39 as re-derived by DR-227/DR-228)* · *image request width* · *page serving through the store* · *the scroll position is a single source (DR-155)*
+### `ui/src/lib/state/reader.test.ts` — 60 · *page geometry (exact, never measured)* · *navigation* · *view modes (UI-34)* · *the horizontal row math (UI-34 MODIFIED, SPEC-v0.0.10 §3.3)* · *zoom walk (UI-30 as re-anchored by DR-221)* · *the zoom anchor handoff (D23 / AC-119, v0.0.8)* · *the ToC tree (UI-33 as revised by DR-218 and DR-223)* · *the ToC pin and its visibility state (FR-24 / UI-49, SPEC-v0.0.10 §3.8, revised by DR-337)* · *the navigation direction (UI-34 as extended by DR-224)* · *the edge rule and the keyboard notch (UI-34/UI-39 as re-derived by DR-227/DR-228)* · *image request width* · *page serving through the store* · *the scroll position is a single source (DR-155)*
 - fit-width renders every page at the content width and its own aspect ratio
 - a fixed percent renders the page's actual size × percent — per page, in every mode (AC-96)
 - Actual Size renders each page at its true dimensions (AC-96)
@@ -329,8 +331,14 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - a row is the taller page of its pair; an unpaired last page is a row of one
 - facing jumps and steps land on the row containing the page; the field names its first page
 - the field follows the viewport center: a row crossing it owns the page number
+- horizontal fit-width fits the current page to the viewport — the released fit base, not half a row (AC-146)
+- the row's offsets are the pages' display widths plus the gap — per-page for mixed sizes (AC-143)
+- the field follows the viewport's horizontal center; jumps and steps move one page along the row (AC-143)
+- PgUp/PgDn travel one viewport along the row (UI-30 on the x-axis, AC-145)
+- in horizontal a zoom change anchors to the page at the row's left edge; at the row's end it names the last page (AC-144, DR-282 rule on the x-axis)
 - single mounts the index instead of scrolling; its navigation moves pages
 - switching mode keeps the current page: single mounts it, scroll modes record it for the view
+- through the row and back: continuous → horizontal → continuous keeps page 2 in view (AC-144)
 - − / + move through the fixed steps and clamp at the ends
 - a non-ladder value snaps to the nearest step in the pressed direction (AC-96)
 - from a fit mode the walk continues from the mode's effective percent of the current page (AC-96)
@@ -348,6 +356,8 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - per-entry toggles never change the toggle's mode; its action always applies to the whole tree (AC-78, DR-223)
 - toggling a leaf changes nothing
 - a document without an outline has no tree and no hidden entries
+- is session state of the window store: unpinned by default, closed through the reset (FR-24 / UI-49, SPEC-v0.0.10 §3.8, OQ-60 → A; DR-337: pin and visibility written together)
+- separates visibility from the pin: the strip control and Esc hide and re-show the panel keeping the pinned position (UI-49 as revised by DR-337)
 - it follows the delta of each navigation and defaults to forward (DR-224)
 - clamped navigation records the direction of the movement actually taken (DR-224)
 - a delta at a reached edge steps exactly one page — any magnitude (DR-227)
@@ -414,7 +424,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 
 **Run shapes.** No arguments: full suite on the core tier (functional section, reader section last) — since DR-161 this suite never imports the docs tier: every 10 000-document UI test case runs in the separated 10k suite (§4). `SMOKE_SET=<area>[,<area>…]`: exactly the flows of the named feature areas, core tier. `SMOKE_FLOW=flowX,flowY`: narrows further (debugging aid; a scale-flow name errors with a pointer to `scripts/ui-10k.mjs`). Every flow is timed (D14/AC-54); wall time is checked against the NFR-06 budget; exit 0 only if every check passes. The bodies of the three scale flows live in `ui-smoke.mjs` (they share its geometry/menu/selection helpers) and are exported for the 10k suite; no ui-smoke run shape executes them.
 
-**Full verification: `node scripts/ui-verify.mjs` (DR-162 lanes, DR-163 per-flow split, DR-164 phases, DR-165 isolation, DR-168 phase order).** The entry point that runs every UI test case as its own lane: 1 prefix lane (the two prefix test cases, checks ON, owns the build, runs alone first), 17 measured lanes run **one at a time** (the twelve reader lanes - the ten PDF ones plus `flowEpubReader` and `flowEpubPerformance` (v0.0.9, DR-300); the bounded-job lanes `flowStatusBar`, `flowProgressTransform`, `flowMissingAndRelink`; the picker-request lane `flowSearchField`; the window-strip double-click lane `flowDragRegion` — a measured claim is a statement about single-instance conditions), 1 corpus-import lane (runs alone — its AC-57/NFR-02 claims are measured while nothing else runs; it follows the measured phase so its cover-queue disk flush cannot bleed into the first reader lane — the flake mechanism DR-168 records), and 39 flood lanes (the remaining 36 functional and 3 scale lanes, cap 10, `SMOKE_VERIFY_LANES`; the measured-phase cap is `SMOKE_VERIFY_MEASURE_LANES`, default 1, clamped 1..8) — 58 lanes total. The groups are barrier-separated: each starts only after the previous group's last lane exits. Every lane runs against its own data directory (`%APPDATA%\com.pdfkeeper.app\parallel\lanes\<flow>`, via `PDFKEEPER_DATA_DIR`, the same variable the app's resolver reads), its own tauri-driver/WebDriver ports (4444+i / 17556+i; reader lanes also their own CDP debug port 9323+i and per-port WebView2 profile directory), and scoped cleanup that touches only its own process tree (the shared image name and shared WebView2 profile belong to all lanes). The combined clock runs from the build owner's session line to the last lane exit and is asserted against the same ≤ 300 s budget; exit 0 only if every lane passes within it. Global image-name sweeps run only before anything starts and after all lanes are done. `--coarse` selects the documented triage fallback: the two-suite split of DR-162 (this suite as the `core` lane at `…\parallel\core`, the 10k suite as the `docs` lane at `…\parallel\docs`; core owns the build, docs is released on its session line). Direct runs of either suite keep working unscoped (the app's own data directory, global cleanup); `SMOKE_FLOW`/`SMOKE_SET`/`SMOKE_10K_FLOW` select standalone runs. `--report [path]` (DR-167) additionally writes one final summary file — verdict, mode + caps, lanes ran, check tallies, combined wall vs the budget, the per-lane table, and the failed check names per failed lane (no per-check transcript); default `tmp/test-reports/verify-<UTC stamp>.md` (gitignored); a write failure is reported on stdout and never changes the exit code.
+**Full verification: `node scripts/ui-verify.mjs` (DR-162 lanes, DR-163 per-flow split, DR-164 phases, DR-165 isolation, DR-168 phase order).** The entry point that runs every UI test case as its own lane: 1 prefix lane (the two prefix test cases, checks ON, owns the build, runs alone first), 19 measured lanes run **one at a time** (the fourteen reader lanes - the twelve PDF ones plus `flowEpubReader` and `flowEpubPerformance` (v0.0.9, DR-300); the bounded-job lanes `flowStatusBar`, `flowProgressTransform`, `flowMissingAndRelink`; the picker-request lane `flowSearchField`; the window-strip double-click lane `flowDragRegion` — a measured claim is a statement about single-instance conditions), 1 corpus-import lane (runs alone — its AC-57/NFR-02 claims are measured while nothing else runs; it follows the measured phase so its cover-queue disk flush cannot bleed into the first reader lane — the flake mechanism DR-168 records), and 39 flood lanes (the remaining 36 functional and 3 scale lanes, cap 10, `SMOKE_VERIFY_LANES`; the measured-phase cap is `SMOKE_VERIFY_MEASURE_LANES`, default 1, clamped 1..8) — 60 lanes total. The groups are barrier-separated: each starts only after the previous group's last lane exits. Every lane runs against its own data directory (`%APPDATA%\com.pdfkeeper.app\parallel\lanes\<flow>`, via `PDFKEEPER_DATA_DIR`, the same variable the app's resolver reads), its own tauri-driver/WebDriver ports (4444+i / 17556+i; reader lanes also their own CDP debug port 9323+i and per-port WebView2 profile directory), and scoped cleanup that touches only its own process tree (the shared image name and shared WebView2 profile belong to all lanes). The combined clock runs from the build owner's session line to the last lane exit and is asserted against the same ≤ 300 s budget; exit 0 only if every lane passes within it. Global image-name sweeps run only before anything starts and after all lanes are done. `--coarse` selects the documented triage fallback: the two-suite split of DR-162 (this suite as the `core` lane at `…\parallel\core`, the 10k suite as the `docs` lane at `…\parallel\docs`; core owns the build, docs is released on its session line). Direct runs of either suite keep working unscoped (the app's own data directory, global cleanup); `SMOKE_FLOW`/`SMOKE_SET`/`SMOKE_10K_FLOW` select standalone runs. `--report [path]` (DR-167) additionally writes one final summary file — verdict, mode + caps, lanes ran, check tallies, combined wall vs the budget, the per-lane table, and the failed check names per failed lane (no per-check transcript); default `tmp/test-reports/verify-<UTC stamp>.md` (gitignored); a write failure is reported on stdout and never changes the exit code.
 
 **Prefix rule (AC-60):** every named set starts with the mandatory prefix flows (the app-shell check and the drop-pipeline check the other flows reuse); the 10k suite runs the same prefix, selected or not. With `SMOKE_PREFIX_QUIET=1` — set for every lane of `ui-verify.mjs` — the prefix runs as setup: its passing checks log but are not recorded, a failed setup check is recorded as the lane's failure. The `AREAS` table below and the run sequences are maintained together; the suite itself enforces that every flow appears in at least one area.
 
@@ -439,7 +449,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - non-PDF import is reported as a skip, never silently ignored (FR-11)
 - *conditional skip:* `drag-drop: synthesized tauri://drag-drop delivery` when the platform delivery cannot be synthesized (0 skips in all v0.0.6 runs)
 
-### 3.3 Functional flows (41, core tier)
+### 3.3 Functional flows (42, core tier)
 
 **`flowSearchDebounce`** — searching
 - Ctrl+F focuses search (keyboard reachability)
@@ -603,7 +613,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - UI-06: row heights come from the base + per-line tokens
 - AC-08: author and notes render as their own lines under the title
 - AC-08: every ellipsized line carries its full text as a tooltip
-- AC-08/AC-24/DR-85: the row is exactly as tall as the metadata lines it renders (122 px base + 18 px per line, UI-03 as modified by DR-189, re-derived by UI-45/DR-278)
+- AC-08/AC-24/DR-85: the row is exactly as tall as the metadata lines it renders (157 px base + 18 px per line, UI-03 as modified by DR-189, re-derived by UI-45/DR-278 and UI-51/DR-320)
 - AC-08: an empty field renders no line and reserves no space
 - AC-08: the grid card shows the author line and no notes line
 - AC-83: a grid card mounts no .meta node and no size or date text
@@ -720,7 +730,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 
 **`flowRowDesign`** — sorting-and-views · covers UI-03, AC-24, AC-88, AC-122, DR-188, DR-189, UI-45, DR-278
 - AC-24: a row renders no selection checkbox and no tag badge
-- AC-24: a list row measures 122 px with a 75×106 cover (UI-03 as modified by DR-189, re-derived by UI-45/DR-278)
+- AC-24: a list row measures 157 px with a 100×141 cover (UI-03 as modified by DR-189, re-derived by UI-45/DR-278 and UI-51/DR-320)
 - AC-88: the cover's top and bottom edges sit 8 px inside the row box — against the separator hairline above and the row's own border-bottom
 - AC-24: the star, Details, Reading and Delete are one actions line, hidden at rest (the Reading action joins per UI-43)
 - AC-24: the Details action renders the info glyph
@@ -786,10 +796,10 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-99: re-picking Light restores the already-open reader window too
 - AC-99: the reader window closes cleanly (the flow's own setup)
 
-**`flowDarkRamp`** — settings-and-appearance · covers AC-81, AC-82, AC-71 (dark half), AC-83 (the frame-band half), AC-97, UI-38, DR-145, DR-189, DR-220, DR-245, DR-246, DR-278 (the token audit pins the 122 px row amendment)
+**`flowDarkRamp`** — settings-and-appearance · covers AC-81, AC-82, AC-71 (dark half), AC-83 (the frame-band half), AC-97, UI-38, DR-145, DR-189, DR-220, DR-245, DR-246, DR-278, UI-51/DR-320, UI-49/DR-331 (the token audit pins the 157 px row amendment and the 300 px panel-width token)
 - AC-81: the light ramp declares the §3.7 mapping (baseline = the v0.0.6 Ship commit, found by its message)
-- AC-81: the light color-token set is exactly the mapped one (the DR-189 row amendment re-derived by DR-278 to `row-height` 122 with `row-cover-gap` 8, and the DR-245 `card-content-pad` 5 are the pinned values)
-- AC-81: the metrics, type and motion declarations are unchanged from v0.0.6 except the DR-189 row and DR-245 card-inset amendments
+- AC-81: the light color-token set is exactly the mapped one (the pinned amended set: `row-height` 157 with `row-cover-gap` 8 — DR-189 re-derived by DR-278 and UI-51/DR-320, `card-content-pad` 5 — DR-245, `toc-panel-width` 300 — UI-49)
+- AC-81: the metrics, type and motion declarations are unchanged from v0.0.6 except the amended set (DR-189 row metrics, DR-245 card inset, UI-45/UI-51 row re-derivations, UI-49 panel width)
 - AC-81: color-scheme: light stays
 - AC-81: the dark ramp is unchanged from v0.0.6 except the added --selection-tint declaration (the DR-220 amendment)
 - AC-81: the theme mechanism (theme.ts) is unchanged since v0.0.6
@@ -870,9 +880,22 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-34: the View menu panel stays wholly inside the viewport
 - AC-34: a row context menu opened beside the window bottom stays wholly inside the viewport
 
-### 3.4 Reader flows (12, CDP runtime, own instance, multi tier imported through the app; the two EPUB flows build their own library state from the fixtures/epub tier and delete it again at their end)
+**`flowAppUpdate`** — keeping-up-to-date · covers FR-25, UI-52, AC-151, AC-152, AC-153, DR-329, DR-332 (v0.0.10; the fixture update endpoint at 127.0.0.1:18418 serves a manifest signed with the product key over a generated artifact; the binary carries the fixture updater config only when built with `PDFKEEPER_UPDATE_FIXTURE=1` — `ui-verify.mjs` sets it for every lane, a standalone run without it hits the skip row below; the app version the flow compares against is read from the backend, never assumed)
+- AC-151: a newer-version manifest surfaces the new version, its notes and an Install action
+- UI-52: the affordance is a quiet toast with an action — never a modal
+- AC-151: a current-version manifest makes the manual check report up to date
+- AC-151: an unreachable update source surfaces the typed error as a toast
+- AC-153: the main window activates within the released startup budget with the update check in flight — *runs once per scenario (reachable current manifest, unreachable endpoint); the check-completion barrier is observed between window creation and activation*
+- AC-153: the startup check ran against the fixture endpoint (the barrier proves completion before activation)
+- AC-153: nothing is shown — no affordance, no report, no progress — *runs once per scenario*
+- UI-52: the startup check arms the availability affordance — the toast with the Install action
+- AC-152: the download renders progress through the released job-progress affordance
+- AC-152: the install completes by launching the installer, and the app exits for it (the plugin's install path ends with the app's exit, DR-329 item 4)
+- *conditional skip:* `AC-152/AC-153: the update fixture build is not active in this binary` when the binary was not built with the fixture updater config
 
-**`flowReaderOpen`** — reading-pdfs · covers AC-64, AC-72, AC-76, AC-87, AC-93, DR-206, DR-215, DR-315, DR-316, DR-318, DR-319
+### 3.4 Reader flows (14, CDP runtime, own instance, multi tier imported through the app; the two EPUB flows build their own library state from the fixtures/epub tier and delete it again at their end)
+
+**`flowReaderOpen`** — reading-pdfs · covers AC-64, AC-72, AC-76, AC-87, AC-93, DR-206, DR-215, DR-315, DR-316, DR-318, DR-319, DR-334, DR-341
 - NFR-08 / AC-72: activation → first page (192-page core fixture) within 800 ms — *measured through the shared `timingRow()` helper, the pattern for all AC-72 rows below*
 - AC-64: a double-click opens a reader window on page 1 with the true page count
 - AC-64: Enter opens a reader window for the focused row
@@ -881,6 +904,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-87: the reader chrome name shows the app's own tooltip on the ramp's --surface-1 ground with its shadow
 - DR-318: the first-paint page image node is tagged for the guard below
 - DR-316 + DR-318: at open, the full raster arrives as a cross-fade overlay over the preview (base preview image stays at the preview width, overlay carries the full-stage width on the same rect) and the base image is the same node as at first paint — no rebuild, no re-decode gap; with coinciding stages (dpr 1) no overlay renders and the node is likewise never rebuilt — the guard is what makes the DR-319 staleness rule observable in the flow: a width-stale publish would tear the node down here
+- DR-334 as repaired by DR-341 (two-stage path): after the release window the base carries the full raster and the overlay is never a broken image — its src stays a decodable transparent placeholder (naturalWidth > 0), so no settled page reaches the broken-glyph state
 - AC-93: the reader window title property stays the full filename
 - AC-93: hovering the ellipsized name opens the app tooltip carrying the full name
 - AC-93: the chrome name shows in full while the strip has room and truncates with an ellipsis only on real overflow (DR-206)
@@ -944,7 +968,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-76: the error state renders no control strip
 - AC-69: the action performs the external open exactly once at the command boundary
 
-**`flowReaderToc`** — reading-pdfs · covers AC-78, AC-98, FR-18, UI-33, UI-37, UI-39, DR-207, DR-218, DR-223, DR-226, DR-228, DR-232, DR-236, DR-239, DR-241, DR-242, DR-243, DR-244
+**`flowReaderToc`** — reading-pdfs · covers AC-78, AC-98, AC-148, FR-18, FR-24, UI-33, UI-37, UI-39, UI-49, DR-207, DR-218, DR-223, DR-226, DR-228, DR-232, DR-236, DR-239, DR-241, DR-242, DR-243, DR-244, DR-327, DR-335, DR-336, DR-337, DR-342
 - AC-78: with an outlined document open the ToC control renders first in the bottom strip, before the page-navigation group (DR-207)
 - AC-78: the panel opens collapsed to the first level — top-level entries only, titles, right-aligned page numbers; the toolbar is one row carrying the single expand/collapse toggle in its initial expand-all state (DR-218, DR-223)
 - AC-78: the toolbar row renders as chrome — the strip ground distinct from the panel ground with a bottom hairline — and the toggle is a compact, left-aligned, icon-only control in the strip's square icon grammar (DR-226 as amended by DR-244) — the box is asserted against the `--control-height` token (32×32); every toolbar-control read (click, hover point, label reads, hit guard) goes through the `.control` element and its accessible name
@@ -965,10 +989,24 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-78: re-opening keeps the expansion state — the panel returns with the expanded subtree (session scope, DR-218) — and the toggle's mode with it (DR-223)
 - AC-78: the toggle's next activation still collapses all after the manual per-entry expansion, and flips back (DR-223)
 - AC-78: Esc closes the panel with the window still open
+- AC-148: the toolbar row carries the pin control at its right end — icon-only with its name, the toggle affordance, unpressed while the panel is the released overlay (UI-49)
+- AC-148: pinning closes the overlay and docks the panel at the left edge — from below the chrome strip to the control strip, at the fixed width; the strip control reflects the open panel (UI-49)
+- AC-148: the page area re-lays out beside it — the content box shrinks by the panel column, fit-width follows the shrunken box, and serving delivers a page at the shrunken fit width (continuous, §3.8)
+- AC-148: with the panel pinned an entry selection navigates and keeps the panel open (§3.8 — the overlay's close-on-select does not apply)
+- AC-148: the pin holds across a mode change — in continuous horizontal the row occupies the shrunken content column beside the docked panel and serves the current page there (§3.8 modes rule)
+- AC-148: the pin control's glyph follows the state — the slashed thumbtack in the unpinned overlay state, the plain thumbtack in the pinned state (UI-49, DR-336)
+- AC-148: the docked panel's toolbar row renders flush — square corners and the 4 px vertical padding, the controls unchanged (UI-49, DR-335)
+- AC-148: the pin control sits at the docked toolbar row's right end as well — its right edge coincides with the row's right content edge within 2 px (UI-49, DR-342)
+- AC-148: returning to continuous keeps the docked panel beside the page stack (§3.8 modes rule)
+- AC-148: the ToC control hides the pinned panel — no overlay opens, the pin is kept, and the control reflects the hidden panel (UI-49 as revised by DR-337)
+- AC-148: the ToC control shows the panel again at the same docked position — the pinned layout is kept, the content column stays shrunk beside it (UI-49 as revised by DR-337)
+- AC-148: with the panel pinned, Esc closes the pinned panel first — the window stays open and the pinned position is kept; the ToC control re-shows the panel docked (§3.8, the released guard extended to the docked state; DR-337)
+- AC-148: the panel's pin control is the only un-pin path — its click closes the docked panel and the strip control carries the released overlay grammar again (UI-49 as revised by DR-337)
+- AC-148: after unpinning, the panel opens again as the released anchored overlay (UI-49)
 - AC-78: with multi-1000 open no ToC control is rendered
 
-**`flowReaderViewModes`** — reading-pdfs · covers AC-79, AC-80, AC-92, AC-98, UI-34, UI-39, DR-180, DR-181, DR-204, DR-205, DR-215, DR-219, DR-224, DR-227, DR-228
-- AC-79: the mode control renders three choices with continuous active by default
+**`flowReaderViewModes`** — reading-pdfs · covers AC-79, AC-80, AC-92, AC-98, AC-142, UI-34, UI-39, DR-180, DR-181, DR-204, DR-205, DR-215, DR-219, DR-224, DR-227, DR-228
+- AC-142: the mode control renders four choices with continuous active by default (re-pins AC-79's three-button control)
 - AC-79: the page field reaches page 57 in continuous (the mode-switch starting point)
 - AC-79: switching to single page mounts exactly one page, centered on the current page, at the fixture geometry
 - AC-79: the container scrolls a fit-width page taller than the viewport to its bottom edge (DR-204)
@@ -1008,6 +1046,50 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-80: a new reader window opens in continuous regardless of the previous window's mode
 - AC-80: a 1-page document renders unpaired, alone, in facing mode
 
+**`flowReaderHorizontal`** — reading-pdfs · covers AC-142…AC-147, FR-17, UI-34 (MODIFIED), UI-39 (MODIFIED), DR-290 (v0.0.10; the continuous-horizontal row, running next to the view-mode flow it extends)
+- AC-142: the mode control carries four choices with continuous active by default
+- AC-144: entering the row from continuous keeps the current page in the field
+- AC-143: the row mounts the pages in one left-to-right line, consecutive in reading order, with the standard 12 px gap
+- AC-146: fit-width in the row fits the current page to the viewport — each page spans the content box at the fixture's ratio
+- AC-143: the row is vertically centered when it fits and start-aligned when taller — a taller page's top edge stays reachable (DR-205's rule on the other axis)
+- AC-143: the page field names the page at the viewport's horizontal center
+- AC-145: while the page field is focused the row's navigation keys belong to it (the released guard)
+- AC-145: ArrowRight advances exactly one page along the row
+- AC-145: ArrowLeft steps back exactly one page along the row
+- AC-143: next steps one page along the row
+- AC-143: previous steps back one page along the row
+- AC-145 / AC-143: PgDn travels one viewport along the row and the field names the page at the new center
+- AC-145: PgUp travels back one viewport along the row, the field back to the page at the center
+- AC-145: ArrowDown in the row scrolls it by the notch, the current page unchanged
+- AC-145: ArrowUp scrolls the row back by the notch, the current page unchanged
+- AC-145: End reaches the last page in the row
+- AC-147: only row-near pages are mounted at the document's end (the released mount bound, x-axis)
+- AC-145: Home reaches the first page in the row
+- AC-143: entering a number opens that page — page 60 is mounted and visible in the row
+- AC-147: the serving window follows the row position — after the jump to 60 the requests cover the row window around it (54…67) and no page beyond the bound (the released window rule, x-axis)
+- AC-146: the fit-width binding returns the row to the fit base
+- AC-146: a zoom step applies to every page in the row at the same ratio — from fit (118.5 % effective) it lands on 100 % at actual × 100 / 100, and the readout names the step
+- AC-144: switching from the row back to continuous keeps page 60 in view
+- AC-144: entering the row from continuous keeps page 60 in view
+- AC-144: switching from the row to facing lands on the pair containing page 60
+- AC-144: switching back from facing to continuous keeps the current page (the pair's first, 59) in view
+- AC-142: a new reader window opens in continuous with the fourth choice inactive
+
+**`flowReaderSettings`** — reading-pdfs · covers AC-149, FR-24, UI-50 (v0.0.10; revised by DR-338: the settings menu in the reader window's chrome, the main window's complete menu; the main menu's item list is read from the main window itself, never hardcoded; the theme cycle is asserted against the windows' real ramps — the harness' OS theme is read at runtime, never assumed; extended by DR-344: the same control and menu asserted in the EPUB reader window — the flow imports and deletes the EPUB fixture itself — and the *Check for updates* item proven functional in a reader window against the flow's own fixture update server serving the current-version manifest; the flow participates in the fixture-build decision)
+- AC-149: the reader chrome carries the settings control at its right end, immediately before the window controls — icon-only, named (UI-50 as revised by DR-338)
+- AC-149: the control strip carries no settings control — the released controls only, the view-mode group last (UI-50 as revised by DR-338)
+- UI-50: pointing at the settings control opens the app's tooltip naming it (UI-13)
+- AC-149: the reader settings menu is the main window's settings menu, complete — the theme cycle item naming the theme in effect, Settings, Check for updates, About, in the main window's order (UI-50 as revised by DR-338)
+- AC-149: the first activation advances the cycle to Light, the menu stays open and the item re-renders, the change applies live in the library window
+- AC-149: the second activation advances the cycle to Dark — menu open, item re-rendered, every open window on the dark ramp
+- AC-149: a reader window opened later carries the stored theme
+- AC-149: the third activation advances the cycle to Auto and every open window returns to the OS-resolved ramp
+- AC-149: the Settings item opens the settings dialog in the reader window itself (the shared menu component, the released dialog, DR-338)
+- UI-50 + UI-49: with the panel pinned, the settings dialog renders above the docked panel — at the overlap point the topmost element is the dialog, not the panel (DR-343)
+- AC-149: the EPUB reader's chrome carries the settings control at its right end, immediately before the window controls — the same control as the PDF reader's (UI-50 as revised by DR-344)
+- AC-149: the EPUB reader's settings menu is the main window's settings menu, complete — the same item list, read against the main window's own menu (UI-50 as revised by DR-344)
+- AC-149: the Check for updates item works in a reader window — the check runs against the update source and its result reports in that window (the reader-windows capability carries updater:default, DR-344)
+
 **`flowProtected`** — password-protected-pdfs · covers AC-104, AC-105, FR-20, DR-266 a (v0.0.8; reader runtime, imports `fixtures/special/protected.pdf` itself and deletes it again)
 - AC-104: a protected document renders the password prompt — password field, unchecked Remember box, Unlock action — not the error state
 - AC-104: a wrong password keeps the prompt with an inline error and the window stays usable (the external action stands)
@@ -1030,7 +1112,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-75: warm-scroll cleanliness — app-process CPU ≤ 0.1 s, ScriptDuration ≤ 0.2 s, 0 dropped frames, 0 long tasks
 - D24 / NFR-08: first-open activation stays inside the 800 ms budget across 10 fresh windows (the D24 measurement row, DR-271 — the run records the ten rows; run 1 is the process-cold open in a lane run)
 
-**`flowEpubReader`** — reading-epubs · covers AC-125, AC-132…AC-137 (v0.0.9; builds its own library state from the fixtures/epub tier and deletes it again at its end; every activation goes through the real card double-click path, AC-64's discipline)
+**`flowEpubReader`** — reading-epubs · covers AC-125, AC-132…AC-137, AC-148, UI-48 (MODIFIED), UI-49, DR-327, DR-337, DR-342 (v0.0.9; builds its own library state from the fixtures/epub tier and deletes it again at its end; every activation goes through the real card double-click path, AC-64's discipline)
 - AC-125: activating an EPUB opens the in-app reader window with the EPUB type in its route (never a PDF reader window)
 - AC-125: no PDF reader machinery runs in the EPUB reader window — no page images, no zoom readout, no page field, no view-mode control
 - AC-135: the strip carries exactly the three controls — the ToC control first (the package has a ToC), the position readout, the text-size control — and nothing else
@@ -1045,6 +1127,17 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 - AC-132: the ToC tree nests the package's sub-entry (expandable, indented under its parent)
 - AC-132: a ToC entry jumps to its chapter (chapter 4 mounts, the readout follows)
 - AC-135: the ToC panel highlights the entry the reader's scroll currently sits on
+- AC-148: the EPUB panel's toolbar row carries the same pin control at its right end (UI-48 MODIFIED / UI-49 — the shared panel, both hosts, no per-host branch)
+- AC-148: pinning in the EPUB window docks the panel at the left edge from below the chrome strip to the control strip at the fixed width; the strip control reflects the open panel (UI-48 MODIFIED)
+- AC-148: the pin control sits at the EPUB docked toolbar row's right end as well — its right edge coincides with the row's right content edge within 2 px (UI-48 MODIFIED, DR-342)
+- AC-148: the reading column narrows with the box — the flow narrows by exactly the panel column, the mounted content stays fully inside the narrowed width and still renders (the reflowable surface follows the smaller box, §3.8)
+- AC-148: with the box the binding constraint the column follows it — the flow narrows by the window delta and the reading column re-wraps at the narrowed width, content still rendered (the cap only guards line length, §3.8) — the narrower box is produced by the CDP `setMetrics` simulation (the AC-96 pattern) and the geometry is restored before the flow continues
+- AC-148: with the panel pinned an entry selection jumps within the book — landing exactly in the narrowed layout — and keeps the pinned panel open
+- AC-148: in the EPUB window the ToC control hides the pinned panel — no overlay opens, the pin is kept, and the control reflects the hidden panel (UI-48 MODIFIED as revised by DR-337)
+- AC-148: in the EPUB window the ToC control shows the panel again at the same docked position — the pinned layout is kept, the flow stays narrowed beside it (UI-48 MODIFIED as revised by DR-337)
+- AC-148: in the EPUB window Esc closes the pinned panel first — the window stays open and the pinned position is kept; the ToC control re-shows the panel docked (the released guard extended to the docked state, §3.8; DR-337)
+- AC-148: in the EPUB window the panel's pin control is the only un-pin path — its click closes the docked panel and the strip control carries the released overlay grammar again (UI-48 MODIFIED as revised by DR-337)
+- AC-148: after unpinning the panel opens again as the released overlay (UI-48: 'unpinning restores the released overlay behavior')
 - AC-135: an internal link in the fixture jumps to its target chapter and fragment (chapter 3 mounts, #sec-32 lands at the top of the view)
 - AC-135: a fragment-only link scrolls to the target inside the current chapter
 - AC-135: an external link in book content routes to the OS default browser (the opener call is observed) and the reader window does not navigate
@@ -1086,7 +1179,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 |favorites|flowFavorites|
 |reading-collection|flowReading|
 |opening-and-deleting|flowOpen, flowDelete, flowContextMenu|
-|reading-pdfs|flowReaderOpen, flowReaderNavigation, flowReaderZoom, flowReaderClose, flowReaderErrors, flowReaderToc, flowReaderViewModes, flowReaderPerformance|
+|reading-pdfs|flowReaderOpen, flowReaderNavigation, flowReaderZoom, flowReaderClose, flowReaderErrors, flowReaderToc, flowReaderViewModes, flowReaderHorizontal, flowReaderSettings, flowReaderPerformance|
 |reading-epubs|flowEpubReader, flowEpubPerformance|
 |password-protected-pdfs|flowProtected|
 |metadata-editing|flowMetadata, flowMetadataDisplay, flowMetaColumn, flowTooltipSurfaces|
@@ -1100,6 +1193,7 @@ Drives the **real built app** (`src-tauri/target/debug/pdfkeeper.exe`) through t
 |settings-and-appearance|flowThemeAndSettings, flowDarkRamp, flowTooltipSurfaces, flowAbout, flowScrollbars|
 |the-app-window|flowDragRegion, flowWindowChrome, flowToolbarControls, flowActionParity, flowContextMenuSuppression, flowReaderContextMenu|
 |keyboard-shortcuts|flowKeyboardAudit|
+|keeping-up-to-date|flowAppUpdate|
 
 ---
 
@@ -1144,7 +1238,7 @@ Separated runner holding **every UI test case against the 10 000-document corpus
 - AC-115: Ctrl+O opens the folder picker — the app requests it as a directory
 - AC-115 (DR-276): Ctrl+Shift+I opens neither picker — the plain import bindings ignore Shift
 - AC-115: neither shortcut fires while a text field owns focus
-- AC-50: the skeleton row is the real row block (122 px) with the real cover placeholder (75×106)
+- AC-50: the skeleton row is the real row block (157 px) with the real cover placeholder (100×141)
 - AC-50: the meta placeholder reserves the fixed 96 px column at the row's inset
 
 ---

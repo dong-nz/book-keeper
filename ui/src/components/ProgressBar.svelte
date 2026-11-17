@@ -1,6 +1,7 @@
 <script lang="ts">
   // Progress bar (UI-08): shown only while a job event stream is active;
-  // fed by the `library_job_progress` events (processed/total).
+  // fed by the `library_job_progress` events (processed/total), and — for
+  // the update download (UI-52) — by the frontend's jobProgress call.
   import { feedback } from "$lib/state/feedback.svelte";
   import { t, type MsgKey } from "$lib/i18n";
   import { formatCount } from "$lib/format";
@@ -9,6 +10,9 @@
     import: "job.import",
     rescan: "job.rescan",
     cover: "job.cover",
+    // UI-52 (DR-332 item 4): the update download is fed from the frontend
+    // (the plugin's download events), not from `library_job_progress`.
+    update: "job.update",
   };
 
   const job = $derived(feedback.job);

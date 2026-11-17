@@ -91,9 +91,13 @@
       if (event.key !== "Escape" || !content?.isConnected) return;
       // A menu that is still open owns its own Escape (the kit handles it). A
       // menu that is already closing does not: its element is on its way out,
-      // and deferring to it leaves the key with nobody.
+      // and deferring to it leaves the key with nobody. Only kit menus count:
+      // the kit marker `data-state` is what makes an element a menu the kit
+      // handles — a plain `.menu`-classed layout element (the docked ToC panel,
+      // DR-343) carries no marker and must not masquerade as an open menu
+      // (DR-347: it did, and the key fell back to the stack that swallowed it).
       const menuOpen = Array.from(document.querySelectorAll(".menu"))
-        .some((el) => el.getAttribute("data-state") !== "closed");
+        .some((el) => el.hasAttribute("data-state") && el.getAttribute("data-state") !== "closed");
       if (menuOpen) return;
       const openModals = Array.from(document.querySelectorAll(".modal"))
         .filter((el) => el.getAttribute("data-state") !== "closed");

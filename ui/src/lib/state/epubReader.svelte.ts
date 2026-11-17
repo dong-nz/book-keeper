@@ -174,6 +174,16 @@ export class EpubReaderStore {
    *  (DR-218/DR-223), through the shared tree functions (DR-303 item 7). */
   tocCollapsed = $state<ReadonlySet<number>>(new Set());
   tocExpandMode = $state(true);
+  /** Whether the ToC panel is pinned as a docked layout panel at the window's
+   *  left edge (UI-48 MODIFIED / UI-49, SPEC-v0.0.10 §3.8 — the same state
+   *  the PDF store carries; the shared panel reads it through `TocStore`).
+   *  Default `false`; per-window session scope, not inherited by new windows
+   *  (OQ-60 closed → A, DR-327). */
+  tocPinned = $state(false);
+  /** Whether the docked panel is shown (DR-337): the same visibility state
+   *  the PDF store carries — the strip control and `Esc` toggle it, the pin
+   *  control owns the mode. Session scope like the pin; default `false`. */
+  tocDockedOpen = $state(false);
   /** Chapter heights in px: 0 = never measured (the estimate is used),
    *  > 0 = measured and KEPT across recycling — a recycled chapter renders
    *  its header line inside a box of this height (DR-303 item 3). */
@@ -456,6 +466,20 @@ export class EpubReaderStore {
     if (this.tocExpandMode) this.tocExpandAll();
     else this.tocCollapseAll();
     this.tocExpandMode = !this.tocExpandMode;
+  }
+
+  /** The pin's single write path (UI-49/§3.8, revised by DR-337): the panel's
+   *  pin control reaches it alone, and it writes the docked panel's visibility
+   *  with the mode — the same rule as the PDF store (§3.8 EPUB host). */
+  setTocPinned(pinned: boolean): void {
+    this.tocPinned = pinned;
+    this.tocDockedOpen = pinned;
+  }
+
+  /** The visibility path (DR-337): the strip control in the pinned state and
+   *  the docked panel's `Esc` write it; it never changes the pin. */
+  setTocDockedOpen(open: boolean): void {
+    this.tocDockedOpen = open;
   }
 
   // ------------------------------------------------------------- text size

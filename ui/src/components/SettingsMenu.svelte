@@ -6,7 +6,9 @@
   // Light → Dark → Auto; the menu stays open across the activation and the
   // item re-renders with the new current mode (DR-209 — `closeOnSelect
   // false`, the kit's declarative stay-open). Settings… (the dialog);
-  // About PDF Keeper… (UI-12 as modified).
+  // Check for updates (UI-52, FR-25 — the manual check path, DR-332 item 3:
+  // the released `rescan` glyph, the menu closes on selection like the other
+  // action items); About PDF Keeper… (UI-12 as modified).
   // Every write goes through the settings store — the one path to the key
   // (R1.6), the same one the dialog uses. The internal value for Auto stays
   // `system` — only the name changed (§3.13); no data-model change.
@@ -17,6 +19,7 @@
   import SettingsDialog from "./SettingsDialog.svelte";
   import AboutDialog from "./AboutDialog.svelte";
   import { settings } from "$lib/state/settings.svelte";
+  import { checkForUpdates } from "$lib/updates";
   import { t, type MsgKey } from "$lib/i18n";
   import type { IconName } from "./icons";
   import type { Theme } from "$lib/types";
@@ -70,6 +73,12 @@
       <span class="item-label">
         <Icon name="settings" />
         <span>{t("settings.open")}</span>
+      </span>
+    </DropdownMenu.Item>
+    <DropdownMenu.Item class="menu-item" onSelect={() => void checkForUpdates(true)}>
+      <span class="item-label">
+        <Icon name="rescan" />
+        <span>{t("settings.checkUpdates")}</span>
       </span>
     </DropdownMenu.Item>
     <DropdownMenu.Item class="menu-item" onSelect={() => (aboutOpen = true)}>

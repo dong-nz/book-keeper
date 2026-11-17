@@ -19,6 +19,16 @@ serde = { version = "1.0.229", features = ["derive"] }
 tauri = { version = "2.12.5", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.8.4"
 tauri-plugin-opener = "2.7.2"
+# DR-321 (OQ option A) + DR-329: app updates for FR-25 — the official updater
+# plugin, pinned to the 2.14.1 release the `@2` constraint resolves on the
+# tauri 2.12.5 line. Its transitive tree (reqwest, tauri-plugin-fs,
+# minisign-verify, tempfile) belongs to the plugin, not to this manifest.
+tauri-plugin-updater = "2.14.1"
+# DR-330: `tauri::generate_context!` deserializes the `plugins` config section
+# through `serde_json` by name — with `plugins.updater` present the app crate
+# must declare it (the standard Tauri template ships the same line). Zero new
+# crates in the graph: 1.0.154 is what tauri already resolves.
+serde_json = "1.0.154"
 thiserror = "2.0.21"
 
 [build-dependencies]

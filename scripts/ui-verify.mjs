@@ -1,6 +1,6 @@
 // scripts/ui-verify.mjs — the full-verification entry point (DR-162, DR-163).
 //
-// Full mode (default): every UI test case runs as its own lane — 56 lanes:
+// Full mode (default): every UI test case runs as its own lane — 60 lanes:
 //   prefix  SMOKE_FLOW=flowStartup         the two prefix test cases, checks
 //                                          ON; owns the build (D15) — the
 //                                          other lanes are released on its
@@ -21,7 +21,10 @@
 //                                          claims)
 // Every lane runs against its own data directory under
 // …\com.pdfkeeper.app\parallel\lanes\<flow>, its own tauri-driver ports, and
-// scoped cleanup (it touches only its own process tree). The scheduler runs
+// scoped cleanup (it touches only its own process tree). Every lane also
+// carries `PDFKEEPER_UPDATE_FIXTURE=1` (DR-332 item 7): the full mode's flow
+// set contains flowAppUpdate, so the build owner builds the binary with the
+// fixture update endpoint and every lane shares that one build. The scheduler runs
 // barrier-separated groups (DR-164, order revised by DR-168): the build owner
 // alone, then the measured phase (reader lanes, bounded-job lanes, the
 // picker-request lane, the double-click window lane — measured claims are
@@ -110,6 +113,9 @@ const MEASURE_FUNCTIONAL = new Set([
   "flowMissingAndRelink",
   "flowSearchField",
   "flowDragRegion",
+  // v0.0.10 (AC-153, DR-332 item 6): the startup-activation timing is a
+  // measured claim — it runs isolated like the other measured lanes.
+  "flowAppUpdate",
 ]);
 function buildLanes() {
   const lanes = [];
@@ -157,6 +163,12 @@ function runLane(lane) {
     SMOKE_SCOPED: "1",
     SMOKE_DRIVER_PORT: String(4444 + lane.index),
     SMOKE_NATIVE_PORT: String(17556 + lane.index),
+    // The fixture update endpoint for every lane (DR-332 item 7): this
+    // run's flow set always contains flowAppUpdate, so the build owner's
+    // binary carries the fixture config — the other lanes' startup checks
+    // then hit a local port with nothing listening, which is the silent
+    // fast path, not the network.
+    PDFKEEPER_UPDATE_FIXTURE: "1",
   };
   for (const key of ["SMOKE_SET", "SMOKE_FLOW", "SMOKE_10K_FLOW", "SMOKE_PREFIX_QUIET", "SMOKE_CDP_PORT"]) {
     delete env[key];

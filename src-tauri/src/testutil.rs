@@ -68,7 +68,7 @@ pub fn fixture_doc(index: u32) -> PathBuf {
     // writes; tests that address the whole corpus address both document types.
     const MIX_FROM: u32 = 5005;
     const MIX_STEP: u32 = 5;
-    let ext = if index >= MIX_FROM && index % MIX_STEP == 0 { "epub" } else { "pdf" };
+    let ext = if index >= MIX_FROM && index.is_multiple_of(MIX_STEP) { "epub" } else { "pdf" };
     fixtures().join("docs").join(format!("doc{:05}.{ext}", index))
 }
 

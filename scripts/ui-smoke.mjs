@@ -35,6 +35,17 @@
 //   the-app-window, keyboard-shortcuts. Unknown area names error.
 //   SMOKE_FLOW=flowTags,flowDelete  run only these flows (narrows
 //   SMOKE_SET when both are given; debugging aid). Unknown flow names error.
+// The second harness override (after PDFKEEPER_DATA_DIR, DR-331 item 6,
+// DR-332 item 7): the fixture update endpoint baked into the binary at build
+// time (`TAURI_CONFIG`, port 14299). The app's update source is compiled
+// config, not a runtime argument, so flowAppUpdate's fixture endpoint is a
+// build decision: scripts/ui-verify.mjs sets `PDFKEEPER_UPDATE_FIXTURE=1` for
+// every lane (its flow set always contains flowAppUpdate); a standalone run
+// decides from its own resolved flow selection — a run that names
+// flowAppUpdate or flowReaderSettings (DR-344) or the full suite builds with
+// the fixture endpoint, every other standalone run keeps the app's real
+// config. The build stamp records the decision: the config is a build input
+// for D15's purposes, and a run that wants the other config rebuilds.
 // Tier rule (DR-161): every UI test case against the 10 000-document corpus
 // runs in its own suite — node scripts/ui-10k.mjs — so this suite never
 // pays the docs tier: the full run and every named set run on the core
@@ -45,6 +56,7 @@
 // wall-time budget, AC-58).
 
 import { spawn, spawnSync } from "node:child_process";
+import http from "node:http";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -150,10 +162,51 @@ function sameCssColor(a, b) {
 // refused to connect". A binary newer than the stamp the Tauri CLI build
 // leaves next to it was therefore not built by the CLI: it is stale too.
 const BUILD_STAMP = join(dirname(APP_EXE), ".tauri-build-stamp");
+
+// The fixture update endpoint (DR-329 item 3, port per DR-331 item 5): a
+// build-time override merged into the app config by tauri-build (json_patch:
+// the endpoints array is replaced, the pubkey stays). `flowAppUpdate` is the
+// only flow that needs it — the app's update source is compiled config, so
+// the decision belongs to the build (header note above).
+const UPDATE_FIXTURE_PORT = 14299;
+const TAURI_CONFIG_FIXTURE = JSON.stringify({
+  plugins: {
+    updater: {
+      endpoints: [`http://127.0.0.1:${UPDATE_FIXTURE_PORT}/latest.json`],
+      dangerousInsecureTransportProtocol: true,
+    },
+  },
+});
+let buildUpdateFixture = process.env.PDFKEEPER_UPDATE_FIXTURE === "1";
+export function decideUpdateFixtureBuild(wanted) {
+  // Orchestrated runs are already decided by the marker; a standalone run
+  // decides from its own resolved selection (`wanted` null = the full suite,
+  // which contains flowAppUpdate). Nothing ever flips a marker-decided run
+  // back off: under the orchestrator every lane shares the build owner's
+  // config, and the stamp check below makes a mismatch rebuild, not skip.
+  // flowReaderSettings joined the trigger by DR-344: its *Check for updates*
+  // proof needs the fixture endpoint too (its own fixture server, its own
+  // manifest state).
+  if (!wanted || wanted.includes("flowAppUpdate") || wanted.includes("flowReaderSettings")) buildUpdateFixture = true;
+}
+
+function readBuildStamp() {
+  if (!existsSync(BUILD_STAMP)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(BUILD_STAMP, "utf8"));
+    return typeof raw.updateFixture === "boolean" ? raw : null; // the pre-DR-332 ISO stamp counts as stale
+  } catch {
+    return null;
+  }
+}
+
 function binaryIsStale() {
   if (!existsSync(APP_EXE)) return true;
-  if (!existsSync(BUILD_STAMP)) return true;
-  const built = statSync(BUILD_STAMP).mtimeMs;
+  const stamp = readBuildStamp();
+  if (!stamp) return true;
+  if (stamp.updateFixture !== buildUpdateFixture) return true; // the config is a build input (DR-332 item 7)
+  const built = Date.parse(stamp.builtAt);
+  if (!Number.isFinite(built)) return true;
   if (statSync(APP_EXE).mtimeMs > built) return true; // relinked by cargo, not by tauri
   const inputs = [
     join(root, "src-tauri", "Cargo.toml"),
@@ -185,10 +238,15 @@ function buildApp() {
   const app = spawnSync(process.env.ComSpec || "cmd.exe", ["/C", cli, "build", "--debug", "--no-bundle"], {
     cwd: root,
     stdio: "inherit",
-    env: { ...process.env, PATH: `${CARGO_BIN};${process.env.PATH}` },
+    env: {
+      ...process.env,
+      PATH: `${CARGO_BIN};${process.env.PATH}`,
+      ...(buildUpdateFixture ? { TAURI_CONFIG: TAURI_CONFIG_FIXTURE } : {}),
+    },
   });
   if (app.status !== 0) throw new Error("the app build failed");
-  writeFileSync(BUILD_STAMP, new Date().toISOString()); // marks the binary as CLI-built
+  // The stamp records the config the binary was built with (DR-332 item 7).
+  writeFileSync(BUILD_STAMP, JSON.stringify({ builtAt: new Date().toISOString(), updateFixture: buildUpdateFixture }));
 }
 
 export function prepareEnvironment() {
@@ -1448,11 +1506,25 @@ async function restartApp() {
   } catch {
     /* the session already went with the window */
   }
+  return relaunchSession();
+}
+
+// The relaunch half of a restart, shared with flowAppUpdate (whose app is
+// already gone — the install exit). Returns the activation time measured on
+// the page's own clock (DR-332 item 6): `performance.now()` at the first
+// observation of the mounted document area — window navigation start →
+// shell mounted, the app's own startup claim, immune to clock and driver
+// overhead. The poll doubles as the readiness wait.
+async function relaunchSession() {
   sessionId = null;
   await waitProcessExit();
   await openSession();
-  const ready = await waitForEval(EVAL.appReady, { timeout: 45000 });
+  const ready = await waitForEval(
+    `return document.querySelector('.app .status-bar') ? { ok: true, ms: performance.now() } : null;`,
+    { timeout: 45000 },
+  );
   if (!ready) throw new Error(`the relaunched app never reached the document area — ${await notReadyDiagnosis()}`);
+  return ready.ms;
 }
 
 export async function waitForEval(script, { timeout = 15000, args = [], interval = 100 } = {}) {
@@ -1965,10 +2037,13 @@ async function cReaderConnected(id, { timeout = 15000, port = CDP_PORT } = {}) {
 
 // What the reader surface says: the page field's accessible name, the zoom
 // label, the mounted pages with their rendered widths, the scroller box.
+// v0.0.10 (UI-34 MODIFIED): the continuous-horizontal row names its own
+// scroller class — the state probe reads whichever axis the window shows,
+// and reports both positions so a flow can assert on either.
 const READER_STATE = `
   const label = document.querySelector('.reader-controls input[aria-label]')?.getAttribute('aria-label') ?? null;
   const zoom = document.querySelector('.zoom-value')?.textContent?.trim() ?? null;
-  const scroller = document.querySelector('.reader-scroll');
+  const scroller = document.querySelector('.reader-scroll') ?? document.querySelector('.reader-row');
   const pages = Array.from(document.querySelectorAll('.page')).map((p) => {
     const img = p.querySelector('img');
     const placeholder = p.querySelector('.page-placeholder');
@@ -1985,6 +2060,7 @@ const READER_STATE = `
     mounted: pages.length,
     clientWidth: scroller?.clientWidth ?? null,
     scrollTop: Math.round(scroller?.scrollTop ?? -1),
+    scrollLeft: Math.round(scroller?.scrollLeft ?? -1),
     ready: !!document.querySelector('.reader'),
     errorState: document.querySelector('.error-state') ? (document.querySelector('.error-state')?.textContent ?? '') : null,
   };
@@ -3716,7 +3792,7 @@ async function flowMetadataDisplay() {
   check("AC-08: every ellipsized line carries its full text as a tooltip",
     !!row && row.clipped && notesTip === notes && authorTip === author && titleTip === "Fixture Doc doc00300",
     row ? `clipped: ${row.clipped}, notes tooltip: ${notesTip?.length} chars` : "");
-  check("AC-08/AC-24/DR-85: the row is exactly as tall as the metadata lines it renders (122 px base + 18 px per line)",
+  check("AC-08/AC-24/DR-85: the row is exactly as tall as the metadata lines it renders (157 px base + 18 px per line)",
     !!row && row.height === tokens.row + 2 * tokens.line,
     `measured ${row?.height} px, expected ${tokens.row + 2 * tokens.line} px`);
 
@@ -5686,9 +5762,9 @@ async function clearSelectionIfAny() {
 
 // AC-24 (UI-03 as modified): no checkbox, no tag badges, one actions line
 // revealed on hover or keyboard focus, Details carrying the `info` glyph while
-// tag actions keep `tag`, and the 122 px row with its 75×106 cover inset
+// tag actions keep `tag`, and the 157 px row with its 100×141 cover inset
 // 8 px from the separator lines (UI-03 as modified by §3.12/DR-189, then
-// re-derived by UI-45/DR-278, AC-88 unchanged). The
+// re-derived by UI-45/DR-278 and UI-51/DR-320, AC-88 unchanged). The
 // "+18 px per metadata line" half is measured in the metadata-display flow,
 // which is the flow that puts the lines on a row.
 async function flowRowDesign() {
@@ -5702,7 +5778,7 @@ async function flowRowDesign() {
   const ready = await waitForEval(`return document.querySelectorAll('.row[data-row-id]').length >= 3 ? true : null;`, { timeout: 20000 });
   if (!ready) throw new Error("no list rows are rendered for the row-design flow");
 
-  // UI-03's measured case is the base row: 122 px, a 75×106 cover, no metadata
+  // UI-03's measured case is the base row: 157 px, a 100×141 cover, no metadata
   // lines. The fixture corpus carries an author on every document, so the flow
   // makes one base-case row through the app's own editor — the path a user
   // takes — and measures the row that results.
@@ -5759,8 +5835,8 @@ async function flowRowDesign() {
   `, [target.id]);
   check("AC-24: a row renders no selection checkbox and no tag badge",
     !!row && !row.checkbox && row.chips === 0, JSON.stringify(row && { checkbox: row.checkbox, chips: row.chips }));
-  check("AC-24: a list row measures 122 px with a 75×106 cover (UI-03 as modified by DR-189, re-derived by UI-45/DR-278)",
-    !!row && row.height === 122 && row.cover && row.cover.width === 75 && row.cover.height === 106,
+  check("AC-24: a list row measures 157 px with a 100×141 cover (UI-03 as modified by DR-189, re-derived by UI-45/DR-278 and UI-51/DR-320)",
+    !!row && row.height === 157 && row.cover && row.cover.width === 100 && row.cover.height === 141,
     `row ${row?.height} px, cover ${row?.cover?.width}×${row?.cover?.height}`);
   check("AC-88: the cover's top and bottom edges sit 8 px inside the row box — against the separator hairline above and the row's own border-bottom",
     !!row && row.cover && Math.abs(row.cover.topInset - 8) <= 1 && Math.abs(row.cover.bottomInset - 8) <= 1,
@@ -8115,8 +8191,8 @@ export async function flowEmptyAndSkeleton() {
   await typeInto(".search-input", "zzq");
   const sk = await waitForEval(`return window.__skelProbe ?? null;`, { timeout: 8000 });
   await execute(`window.__skelObs?.disconnect(); return true;`);
-  check("AC-50: the skeleton row is the real row block (122 px) with the real cover placeholder (75×106)",
-    !!sk && Math.abs(sk.rowH - 122) <= 1 && Math.abs(sk.coverW - 75) <= 1 && Math.abs(sk.coverH - 106) <= 1,
+  check("AC-50: the skeleton row is the real row block (157 px) with the real cover placeholder (100×141)",
+    !!sk && Math.abs(sk.rowH - 157) <= 1 && Math.abs(sk.coverW - 100) <= 1 && Math.abs(sk.coverH - 141) <= 1,
     JSON.stringify(sk));
   check("AC-50: the meta placeholder reserves the fixed 96 px column at the row's inset",
     !!sk && Math.abs(sk.metaW - 96) <= 1 && Math.abs(sk.rowRight - sk.metaRight - 12) <= 1,
@@ -8306,8 +8382,9 @@ async function flowMenuBounds() {
 // --content-gutter by UI-19, --menu-edge by UI-25, --warning-hover/
 // --danger-hover by D11's corrected ramp (DR-120), --row-cover-gap by §3.12's
 // row cover (DR-189), --selection-tint by §3.17's selection emphasis
-// (UI-38/DR-220) — and nothing else may be new relative to the released
-// baseline (HEAD carries the last released code).
+// (UI-38/DR-220), --toc-panel-width by SPEC-v0.0.10 §3.8's pinned panel
+// column (UI-49/DR-331) — and nothing else may be new relative to the
+// released baseline (HEAD carries the last released code).
 function checkTokenSource() {
   const current = readFileSync(join(root, "ui", "src", "lib", "design-tokens.css"), "utf8");
   const released = spawnSync("git", ["show", "HEAD:ui/src/lib/design-tokens.css"], { cwd: root, encoding: "utf8" }).stdout;
@@ -8317,7 +8394,7 @@ function checkTokenSource() {
   }
   const names = (text) => new Set([...text.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
   const added = [...names(current)].filter((n) => !names(released).has(n));
-  const allowed = new Set(["--content-gutter", "--menu-edge", "--warning-hover", "--danger-hover", "--row-cover-gap", "--selection-tint", "--card-content-pad"]);
+  const allowed = new Set(["--content-gutter", "--menu-edge", "--warning-hover", "--danger-hover", "--row-cover-gap", "--selection-tint", "--card-content-pad", "--toc-panel-width"]);
   check("AC-49 (source): no token added beyond the names this release's designs mandate",
     added.every((n) => allowed.has(n)), `added: ${JSON.stringify(added)}`);
 }
@@ -8368,12 +8445,19 @@ async function importMultiTier() {
 }
 
 // Poll the reader target list until `id` is present/absent.
-async function cWaitReaderId(id, present, { timeout = 8000, port = CDP_PORT } = {}) {
+async function cWaitReaderId(id, present, { timeout = 8000, port = CDP_PORT, quiet = false } = {}) {
   const deadline = Date.now() + timeout;
   for (;;) {
     const has = (await cdpReaderTargetIds(port)).includes(id);
     if (has === present) return true;
-    if (Date.now() > deadline) return false;
+    if (Date.now() > deadline) {
+      // A silent false here leaks a reader window into the next flow (one
+      // window per document — that flow then attaches to the stale window).
+      // `quiet` marks the calls where the timeout IS the asserted outcome
+      // (a "no window opens" negative check) — there the silence is the point.
+      if (!quiet) console.log(`WARN  cWaitReaderId(${id}, present=${present}) timed out`);
+      return false;
+    }
     await sleep(250);
   }
 }
@@ -8554,6 +8638,40 @@ async function flowReaderOpen() {
     check("DR-316 + DR-318: with the stages coinciding (dpr 1), the single-stage path renders no overlay and the base image node is never rebuilt",
       !!seamShape && seamShape.stages === 1 && !seamShape.overlayPresent && seamShape.baseSuffix === seamShape.previewW && seamShape.nodeTag,
       JSON.stringify(seamShape));
+  }
+  // DR-341 (the real close of DR-334): the release step clears the overlay's
+  // full stage — with the src attribute merely absent, the sized element at
+  // opacity 1 painted Chromium's broken-image placeholder on every settled
+  // page (the user-reported recurrence). After the release window the base
+  // carries the full raster and the overlay's src stays a decodable
+  // transparent placeholder: no page can ever reach the broken-image state.
+  if (seamShape && seamShape.stages === 2) {
+    const seamRelease = await entered.waitFor(`
+      return (() => {
+        const base = document.querySelector('.page img[alt="Page 1"]');
+        if (!base) return null;
+        const suffixOf = (img) => Number((String(img.currentSrc || img.src).match(/-(\\d+)\\.png$/) ?? [])[1] ?? 0);
+        // The release (DR-323) promotes the full stage to the base src —
+        // the observable moment after the release window.
+        if (suffixOf(base) !== ${seamShape.targetW}) return null;
+        const overlay = document.querySelector('.page img.page-full');
+        if (!overlay) return { promoted: true, overlayPresent: false };
+        // The src patch to the placeholder is an attribute patch (DR-318) —
+        // let its own load settle first (success or failure): a pending
+        // decode reads as naturalWidth 0 like a broken one.
+        if (!overlay.complete) return null;
+        return {
+          promoted: true,
+          overlayPresent: true,
+          srcPresent: !!(overlay.currentSrc || overlay.src),
+          decodable: overlay.naturalWidth > 0,
+          brokenGlyph: overlay.naturalWidth === 0,
+        };
+      })();
+    `, { timeout: 10000 });
+    check("DR-334 as repaired by DR-341: after the release window the base carries the full raster and the overlay is never a broken image — its src stays a decodable placeholder, so no settled page shows the broken-image glyph",
+      seamRelease && seamRelease.promoted && (!seamRelease.overlayPresent || (seamRelease.srcPresent && seamRelease.decodable && !seamRelease.brokenGlyph)),
+      JSON.stringify(seamRelease));
   }
 
   // AC-93 (UI-30 as modified by DR-206): the full name displays while the
@@ -9118,7 +9236,15 @@ async function flowReaderClose() {
   await cDeleteViaUi(row.x, row.y);
   const closedC = await cWaitReaderId(c.id, false, { timeout: 10000 });
   const rowGone = await cMainWait(`return !document.querySelector('[data-row-id="${c.id}"]') ? true : null;`, { timeout: 10000 });
-  const goneC = !existsSync(join(readerDir, String(c.id)));
+  // The purge is deterministic (delete purges the cache; the window's close
+  // handler purges again after any in-flight serving write) but asynchronous
+  // relative to the window target disappearing — the same bounded wait the
+  // close-path checks above use for the same race.
+  let goneC = false;
+  for (let i = 0; i < 20 && !goneC; i += 1) {
+    goneC = !existsSync(join(readerDir, String(c.id)));
+    if (!goneC) await sleep(250);
+  }
   check(
     "AC-67: deleting the document closes its reader window with the row",
     closedC && !!rowGone && goneC,
@@ -9147,7 +9273,8 @@ async function flowReaderErrors() {
     await cdpMain.doubleClickAt(row.x, row.y);
     const toast = await cMainWait(`return Array.from(document.querySelectorAll('.toast')).some((t) => t.textContent.includes('file is missing')) ? true : null;`, { timeout: 10000 });
     const relink = await cMainWait(`return Array.from(document.querySelectorAll('.toast .control')).some((c) => c.textContent.trim() === 'Relink') ? true : null;`, { timeout: 5000 });
-    const noWindow = !(await cWaitReaderId(row.id, true, { timeout: 1500 }));
+    // The timeout here is the assertion: no reader window for a missing document.
+    const noWindow = !(await cWaitReaderId(row.id, true, { timeout: 1500, quiet: true }));
     const calls = await cReaderOpenCalls();
     check(
       "AC-69: a missing document yields a toast with Relink and no window",
@@ -9701,8 +9828,284 @@ async function flowReaderToc() {
   check("AC-78: Esc closes the panel with the window still open",
     !!closedPanel && windowStill);
 
+  // ---- AC-148 (UI-49, SPEC-v0.0.10 §3.8): the pin. The panel is opened
+  // again (closed state, collapsed tree, page 61 current — the state the
+  // checks above left). The pin control, the docked layout, the pinned
+  // selection rule, the mode orthogonality, the visibility paths (DR-337),
+  // and the single un-pin path.
+  await clickReaderControl(s, () =>
+    document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const reopenedOverlay = await s.waitFor(
+    `return document.querySelector('.menu.toc-panel:not(.toc-docked)') ? true : null;`, { timeout: 8000 });
+
+  const pinControl = await s.evaluate(`
+    return (() => {
+      const row = document.querySelector('.menu.toc-panel .toc-toolbar');
+      if (!row) return null;
+      const controls = Array.from(row.querySelectorAll('.control'));
+      const pin = controls.find((c) => c.getAttribute('aria-label') === 'Pin panel');
+      if (!pin) return null;
+      const rr = row.getBoundingClientRect();
+      const pr = pin.getBoundingClientRect();
+      return {
+        count: controls.length,
+        last: pin === controls[controls.length - 1],
+        pressed: pin.getAttribute('aria-pressed'),
+        rightGap: Math.round(rr.right - parseFloat(getComputedStyle(row).paddingRight) - pr.right),
+        iconOnly: !Array.from(pin.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim()),
+        hasIcon: !!pin.querySelector('svg'),
+        // DR-336: the glyph follows the state — the unpressed overlay state
+        // renders the unpin glyph (the thumbtack with a slash, three paths,
+        // "not pinned"); the pressed docked state renders the plain pin
+        // thumbtack (two paths).
+        paths: pin.querySelectorAll('svg path').length,
+      };
+    })();
+  `);
+  check("AC-148: the toolbar row carries the pin control at its right end — icon-only with its name, the toggle affordance, unpressed while the panel is the released overlay (UI-49)",
+    reopenedOverlay && pinControl && pinControl.count === 2 && pinControl.last &&
+      pinControl.pressed === "false" && Math.abs(pinControl.rightGap) <= 2 &&
+      pinControl.iconOnly && pinControl.hasIcon,
+    JSON.stringify(pinControl));
+
+  // The un-pinned baseline of the content box and the fit-width page — the
+  // docked checks measure against these (the §3.8 "the content box shrinks"
+  // claim is a delta, measured through the same machinery both states use).
+  const baseline = await s.evaluate(`
+    return (() => {
+      const scroll = document.querySelector('.reader-scroll');
+      const page = document.querySelector('.page');
+      if (!scroll || !page) return null;
+      return { contentWidth: scroll.clientWidth, pageWidth: Math.round(page.getBoundingClientRect().width) };
+    })();
+  `);
+
+  const pinned = await clickReaderControl(s, () =>
+    document.querySelector('.menu.toc-panel [aria-label="Pin panel"]'));
+  const docked = await s.waitFor(`
+    return (() => {
+      const panel = document.querySelector('.toc-docked');
+      const overlay = document.querySelector('.menu.toc-panel:not(.toc-docked)');
+      const stripBtn = document.querySelector('.reader-controls button[aria-label="Table of contents"]');
+      const controls = document.querySelector('.reader-controls');
+      const scroll = document.querySelector('.reader-scroll');
+      const page = document.querySelector('.page');
+      if (!panel || overlay || !stripBtn || !controls || !scroll || !page) return null;
+      const styles = getComputedStyle(document.documentElement);
+      const panelWidth = parseFloat(styles.getPropertyValue('--toc-panel-width'));
+      const chromeHeight = parseFloat(styles.getPropertyValue('--toolbar-height'));
+      const pr = panel.getBoundingClientRect();
+      if (Math.round(pr.width) !== panelWidth) return null;
+      // A fit-width page is always narrower than its content box; a page
+      // still wider than the shrunken box is the pre-pin render — wait for
+      // the re-layout the §3.8 claim is about, and for the released serving
+      // pipeline to deliver a page at the shrunken fit width ("fit-width and
+      // serving follow the shrunken content box"; the current page itself
+      // follows the released resize behavior — anchors fire on zoom and mode
+      // changes, not on a content-box resize).
+      if (page.getBoundingClientRect().width >= scroll.clientWidth) return null;
+      const served = page.querySelector("img");
+      if (!(served && served.complete && served.naturalWidth > 0)) return null;
+      // DR-335: the docked toolbar row renders flush — no corner rounding
+      // (the rounded top corners belong to the floating overlay recipe,
+      // DR-226) and the 4 px vertical padding, not the overlay's 8.
+      const toolbar = panel.querySelector('.toc-toolbar');
+      const tbCs = toolbar ? getComputedStyle(toolbar) : null;
+      const pin = panel.querySelector('[aria-label="Pin panel"]');
+      return {
+        left: Math.round(pr.left), top: Math.round(pr.top), bottom: Math.round(pr.bottom),
+        width: Math.round(pr.width), chromeHeight,
+        controlsTop: Math.round(controls.getBoundingClientRect().top),
+        pressed: stripBtn.getAttribute('aria-pressed'),
+        contentWidth: scroll.clientWidth,
+        pageWidth: Math.round(page.getBoundingClientRect().width),
+        serving: !!(served && served.complete && served.naturalWidth > 0),
+        pinPaths: pin ? pin.querySelectorAll('svg path').length : -1,
+        toolbarRadius: tbCs ? [tbCs.borderTopLeftRadius, tbCs.borderTopRightRadius, tbCs.borderBottomLeftRadius, tbCs.borderBottomRightRadius] : null,
+        toolbarPadTop: tbCs ? parseFloat(tbCs.paddingTop) : -1,
+        toolbarPadBottom: tbCs ? parseFloat(tbCs.paddingBottom) : -1,
+        toolbarHeight: toolbar ? Math.round(toolbar.getBoundingClientRect().height) : -1,
+        // DR-342: the pin sits at the row's right end in the docked state
+        // too — the same measurement the overlay-state check uses.
+        pinRightGap: toolbar && pin ? Math.round(toolbar.getBoundingClientRect().right - parseFloat(tbCs.paddingRight) - pin.getBoundingClientRect().right) : -999,
+      };
+    })();
+  `, { timeout: 10000 });
+  check("AC-148: pinning closes the overlay and docks the panel at the left edge — from below the chrome strip to the control strip, at the fixed width; the strip control reflects the open panel (UI-49)",
+    pinned && docked && docked.left === 0 && Math.abs(docked.top - docked.chromeHeight) <= 1 &&
+      Math.abs(docked.bottom - docked.controlsTop) <= 2 && docked.pressed === "true",
+    JSON.stringify(docked));
+  check("AC-148: the page area re-lays out beside it — the content box shrinks by the panel column, fit-width follows the shrunken box, and serving delivers a page at the shrunken fit width (continuous, §3.8)",
+    docked && baseline &&
+      docked.contentWidth === baseline.contentWidth - docked.width &&
+      Math.abs(docked.pageWidth - (baseline.pageWidth - docked.width)) <= 2 &&
+      docked.serving,
+    `before: ${JSON.stringify(baseline)} | after: ${JSON.stringify(docked)}`);
+
+  // DR-336 (the state-following glyph) and DR-335 (the docked chrome): the
+  // pin control's icon follows the state — the overlay state renders the
+  // slashed thumbtack (`unpin`, three paths), the pinned state the plain
+  // thumbtack (`pin`, two paths); and the docked toolbar row renders flush
+  // — no corner rounding, 4 px vertical padding, the row's height the
+  // 32 px control grammar plus that padding, not the overlay's 8.
+  check("AC-148: the pin control's glyph follows the state — the slashed thumbtack in the unpinned overlay state, the plain thumbtack in the pinned state (UI-49, DR-336)",
+    pinControl && pinControl.paths === 3 && docked && docked.pinPaths === 2,
+    `overlay: ${JSON.stringify(pinControl && pinControl.paths)} | docked: ${JSON.stringify(docked && docked.pinPaths)}`);
+  check("AC-148: the docked panel's toolbar row renders flush — square corners and the 4 px vertical padding, the controls unchanged (UI-49, DR-335)",
+    docked &&
+      JSON.stringify(docked.toolbarRadius) === JSON.stringify(["0px", "0px", "0px", "0px"]) &&
+      docked.toolbarPadTop === 4 && docked.toolbarPadBottom === 4 &&
+      Math.abs(docked.toolbarHeight - (32 + 8)) <= 1,
+    JSON.stringify(docked && { r: docked.toolbarRadius, pt: docked.toolbarPadTop, pb: docked.toolbarPadBottom, h: docked.toolbarHeight }));
+  // DR-342: the row recipe flexes on its own (it is not a menu item here),
+  // so the pin's `margin-left: auto` lands it at the right end in the
+  // docked state exactly as in the overlay — the user-reported defect.
+  check("AC-148: the pin control sits at the docked toolbar row's right end as well (UI-49, DR-342)",
+    docked && Math.abs(docked.pinRightGap) <= 2,
+    JSON.stringify(docked && { pinRightGap: docked.pinRightGap }));
+
+  // Entry selection in the pinned state: the same goToPage path, and the
+  // panel stays open (the close-on-select rule belongs to the overlay).
+  const entryTarget = topLevel[0];
+  const entryClicked = await clickReaderControl(s, `() =>
+    Array.from(document.querySelectorAll('.toc-docked .toc-entry'))
+      .find((e) => (e.querySelector('.toc-title')?.textContent ?? '').trim() === ${JSON.stringify(entryTarget.title)})`);
+  const entryField = await waitReaderAt(s, pageLabel(entryTarget.page, doc192.pages), { timeout: 10000 });
+  const stillDocked = await s.evaluate(`return document.querySelector('.toc-docked') ? true : null;`);
+  check("AC-148: with the panel pinned an entry selection navigates and keeps the panel open (§3.8 — the overlay's close-on-select does not apply)",
+    entryClicked && entryField?.label === pageLabel(entryTarget.page, doc192.pages) && stillDocked === true,
+    `entry: ${entryTarget.title} → field: ${JSON.stringify(entryField)} | docked: ${JSON.stringify(stillDocked)}`);
+
+  // The pin is orthogonal to the view mode (§3.8): in continuous horizontal
+  // the row lays out in the shrunken content column, beside the panel, and
+  // serves the current page there.
+  await clickMode(s, "Continuous horizontal");
+  const rowBeside = await s.waitFor(`
+    return (() => {
+      const panel = document.querySelector('.toc-docked');
+      const row = document.querySelector('.reader-row');
+      if (!panel || !row) return null;
+      const pr = panel.getBoundingClientRect();
+      const rr = row.getBoundingClientRect();
+      const img = document.querySelector('.reader-row .page img[alt="Page ${entryTarget.page}"]');
+      if (!(img && img.complete && img.naturalWidth > 0)) return null;
+      const ir = img.getBoundingClientRect();
+      return {
+        panelRight: Math.round(pr.right), rowLeft: Math.round(rr.left),
+        rowWidth: Math.round(rr.width), winWidth: window.innerWidth,
+        panelWidth: Math.round(pr.width),
+        inRow: ir.left >= rr.left - 2 && ir.right <= rr.right + 2,
+      };
+    })();
+  `, { timeout: 12000 });
+  check("AC-148: the pin holds across a mode change — in continuous horizontal the row occupies the shrunken content column beside the docked panel and serves the current page there (§3.8 modes rule)",
+    rowBeside && Math.abs(rowBeside.rowLeft - rowBeside.panelRight) <= 2 &&
+      Math.abs(rowBeside.rowWidth - (rowBeside.winWidth - rowBeside.panelWidth)) <= 2 &&
+      rowBeside.inRow,
+    JSON.stringify(rowBeside));
+  await clickMode(s, "Continuous");
+  const backToStack = await s.waitFor(`
+    return document.querySelector('.reader-scroll') && document.querySelector('.toc-docked') ? true : null;
+  `, { timeout: 10000 });
+  check("AC-148: returning to continuous keeps the docked panel beside the page stack (§3.8 modes rule)",
+    backToStack === true);
+
+  // The visibility paths (UI-49 as revised by DR-337). First the strip
+  // control hides the docked panel keeping the pin — no overlay opens, the
+  // control reflects the hidden panel:
+  await clickReaderControl(s, () =>
+    document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const hidden = await s.waitFor(`
+    return document.querySelector('.toc-docked') ? null : (() => {
+      const btn = document.querySelector('.reader-controls button[aria-label="Table of contents"]');
+      return {
+        pressed: btn?.getAttribute('aria-pressed') ?? null,
+        overlay: !!document.querySelector('.menu.toc-panel:not(.toc-docked)'),
+      };
+    })();
+  `, { timeout: 5000 });
+  check("AC-148: the ToC control hides the pinned panel — no overlay opens, the pin is kept, and the control reflects the hidden panel (UI-49 as revised by DR-337)",
+    hidden && hidden.pressed === "false" && !hidden.overlay,
+    JSON.stringify(hidden));
+
+  // The same control shows it again at the same docked position — the pinned
+  // layout is remembered, the panel is not an overlay (the user's request).
+  await clickReaderControl(s, () =>
+    document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const dockedAgain = await s.waitFor(`
+    return (() => {
+      const panel = document.querySelector('.toc-docked');
+      const stripBtn = document.querySelector('.reader-controls button[aria-label="Table of contents"]');
+      const scroll = document.querySelector('.reader-scroll');
+      if (!panel || !stripBtn || !scroll) return null;
+      const styles = getComputedStyle(document.documentElement);
+      const panelWidth = parseFloat(styles.getPropertyValue('--toc-panel-width'));
+      const chromeHeight = parseFloat(styles.getPropertyValue('--toolbar-height'));
+      const pr = panel.getBoundingClientRect();
+      if (Math.round(pr.width) !== panelWidth) return null;
+      return {
+        left: Math.round(pr.left), top: Math.round(pr.top), width: Math.round(pr.width),
+        chromeHeight, pressed: stripBtn.getAttribute('aria-pressed'),
+        contentWidth: scroll.clientWidth,
+      };
+    })();
+  `, { timeout: 8000 });
+  check("AC-148: the ToC control shows the panel again at the same docked position — the pinned layout is kept, the content column stays shrunk beside it (UI-49 as revised by DR-337)",
+    dockedAgain && dockedAgain.left === 0 && Math.abs(dockedAgain.top - dockedAgain.chromeHeight) <= 1 &&
+      dockedAgain.pressed === "true" &&
+      dockedAgain.contentWidth === baseline.contentWidth - dockedAgain.width,
+    JSON.stringify(dockedAgain));
+
+  // Esc closes the pinned panel first, the window stays, and the pinned
+  // position is kept (§3.8 extends the released guard; DR-337): the next
+  // strip click re-shows it docked, not as an overlay.
   await s.key("Escape", "Escape", 27);
-  await cWaitReaderId(opened.id, false);
+  const escClosedDocked = await s.waitFor(`return document.querySelector('.toc-docked') ? null : true;`, { timeout: 5000 });
+  const windowAfterDockedEsc = (await cdpReaderTargetIds()).includes(opened.id);
+  await clickReaderControl(s, () =>
+    document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const dockedAfterEsc = await s.waitFor(
+    `return document.querySelector('.toc-docked') ? true : null;`, { timeout: 8000 });
+  check("AC-148: with the panel pinned, Esc closes the pinned panel first — the window stays open and the pinned position is kept; the ToC control re-shows the panel docked (§3.8, the released guard extended to the docked state; DR-337)",
+    escClosedDocked === true && windowAfterDockedEsc && dockedAfterEsc === true,
+    `esc: ${JSON.stringify(escClosedDocked)} | window: ${windowAfterDockedEsc} | re-shown docked: ${JSON.stringify(dockedAfterEsc)}`);
+
+  // The single un-pin path (DR-337): the panel's own pin control. Its click
+  // closes the docked panel and restores the released overlay behavior — the
+  // strip control carries the released trigger grammar again (no pressed
+  // state), and its click opens the anchored overlay as before pinning
+  // existed.
+  await clickReaderControl(s, () =>
+    document.querySelector('.toc-docked [aria-label="Pin panel"]'));
+  const unpinned = await s.waitFor(`
+    return document.querySelector('.toc-docked') ? null : (() => {
+      const btn = document.querySelector('.reader-controls button[aria-label="Table of contents"]');
+      return {
+        pressed: btn?.getAttribute('aria-pressed') ?? null,
+        overlay: !!document.querySelector('.menu.toc-panel:not(.toc-docked)'),
+      };
+    })();
+  `, { timeout: 5000 });
+  check("AC-148: the panel's pin control is the only un-pin path — its click closes the docked panel and the strip control carries the released overlay grammar again (UI-49 as revised by DR-337)",
+    unpinned && unpinned.pressed === null && !unpinned.overlay,
+    JSON.stringify(unpinned));
+
+  await clickReaderControl(s, () =>
+    document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const overlayBack = await s.waitFor(
+    `return document.querySelector('.menu.toc-panel:not(.toc-docked)') ? true : null;`, { timeout: 5000 });
+  check("AC-148: after unpinning, the panel opens again as the released anchored overlay (UI-49)",
+    overlayBack === true);
+  // Close the open overlay first (the released guard — this Esc belongs to
+  // the overlay), so the flow's final Esc closes the window itself.
+  await s.key("Escape", "Escape", 27);
+  const overlayGone = await s.waitFor(`return document.querySelector('.menu.toc-panel') ? null : true;`, { timeout: 5000 });
+  if (overlayGone !== true) throw new Error("the released overlay did not close on Esc — the window-closing Esc would leak the window");
+  await s.key("Escape", "Escape", 27);
+  // DR-340: the window's own Esc must land right after the overlay's. A
+  // leaked window is handed to the next flow (one window per document), so
+  // the close is asserted here, not left to cWaitReaderId's silent false.
+  if (!(await cWaitReaderId(opened.id, false))) throw new Error("the window-closing Esc did not close the reader window");
 
   // A document without an outline offers no control (UI-33's negative case).
   const plain = await cOpenReader("multi-1000");
@@ -9712,7 +10115,7 @@ async function flowReaderToc() {
   `);
   check("AC-78: with multi-1000 open no ToC control is rendered", none === true);
   await plain.session.key("Escape", "Escape", 27);
-  await cWaitReaderId(plain.id, false);
+  if (!(await cWaitReaderId(plain.id, false))) throw new Error("the window-closing Esc did not close the plain reader window");
 }
 
 // AC-79 + AC-80 (UI-34 as revised by DR-204/DR-205/DR-219, SPEC-v0.0.7
@@ -9807,13 +10210,16 @@ async function flowReaderViewModes() {
   const s = opened.session;
   await s.waitFor(FIRST_PAGE_READY, { timeout: 8000 });
 
-  // AC-79: three choices, continuous active by default (the released default
-  // mode, UI-34's own words; DR-181 keeps it per-window).
+  // AC-142 (UI-34 MODIFIED, v0.0.10): the released three-button control is
+  // four buttons — the fourth choice inactive, continuous still the default
+  // (this re-pins AC-79's three-button control; flowReaderHorizontal carries
+  // the new mode's own checks).
   const modes0 = await modeButtons(s);
-  check("AC-79: the mode control renders three choices with continuous active by default",
-    modes0.length === 3 && modes0[0].label === "Single page" && !modes0[0].pressed &&
+  check("AC-142: the mode control renders four choices with continuous active by default (re-pins AC-79's three-button control)",
+    modes0.length === 4 && modes0[0].label === "Single page" && !modes0[0].pressed &&
       modes0[1].label === "Continuous" && modes0[1].pressed &&
-      modes0[2].label === "Facing pages" && !modes0[2].pressed,
+      modes0[2].label === "Facing pages" && !modes0[2].pressed &&
+      modes0[3].label === "Continuous horizontal" && !modes0[3].pressed,
     JSON.stringify(modes0));
 
   // "Switching mode from continuous at page 57 shows page 57 in the new
@@ -10384,7 +10790,7 @@ async function flowReaderViewModes() {
   await second.session.waitFor(FIRST_PAGE_READY, { timeout: 8000 });
   const modes2 = await modeButtons(second.session);
   check("AC-80: a new reader window opens in continuous regardless of the previous window's mode",
-    modes2.length === 3 && modes2[1].pressed && !modes2[0].pressed && !modes2[2].pressed,
+    modes2.length === 4 && modes2[1].pressed && !modes2[0].pressed && !modes2[2].pressed && !modes2[3].pressed,
     JSON.stringify(modes2));
   await second.session.key("Escape", "Escape", 27);
   await cWaitReaderId(second.id, false);
@@ -10432,6 +10838,642 @@ async function flowReaderViewModes() {
     await cClearSearch();
   }
 
+  await s.key("Escape", "Escape", 27);
+  await cWaitReaderId(opened.id, false);
+}
+
+// v0.0.10 (FR-17 / UI-34 MODIFIED, AC-142…AC-147): the continuous-horizontal
+// row. The flow drives the shipped controls on the multi-192 fixture: the
+// mode control's fourth choice and the new-window default (AC-142), the row
+// layout and the horizontal-center derivation with the page field and the
+// field jump (AC-143), the mode-switch handoff through the row (AC-144), the
+// released key map on the x-axis (AC-145), fit-width and the zoom steps in
+// the row (AC-146), and the mount bound with the serving window following the
+// row position (AC-147). The store-side math is proven in
+// ui/src/lib/state/reader.test.ts.
+async function flowReaderHorizontal() {
+  const count = multiDoc("multi-192.pdf").pages;
+  const opened = await cOpenReader("multi-192");
+  const s = opened.session;
+  await s.waitFor(FIRST_PAGE_READY, { timeout: 8000 });
+
+  // AC-142: the mode control carries four choices; the fourth is named per
+  // the released label and inactive — the default mode is unchanged.
+  const modes0 = await modeButtons(s);
+  check("AC-142: the mode control carries four choices with continuous active by default",
+    modes0.length === 4 && modes0[3].label === "Continuous horizontal" && !modes0[3].pressed &&
+      modes0[1].label === "Continuous" && modes0[1].pressed && !modes0[0].pressed && !modes0[2].pressed,
+    JSON.stringify(modes0));
+
+  // The row probe: the mount line, the scroller state, and the field label
+  // in one atomic read (DR-156). `content` is the padded content box the
+  // fit base measures; `centerX` the viewport's horizontal center.
+  const rowProbe = () => `
+    const box = document.querySelector('.reader-row');
+    if (!box) return null;
+    const cs = getComputedStyle(box);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const pages = Array.from(box.querySelectorAll('.page'));
+    const rects = pages.map((p) => {
+      const r = p.getBoundingClientRect();
+      const img = p.querySelector('img');
+      return {
+        x: Math.round(r.left), right: Math.round(r.right), y: Math.round(r.top),
+        w: Math.round(r.width), h: Math.round(r.height),
+        alt: img?.getAttribute('alt') ?? p.querySelector('.page-placeholder')?.getAttribute('aria-label') ?? null,
+        loaded: !!(img && img.complete && img.naturalWidth > 0),
+      };
+    });
+    if (rects.length === 0 || !rects.some((p) => p.loaded)) return null;
+    const br = box.getBoundingClientRect();
+    return {
+      rects,
+      client: box.clientWidth,
+      content: Math.round(box.clientWidth - padL - padR),
+      scrollLeft: Math.round(box.scrollLeft),
+      boxTop: Math.round(br.top),
+      boxHeight: Math.round(box.clientHeight),
+      centerX: Math.round(br.left + box.clientLeft + box.clientWidth / 2),
+      label: ${fieldLabel},
+    };
+  `;
+  const waitForRow = async (predicate, { timeout = 12000 } = {}) => {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      let r = null;
+      try { r = await s.evaluate(rowProbe()); } catch { r = null; }
+      if (r && predicate(r)) return r;
+      if (Date.now() > deadline) return r;
+      await sleep(100);
+    }
+  };
+  const pageNum = (alt) => Number(String(alt ?? "").replace(/^Page /, ""));
+  // The released gesture for window-level navigation: a click on a loaded
+  // page image (no handler there) drops focus back to the document.
+  const dropFocusToPage = async () => {
+    const at = await s.evaluate(`
+      const page = Array.from(document.querySelectorAll('.reader-row .page')).find((p) => {
+        const i = p.querySelector('img'); return i && i.complete && i.naturalWidth > 0;
+      });
+      if (!page) return null;
+      const r = page.getBoundingClientRect();
+      const top = Math.max(r.top, 60) + 20;
+      const bottom = Math.min(r.bottom, window.innerHeight - 70) - 20;
+      const left = Math.max(r.left, 30);
+      const right = Math.min(r.right, window.innerWidth - 30);
+      return { x: Math.round((left + right) / 2), y: Math.round((top + bottom) / 2) };
+    `);
+    if (!at) throw new Error("the focus-drop found no loaded row page to click");
+    await s.clickAt(at.x, at.y);
+  };
+
+  // Enter the row at an interior page — the released handoff path (M6):
+  // continuous at page 40, then the mode control.
+  const at40 = await fieldJumpTo(s, "40", pageLabel(40, count));
+  if (!at40) throw new Error("the row-mode setup failed: the jump to page 40 did not land");
+  await clickMode(s, "Continuous horizontal");
+  const settled40 = await waitReaderAt(s, pageLabel(40, count), { timeout: 10000 });
+  check("AC-144: entering the row from continuous keeps the current page in the field",
+    !!settled40 && settled40.label === pageLabel(40, count),
+    `label: ${JSON.stringify(settled40?.label ?? null)}`);
+  const row = await waitForRow(() => true);
+  if (!row) throw new Error("no row mount after the mode switch");
+  const ordered = [...row.rects].sort((a, b) => a.x - b.x);
+  const seq = ordered.map((p) => pageNum(p.alt));
+  const gaps = ordered.slice(1).map((p, i) => p.x - ordered[i].right);
+  const consecutive = seq.every((n, i) => Number.isFinite(n) && (i === 0 || n === seq[i - 1] + 1));
+  check("AC-143: the row mounts the pages in one left-to-right line, consecutive in reading order, with the standard 12 px gap",
+    ordered.length >= 2 && consecutive && gaps.every((g) => Math.abs(g - 12) <= 1),
+    JSON.stringify({ seq, gaps }));
+  const uniform = ordered.every((p) => Math.abs(p.w - ordered[0].w) <= 1);
+  const ratioOk = ordered.every((p) => Math.abs(p.h / p.w - FIXTURE_RATIO) <= 0.01);
+  const fitSpan = Math.abs(ordered[0].w - row.content) <= 2;
+  check("AC-146: fit-width in the row fits the current page to the viewport — each page spans the content box at the fixture's ratio",
+    uniform && ratioOk && fitSpan,
+    `page widths ${JSON.stringify(ordered.map((p) => p.w))}, content ${row.content}`);
+  const tallest = Math.max(...ordered.map((p) => p.h));
+  const fitsViewport = tallest <= row.boxHeight + 1;
+  const alignedOk = fitsViewport
+    ? ordered.every((p) => Math.abs(p.y + p.h / 2 - (row.boxTop + row.boxHeight / 2)) <= 2)
+    : ordered.every((p) => Math.abs(p.y - row.boxTop) <= 2);
+  check("AC-143: the row is vertically centered when it fits and start-aligned when taller — a taller page's top edge stays reachable (DR-205's rule on the other axis)",
+    alignedOk,
+    `fits ${fitsViewport}, tallest ${tallest}, box ${row.boxHeight}, tops ${JSON.stringify(ordered.map((p) => p.y))}`);
+  const centerOwner = ordered.find((p) => p.x <= row.centerX && row.centerX < p.right);
+  check("AC-143: the page field names the page at the viewport's horizontal center",
+    !!centerOwner && pageNum(centerOwner.alt) === 40 && row.label === pageLabel(40, count),
+    `center ${row.centerX}, owner ${JSON.stringify(centerOwner?.alt ?? null)}, label ${JSON.stringify(row.label)}`);
+
+  // AC-145: the released key-map guard holds in the row too — while the
+  // field is focused its keys belong to it (UI-30/AC-98).
+  await s.evaluate(`const f = document.querySelector('.reader-controls input[aria-label]'); f.focus(); return true;`);
+  await s.key("ArrowRight", "ArrowRight", 39);
+  await s.key("ArrowDown", "ArrowDown", 40);
+  await s.key("PageDown", "PageDown", 34);
+  await sleep(250);
+  const guarded = await s.evaluate(`return ${fieldLabel};`);
+  check("AC-145: while the page field is focused the row's navigation keys belong to it (the released guard)",
+    guarded === pageLabel(40, count), `label: ${JSON.stringify(guarded)}`);
+
+  // AC-145: ←/→ one page along the row (the strip's paths).
+  await dropFocusToPage();
+  await s.key("ArrowRight", "ArrowRight", 39);
+  const at41 = await s.waitFor(`return ${fieldLabel} === ${JSON.stringify(pageLabel(41, count))} ? true : null;`, { timeout: 5000 });
+  check("AC-145: ArrowRight advances exactly one page along the row", !!at41);
+  await s.key("ArrowLeft", "ArrowLeft", 37);
+  const back40 = await s.waitFor(`return ${fieldLabel} === ${JSON.stringify(pageLabel(40, count))} ? true : null;`, { timeout: 5000 });
+  check("AC-145: ArrowLeft steps back exactly one page along the row", !!back40);
+
+  // AC-143: the strip's prev/next step one page along the row — the same
+  // `stepPage` path the arrow keys take, asserted on the named controls.
+  await clickReaderControl(s, () => document.querySelector('.reader-controls button[aria-label="Next page"]'));
+  const btn41 = await s.waitFor(`return ${fieldLabel} === ${JSON.stringify(pageLabel(41, count))} ? true : null;`, { timeout: 5000 });
+  check("AC-143: next steps one page along the row", !!btn41);
+  await clickReaderControl(s, () => document.querySelector('.reader-controls button[aria-label="Previous page"]'));
+  const btn40 = await s.waitFor(`return ${fieldLabel} === ${JSON.stringify(pageLabel(40, count))} ? true : null;`, { timeout: 5000 });
+  check("AC-143: previous steps back one page along the row", !!btn40);
+
+  // AC-145 + AC-143: PgDn travels one viewport along the row, and the field
+  // names the page at the new center; PgUp returns. The field readout lags
+  // the scroll event by a frame — the released flows sample only the settled
+  // view for exactly this reason (flowReaderOpen's PgDn row): the predicate
+  // requires the moved scroll AND the field naming the center page, so the
+  // wait proves the tracking instead of sampling mid-flight.
+  const centerPage = (r) => {
+    const ordered = [...r.rects].sort((a, b) => a.x - b.x);
+    const center = ordered.find((p) => p.x <= r.centerX && r.centerX < p.right);
+    return center ? pageNum(center.alt) : Number.NaN;
+  };
+  const beforePg = await s.evaluate(rowProbe());
+  await s.key("PageDown", "PageDown", 34);
+  const afterPg = await waitForRow((r) =>
+    r.scrollLeft - beforePg.scrollLeft >= r.client - 30 &&
+    Number.isFinite(centerPage(r)) && r.label === pageLabel(centerPage(r), count));
+  check("AC-145 / AC-143: PgDn travels one viewport along the row and the field names the page at the new center",
+    !!afterPg && Math.abs(afterPg.scrollLeft - (beforePg.scrollLeft + afterPg.client)) <= 2 &&
+      centerPage(afterPg) > 40 && afterPg.label === pageLabel(centerPage(afterPg), count),
+    JSON.stringify({ before: beforePg.scrollLeft, after: afterPg?.scrollLeft ?? null, client: afterPg?.client ?? null, center: centerPage(afterPg ?? { rects: [] }), label: afterPg?.label ?? null }));
+  await s.key("PageUp", "PageUp", 33);
+  const backPg = await waitForRow((r) => Math.abs(r.scrollLeft - beforePg.scrollLeft) <= 2 && r.label === pageLabel(40, count));
+  check("AC-145: PgUp travels back one viewport along the row, the field back to the page at the center", !!backPg);
+
+  // AC-145: ↑/↓ one notch on the row (the wheel's keyboard counterpart).
+  const beforeNotch = await s.evaluate(rowProbe());
+  await s.key("ArrowDown", "ArrowDown", 40);
+  await sleep(250);
+  const afterNotch = await s.evaluate(rowProbe());
+  check("AC-145: ArrowDown in the row scrolls it by the notch, the current page unchanged",
+    !!afterNotch && afterNotch.label === pageLabel(40, count) &&
+      Math.abs(afterNotch.scrollLeft - (beforeNotch.scrollLeft + 100)) <= 2,
+    JSON.stringify({ before: beforeNotch.scrollLeft, after: afterNotch?.scrollLeft ?? null }));
+  await s.key("ArrowUp", "ArrowUp", 38);
+  await sleep(250);
+  const backNotch = await s.evaluate(rowProbe());
+  check("AC-145: ArrowUp scrolls the row back by the notch, the current page unchanged",
+    !!backNotch && Math.abs(backNotch.scrollLeft - beforeNotch.scrollLeft) <= 2 && backNotch.label === pageLabel(40, count),
+    `scrollLeft: ${JSON.stringify(backNotch?.scrollLeft ?? null)}`);
+
+  // AC-145: Home/End the document's ends. AC-147 part 1: the released mount
+  // bound at the document's end — only row-near pages are mounted.
+  await s.key("End", "End", 35);
+  const endState = await waitReaderAt(s, pageLabel(count, count), { timeout: 10000 });
+  check("AC-145: End reaches the last page in the row", !!endState && endState.label === pageLabel(count, count));
+  const nearEnd = !!endState && endState.mounted > 0 && endState.mounted < 40 &&
+    endState.pages.every((p) => { const n = pageNum(p.alt); return Number.isFinite(n) && Math.abs(n - count) <= 8; });
+  check("AC-147: only row-near pages are mounted at the document's end (the released mount bound, x-axis)",
+    nearEnd, `mounted: ${endState?.mounted}, alts: ${JSON.stringify(endState?.pages.map((p) => p.alt))}`);
+  await s.key("Home", "Home", 36);
+  const atHome = await s.waitFor(`return ${fieldLabel} === ${JSON.stringify(pageLabel(1, count))} ? true : null;`, { timeout: 10000 });
+  check("AC-145: Home reaches the first page in the row", !!atHome);
+
+  // AC-147 part 2: the serving window follows the row position. Setup: the
+  // boundary observer over the request command, drained to a quiet set — the
+  // window left around page 1 must not leak into the audit (the
+  // flowReaderViewModes pattern). Then the field jump to 60: the requests
+  // after it cover the row window around 60 and no page beyond it, and the
+  // landed page is mounted and visible.
+  await s.evaluate(BOUNDARY_SCRIPT);
+  const drainRequests = async () => {
+    let last = null;
+    let stable = 0;
+    for (let guard = 0; guard < 160 && stable < 4; guard += 1) {
+      const cur = await s.evaluate(`return Array.from(window.__TAURI_INTERNALS__.__pageRequested ?? []).sort().join("|");`);
+      if (cur === last) stable += 1;
+      else { stable = 0; last = cur; }
+      await sleep(150);
+    }
+    await s.evaluate(`window.__TAURI_INTERNALS__.__pageRequested = new Set(); return true;`);
+  };
+  await drainRequests();
+  const at60 = await fieldJumpTo(s, "60", pageLabel(60, count));
+  if (!at60) throw new Error("the serving audit setup failed: the jump to page 60 failed");
+  const row60 = await waitForRow((r) => r.rects.some(
+    (p) => pageNum(p.alt) === 60 && p.loaded && p.right > r.centerX - r.client / 2 && p.x < r.centerX + r.client / 2,
+  ));
+  check("AC-143: entering a number opens that page — page 60 is mounted and visible in the row", !!row60);
+  const audit = await s.waitFor(`
+    const box = document.querySelector('.reader-row');
+    if (!box) return null;
+    const displayW = Math.round(box.querySelector('.page')?.getBoundingClientRect().width ?? 0);
+    const ratio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+    const clamp = (w) => Math.min(4000, Math.max(100, Math.round(w)));
+    const previewW = Math.min(clamp(displayW), 1400);
+    const targetW = clamp(displayW * ratio);
+    const stages = previewW === targetW ? [previewW] : [previewW, targetW];
+    const req = Array.from(window.__TAURI_INTERNALS__.__pageRequested ?? []);
+    const served = (p) => stages.every((w) => req.includes(p + "-" + w));
+    if (!(served(54) && served(67))) return null;
+    return { req, stages };
+  `, { timeout: 30000 });
+  const pageOf = (key) => Number(key.split("-")[0]);
+  const requestedPages = new Set((audit?.req ?? []).map(pageOf));
+  check("AC-147: the serving window follows the row position — after the jump to 60 the requests cover the row window around it (54…67) and no page beyond the bound (the released window rule, x-axis)",
+    !!audit && requestedPages.has(60) && [...requestedPages].every((p) => p >= 53 && p <= 68),
+    `requested pages: ${JSON.stringify([...requestedPages].sort((a, b) => a - b))}`);
+
+  // AC-146: a zoom step applies to every page in the row at the same ratio,
+  // the readout names the step, and the fit-width binding returns the row to
+  // the fit base. The landing follows the released AC-96 rule: from a fit
+  // mode the step continues from the mode's effective percent — the fit page
+  // here is 967 CSS px on the fixture's 816 px actual page (612 pt × 4/3,
+  // the same constant AC-96 names), effective 118.5 %, so the step lands on
+  // 100 %. The expected width is computed from the measured fit width, never
+  // hard-coded behavior.
+  const fitProbe = await s.evaluate(rowProbe());
+  const fitW = fitProbe.rects.length ? Math.min(...fitProbe.rects.map((p) => p.w)) : 0;
+  const actual = 816; // 612 pt × 4/3 — the fixture's true page width
+  const effective = (fitW / actual) * 100;
+  const firstDown = [50, 75, 100, 125, 150, 200, 300].reverse().find((v) => v < effective - 0.01) ?? 50;
+  const expectedW = (actual * firstDown) / 100;
+  await clickReaderControl(s, zoomOutControl);
+  const zoomed = await waitForRow((r) => r.rects.length > 0 && r.rects.every((p) => p.loaded && Math.abs(p.w - expectedW) <= 2));
+  const zoomW = zoomed ? Math.min(...zoomed.rects.map((p) => p.w)) : 0;
+  const stepReadout = await s.evaluate(`return document.querySelector('.zoom-value')?.textContent?.trim() ?? null;`);
+  check(`AC-146: a zoom step applies to every page in the row at the same ratio — from fit (${effective.toFixed(1)} % effective) it lands on ${firstDown} % at actual × ${firstDown} / 100, and the readout names the step`,
+    !!zoomed && zoomed.rects.every((p) => Math.abs(p.w - zoomW) <= 1) && Math.abs(zoomW - expectedW) <= 2 && stepReadout === `${firstDown}%`,
+    `fit ${fitW}, zoomed ${JSON.stringify(zoomed?.rects.map((p) => p.w) ?? null)}, readout ${JSON.stringify(stepReadout)}`);
+  await s.key("0", "Digit0", 48, 2);
+  const refit = await waitForRow((r) => r.rects.every((p) => p.loaded) && Math.abs(Math.min(...r.rects.map((p) => p.w)) - r.content) <= 2);
+  check("AC-146: the fit-width binding returns the row to the fit base", !!refit);
+
+  // AC-144: the handoff chain — continuous → horizontal → facing → back —
+  // keeps the current page visible at every switch. The current page is the
+  // field's value; the facing leg names the pair's first page (59), per the
+  // released DR-180 rule the chain re-asserts, and every later switch
+  // preserves that value (UI-34's released handoff wording, now on both
+  // axes).
+  await clickMode(s, "Continuous");
+  const cont60 = await waitReaderAt(s, pageLabel(60, count), { timeout: 10000 });
+  check("AC-144: switching from the row back to continuous keeps page 60 in view",
+    !!cont60 && cont60.label === pageLabel(60, count) && cont60.scrollTop > 0 && cont60.mounted >= 1,
+    cont60 ? `label ${JSON.stringify(cont60.label)}, scrollTop ${cont60.scrollTop}, mounted ${cont60.mounted}` : "no state");
+  await clickMode(s, "Continuous horizontal");
+  const row60again = await waitForRow((r) => r.label === pageLabel(60, count) && r.rects.some(
+    (p) => pageNum(p.alt) === 60 && p.loaded && p.right > r.centerX - r.client / 2 && p.x < r.centerX + r.client / 2,
+  ));
+  check("AC-144: entering the row from continuous keeps page 60 in view", !!row60again);
+  await clickMode(s, "Facing pages");
+  const pair60 = await waitReaderAt(s, pageLabel(59, count), { timeout: 10000 });
+  const pairMounted = await s.evaluate(`
+    return Array.from(document.querySelectorAll('.reader-scroll .row'))
+      .map((r) => Array.from(r.querySelectorAll('.page')).map((p) =>
+        p.querySelector('img')?.getAttribute('alt') ?? p.querySelector('.page-placeholder')?.getAttribute('aria-label') ?? null))
+      .filter((alts) => alts.includes('Page 59') || alts.includes('Page 60'));
+  `);
+  check("AC-144: switching from the row to facing lands on the pair containing page 60",
+    !!pair60 && pairMounted.some((alts) => alts.includes("Page 59") && alts.includes("Page 60")),
+    JSON.stringify(pairMounted));
+  // The preserved page after the facing leg is the field's value — 59, the
+  // pair's first page; continuous opens there (page 60 follows below it).
+  await clickMode(s, "Continuous");
+  const backCont = await waitReaderAt(s, pageLabel(59, count), { timeout: 10000 });
+  check("AC-144: switching back from facing to continuous keeps the current page (the pair's first, 59) in view",
+    !!backCont && backCont.label === pageLabel(59, count),
+    `label: ${JSON.stringify(backCont?.label ?? null)}`);
+
+  // AC-142 part 2: the mode is session state of its own window (DR-181
+  // unchanged): this window ends in the row mode, and a new reader window
+  // still opens in continuous.
+  await clickMode(s, "Continuous horizontal");
+  const endedInRow = await waitReaderAt(s, pageLabel(59, count), { timeout: 10000 });
+  if (!endedInRow || endedInRow.label !== pageLabel(59, count)) {
+    throw new Error("the handoff into the row for the default check failed");
+  }
+  const second = await cOpenReader("multi-096");
+  await second.session.waitFor(FIRST_PAGE_READY, { timeout: 8000 });
+  const modes2 = await modeButtons(second.session);
+  check("AC-142: a new reader window opens in continuous with the fourth choice inactive",
+    modes2.length === 4 && modes2[1].pressed && !modes2[0].pressed && !modes2[2].pressed && !modes2[3].pressed,
+    JSON.stringify(modes2));
+  await second.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(second.id, false);
+
+  await s.key("Escape", "Escape", 27);
+  await cWaitReaderId(opened.id, false);
+}
+
+// AC-149 (FR-24 / UI-50 as revised by DR-338, SPEC-v0.0.10 §3.9): the
+// reader chrome's settings menu. The control sits in the window chrome's
+// right end, immediately before the window controls — the main window's
+// settings menu, complete: the theme cycle item (Light → Dark → Auto, the
+// menu stays open across the activation), Settings (the dialog), Check for
+// updates, About. The control strip carries no settings control. The write
+// goes through the settings store (R1.6); every open window re-applies
+// through the released path (M8) — proven here against the library window,
+// which stays open throughout — and a window opened later carries the
+// stored theme.
+async function flowReaderSettings() {
+  const opened = await cOpenReader("multi-096");
+  const s = opened.session;
+  await s.waitFor(FIRST_PAGE_READY, { timeout: 8000 });
+
+  // The concrete ramp the OS resolves to before any change — the cycle's
+  // last step returns every window to exactly this value (the harness'
+  // theme is never assumed, it is read).
+  const ramp = (session) => session.evaluate(`return document.documentElement.dataset.theme ?? null;`);
+  const ramp0 = await ramp(s);
+
+  // AC-149 / UI-50 (revised): the settings control is the chrome's right
+  // end — the last control before the window controls, icon-only with an
+  // accessible name — and the control strip carries no settings control
+  // (its control count is the released one, without the draft's item).
+  const chrome = await s.evaluate(`
+    const controls = Array.from(document.querySelectorAll('.chrome .control, .chrome .window-button'));
+    const trigger = document.querySelector('.chrome [aria-label="Settings"]');
+    const minimize = document.querySelector('.chrome [aria-label="Minimize"]');
+    const strip = document.querySelector('.reader-controls');
+    return {
+      order: controls.map((c) => c.getAttribute('aria-label') ?? ''),
+      beforeWindow: !!trigger && !!minimize && controls.indexOf(trigger) === controls.indexOf(minimize) - 1,
+      iconOnly: !!trigger && !trigger.textContent.trim() && !!trigger.querySelector('svg'),
+      stripHas: !!strip && !!strip.querySelector('[aria-label="Settings"]'),
+      stripControls: strip ? strip.querySelectorAll('.control').length : -1,
+      stripModes: strip ? strip.querySelectorAll('.control[aria-pressed]').length : -1,
+    };
+  `);
+  check("AC-149: the reader chrome carries the settings control at its right end, immediately before the window controls — icon-only, named (UI-50 as revised by DR-338)",
+    chrome.beforeWindow && chrome.iconOnly &&
+      JSON.stringify(chrome.order) === JSON.stringify(["Settings", "Minimize", "Maximize", "Close"]),
+    JSON.stringify(chrome));
+  check("AC-149: the control strip carries no settings control — the released controls only, the view-mode group last (UI-50 as revised by DR-338)",
+    !chrome.stripHas && chrome.stripModes === 4 && chrome.stripControls === 10,
+    JSON.stringify(chrome));
+
+  // Pointing at the control opens the app's tooltip naming it (UI-13, the
+  // released tooltip pattern) — and the tooltip is gone before the click.
+  const trigAt = await s.evaluate(`
+    const el = document.querySelector('.chrome [aria-label="Settings"]');
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  `);
+  await s.hoverAt(trigAt.x, trigAt.y);
+  const tip = await s.waitFor(`
+    const tip = document.querySelector('.tooltip');
+    return tip && tip.textContent.trim() === "Settings" ? true : null;
+  `, { timeout: 3000 });
+  check("UI-50: pointing at the settings control opens the app's tooltip naming it (UI-13)", !!tip);
+  await s.hoverAt(1, 1);
+  const tipGone = await s.waitFor(`return document.querySelectorAll('.tooltip').length === 0 ? true : null;`, { timeout: 3000 });
+  if (!tipGone) throw new Error("the control tooltip did not dismiss on pointer leave — the next click would hit the tooltip");
+
+  // The menu is the main window's settings menu, complete — proven against
+  // the main window's own menu, opened through its real control on this
+  // runtime's main-session path (the CDP main session — the reading lanes
+  // run on it, DR-147; the WebDriver helpers are not available here), not
+  // against a hardcoded copy: the reader menu's item list must equal the
+  // main's.
+  const mainTrig = await cMainEval(`
+    const el = document.querySelector('.settings-trigger');
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  `);
+  if (!mainTrig) throw new Error("the main window's settings control is missing");
+  await cdpMain.clickAt(mainTrig.x, mainTrig.y);
+  const mainItems = await cMainWait(`
+    const c = document.querySelector('.menu.settings-menu');
+    if (!c) return null;
+    return Array.from(c.querySelectorAll('.menu-item')).map((i) => i.textContent.trim());
+  `, { timeout: 5000 });
+  if (!mainItems) throw new Error("the main window's settings menu did not open");
+  await cdpMain.key("Escape", "Escape", 27);
+  const mainMenuGone = await cMainWait(`return document.querySelector('.menu.settings-menu') ? null : true;`, { timeout: 4000 });
+  if (mainMenuGone !== true) throw new Error("the main window's settings menu did not close on Esc");
+
+  const openSettingsMenu = async () => {
+    const clicked = await clickReaderControl(s, () => document.querySelector('.chrome [aria-label="Settings"]'));
+    if (!clicked) throw new Error("the settings control is not clickable");
+    const items = await s.waitFor(`
+      const c = document.querySelector('.menu.settings-menu');
+      if (!c) return null;
+      return Array.from(c.querySelectorAll('.menu-item')).map((i) => i.textContent.trim());
+    `, { timeout: 5000 });
+    return items ?? null;
+  };
+  const menu0 = await openSettingsMenu();
+  check("AC-149: the reader settings menu is the main window's settings menu, complete — the theme cycle item naming the theme in effect, Settings, Check for updates, About, in the main window's order (UI-50 as revised by DR-338)",
+    JSON.stringify(menu0) === JSON.stringify(["Theme: Auto", "Settings", "Check for updates", "About PDF Keeper"]) &&
+      JSON.stringify(menu0) === JSON.stringify(mainItems),
+    `reader: ${JSON.stringify(menu0)} | main: ${JSON.stringify(mainItems)}`);
+
+  // One cycle step: activate the theme item (the menu's first), then read
+  // the menu state and the reader window's ramp in one wait — the menu
+  // must still be open and the item must name the new theme (the
+  // stay-open + re-render behavior, DR-209 semantics).
+  const cycleStep = async (expectedLabel) => {
+    const clicked = await clickReaderControl(
+      s,
+      `() => document.querySelector('.menu.settings-menu .menu-item')`,
+    );
+    if (!clicked) throw new Error("the settings menu has no theme item to activate");
+    const readerRamp = await s.waitFor(`
+      const c = document.querySelector('.menu.settings-menu');
+      if (!c) return null;
+      const item = c.querySelector('.menu-item');
+      if (!item || item.textContent.trim() !== ${JSON.stringify(expectedLabel)}) return null;
+      return document.documentElement.dataset.theme ?? null;
+    `, { timeout: 8000 });
+    if (readerRamp === null || typeof readerRamp !== "string") return null;
+    const mainApplied = await cMainWait(
+      `return document.documentElement.dataset.theme === ${JSON.stringify(readerRamp)} ? true : null;`,
+      { timeout: 5000 },
+    );
+    return { ramp: readerRamp, mainApplied: !!mainApplied };
+  };
+
+  // Cycle step 1: Auto → Light. The library window — open throughout —
+  // re-applies live through the released path (M8); no new command, no
+  // window-local state.
+  const step1 = await cycleStep("Theme: Light");
+  check("AC-149: the first activation advances the cycle to Light, the menu stays open and the item re-renders, the change applies live in the library window",
+    step1 !== null && step1.ramp === "light" && step1.mainApplied,
+    JSON.stringify(step1));
+
+  // Cycle step 2: Light → Dark.
+  const step2 = await cycleStep("Theme: Dark");
+  check("AC-149: the second activation advances the cycle to Dark — menu open, item re-rendered, every open window on the dark ramp",
+    step2 !== null && step2.ramp === "dark" && step2.mainApplied,
+    JSON.stringify(step2));
+
+  // Persistence: a reader window opened after the change carries the
+  // stored theme from its first settings load.
+  const later = await cOpenReader("multi-1000");
+  await later.session.waitFor(FIRST_PAGE_READY, { timeout: 12000 });
+  const laterDark = await later.session.waitFor(
+    `return document.documentElement.dataset.theme === "dark" ? true : null;`,
+    { timeout: 8000 },
+  );
+  check("AC-149: a reader window opened later carries the stored theme", !!laterDark);
+  await later.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(later.id, false);
+
+  // Cycle step 3: Dark → Auto — the cycle closes, and with the stored
+  // choice back at its default every window returns to the OS-resolved
+  // ramp it started on (the released `system` behavior, unchanged).
+  const step3 = await cycleStep("Theme: Auto");
+  check("AC-149: the third activation advances the cycle to Auto and every open window returns to the OS-resolved ramp",
+    step3 !== null && step3.ramp === ramp0 && step3.mainApplied,
+    `start ramp: ${JSON.stringify(ramp0)}, after Auto: ${JSON.stringify(step3)}`);
+
+  // The menu's action items work in the reader window too: Settings opens
+  // the settings dialog IN this window (the released dialog component, no
+  // second window) — opened through the menu item, closed by the released
+  // `Esc` rule. (Check for updates and About are the same shared wiring;
+  // their behavior is carried by the main window's flows, DR-332/AC-153
+  // and UI-12.)
+  const settingsItem = await clickReaderControl(s, `() =>
+    Array.from(document.querySelectorAll('.menu.settings-menu .menu-item'))
+      .find((i) => i.textContent.trim() === "Settings")`);
+  const dialogHere = await s.waitFor(
+    `return document.querySelector('.modal .settings-section') ? true : null;`, { timeout: 5000 });
+  check("AC-149: the Settings item opens the settings dialog in the reader window itself (the shared menu component, the released dialog, DR-338)",
+    settingsItem && dialogHere === true);
+  await s.key("Escape", "Escape", 27);
+  const dialogClosed = await s.waitFor(`return document.querySelector('.modal') ? null : true;`, { timeout: 5000 });
+  if (dialogClosed !== true) throw new Error("the settings dialog did not close on Esc in the reader window");
+
+  // DR-343 (Phase-B feedback item 3): with the panel pinned, the settings
+  // dialog must render ABOVE the docked panel — the panel is window layout,
+  // the dialog is the overlay layer. The measurement is the user's view: at
+  // a point inside both the dialog and the docked panel, the topmost element
+  // (the one a click would reach) must be the dialog's. The pinned case
+  // needs a document with an outline (the flow's own document has none), so
+  // it runs in a second reader window on the ToC fixture, exactly as
+  // `flowReaderToc` pins it there.
+  const tocOpened = await cOpenReader("multi-192");
+  const s2 = tocOpened.session;
+  await s2.waitFor(FIRST_PAGE_READY, { timeout: 12000 });
+  const tocClick = await clickReaderControl(s2, () =>
+    document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  if (!tocClick) throw new Error("the ToC control is not clickable on the fixture");
+  const pinReady = await s2.waitFor(
+    `return document.querySelector('.menu.toc-panel:not(.toc-docked) [aria-label="Pin panel"]') ? true : null;`,
+    { timeout: 5000 });
+  if (!pinReady) throw new Error("the ToC overlay did not open for pinning");
+  await clickReaderControl(s2, () => document.querySelector('.menu.toc-panel [aria-label="Pin panel"]'));
+  const dockedNow = await s2.waitFor(`return document.querySelector('.toc-docked') ? true : null;`, { timeout: 5000 });
+  if (!dockedNow) throw new Error("the panel did not dock");
+
+  const openSettingsMenu2 = async () => {
+    const clicked = await clickReaderControl(s2, () => document.querySelector('.chrome [aria-label="Settings"]'));
+    if (!clicked) throw new Error("the settings control is not clickable (pinned case)");
+    const items = await s2.waitFor(`return document.querySelector('.menu.settings-menu') ? true : null;`, { timeout: 5000 });
+    if (items !== true) throw new Error("the settings menu did not open (pinned case)");
+  };
+  await openSettingsMenu2();
+  const settingsItemPinned = await clickReaderControl(s2, `() =>
+    Array.from(document.querySelectorAll('.menu.settings-menu .menu-item'))
+      .find((i) => i.textContent.trim() === "Settings")`);
+  const dialogOverPanel = await s2.waitFor(`
+    return (() => {
+      const dialog = document.querySelector('.modal');
+      const panel = document.querySelector('.toc-docked');
+      if (!dialog || !panel) return null;
+      const d = dialog.getBoundingClientRect(), p = panel.getBoundingClientRect();
+      const x0 = Math.max(d.left, p.left), x1 = Math.min(d.right, p.right);
+      const y0 = Math.max(d.top, p.top), y1 = Math.min(d.bottom, p.bottom);
+      if (x1 - x0 < 8 || y1 - y0 < 8) return null; // the overlap must exist for the test to be real
+      const x = Math.round((x0 + x1) / 2), y = Math.round((y0 + y1) / 2);
+      const top = document.elementFromPoint(x, y);
+      if (!top || !dialog.contains(top)) return null;
+      return { x, y };
+    })();
+  `, { timeout: 5000 });
+  check("UI-50 + UI-49: with the panel pinned, the settings dialog renders above the docked panel — at the overlap point the topmost element is the dialog, not the panel (DR-343)",
+    settingsItemPinned && dialogOverPanel !== null, JSON.stringify(dialogOverPanel));
+  await s2.key("Escape", "Escape", 27);
+  const dialogClosed2 = await s2.waitFor(`return document.querySelector('.modal') ? null : true;`, { timeout: 5000 });
+  if (dialogClosed2 !== true) throw new Error("the settings dialog did not close on Esc in the reader window (pinned-panel case)");
+  // Un-pin (the panel's own pin control, DR-337) so the window's own `Esc`
+  // closes it, as the released rule expects.
+  await clickReaderControl(s2, () => document.querySelector('.toc-docked [aria-label="Pin panel"]'));
+  const panelGone = await s2.waitFor(`return document.querySelector('.toc-docked') ? null : true;`, { timeout: 5000 });
+  if (panelGone !== true) throw new Error("the docked panel did not close on un-pin");
+  await s2.key("Escape", "Escape", 27);
+  await cWaitReaderId(tocOpened.id, false);
+
+  // DR-344: the same menu in the EPUB reader window (the shared component,
+  // no per-host branch), and the *Check for updates* item proven functional
+  // in a reader window. The flow's own fixture server serves the
+  // current-version manifest, so the correct result is the "up to date"
+  // toast IN the EPUB window — the reader-windows capability path end to
+  // end (the fixture-build decision includes this flow, see the header).
+  const fixtures = buildUpdateFixtures();
+  const fixtureServer = await startUpdateFixtureServer(fixtures);
+  fixtureServer.state.manifest = fixtures.current;
+  try {
+    await cImportEpubFixture("epub-reading.epub", "Reading Fixture");
+    const epub = await cOpenReader("Reading Fixture");
+    const es = epub.session;
+    const readyFlow = await es.waitFor(`return document.querySelector('.flow') ? true : null;`, { timeout: 15000 });
+    if (!readyFlow) throw new Error("the EPUB reader window did not reach its reading surface");
+    const chromeE = await es.evaluate(`
+      const controls = Array.from(document.querySelectorAll('.chrome .control, .chrome .window-button'));
+      const trigger = document.querySelector('.chrome [aria-label="Settings"]');
+      const minimize = document.querySelector('.chrome [aria-label="Minimize"]');
+      return {
+        beforeWindow: !!trigger && !!minimize && controls.indexOf(trigger) === controls.indexOf(minimize) - 1,
+        iconOnly: !!trigger && !trigger.textContent.trim() && !!trigger.querySelector('svg'),
+        order: controls.map((c) => c.getAttribute('aria-label') ?? ''),
+      };
+    `);
+    check("AC-149: the EPUB reader's chrome carries the settings control at its right end, immediately before the window controls — the same control as the PDF reader's (UI-50 as revised by DR-344)",
+      chromeE.beforeWindow && chromeE.iconOnly &&
+        JSON.stringify(chromeE.order) === JSON.stringify(["Settings", "Minimize", "Maximize", "Close"]),
+      JSON.stringify(chromeE));
+    const openedMenuE = await clickReaderControl(es, () => document.querySelector('.chrome [aria-label="Settings"]'));
+    const itemsE = await es.waitFor(`
+      const c = document.querySelector('.menu.settings-menu');
+      if (!c) return null;
+      return Array.from(c.querySelectorAll('.menu-item')).map((i) => i.textContent.trim());
+    `, { timeout: 5000 });
+    check("AC-149: the EPUB reader's settings menu is the main window's settings menu, complete — the same item list, read against the main window's own menu (UI-50 as revised by DR-344)",
+      openedMenuE && JSON.stringify(itemsE) === JSON.stringify(mainItems),
+      `epub: ${JSON.stringify(itemsE)} | main: ${JSON.stringify(mainItems)}`);
+    const clickedUpdate = await clickReaderControl(es, `() =>
+      Array.from(document.querySelectorAll('.menu.settings-menu .menu-item'))
+        .find((i) => i.textContent.trim() === "Check for updates")`);
+    const upToDateHere = await es.waitFor(`
+      return Array.from(document.querySelectorAll('.toast')).some((n) => n.textContent.includes("up to date")) ? true : null;
+    `, { timeout: 10000 });
+    check("AC-149: the Check for updates item works in a reader window — the check runs against the update source and its result reports in that window (the reader-windows capability carries updater:default, DR-344)",
+      clickedUpdate && upToDateHere === true,
+      `clicked: ${clickedUpdate}, up-to-date toast in the EPUB window: ${upToDateHere}`);
+    await es.key("Escape", "Escape", 27);
+    await cWaitReaderId(epub.id, false);
+    await cDeleteByTitle("Reading Fixture"); // the flow leaves the library as it found it (the flowEpubReader pattern)
+  } finally {
+    fixtureServer.stop();
+  }
+
+  // The menu itself is closed by Esc when open (the released guard — the
+  // menu is a registered overlay): re-open it, close it with Esc, then the
+  // window with the next Esc.
+  await openSettingsMenu();
+  await s.key("Escape", "Escape", 27);
+  const menuClosedInReader = await s.waitFor(`return document.querySelector('.menu.settings-menu') ? null : true;`, { timeout: 4000 });
+  if (!menuClosedInReader) throw new Error("the settings menu did not close on Esc — the released guard is not reached");
   await s.key("Escape", "Escape", 27);
   await cWaitReaderId(opened.id, false);
 }
@@ -10779,15 +11821,22 @@ async function flowDarkRamp() {
     shown.status === 0 && mappingMisses.length === 0,
     `baseline: ${base}${mappingMisses.length ? ` missing/different: ${mappingMisses.join(", ")}` : ""}`,
   );
-  // v0.0.7 amends the row metrics by design (UI-03 as modified by DR-189) and
-  // v0.0.8 re-derives them (UI-45/DR-278): the row token is 122 px — cover
-  // 75×106 plus the 8 px insets — the row-cover-gap token stays, and the card
-  // content inset (UI-03 as modified by DR-245) adds the card-content-pad
-  // token. The audit pins exactly that amended set — every other non-color
-  // declaration must stay byte-identical to v0.0.6.
-  const v07Amended = new Map([["row-height", "122px"], ["row-cover-gap", "8px"], ["card-content-pad", "5px"]]);
+  // v0.0.7 amends the row metrics by design (UI-03 as modified by DR-189),
+  // v0.0.8 re-derives them (UI-45/DR-278) and v0.0.10 again (UI-51/DR-320):
+  // the row token is 157 px — cover 100×141 plus the 8 px insets — the
+  // row-cover-gap token stays, and the card content inset (UI-03 as modified
+  // by DR-245) adds the card-content-pad token. v0.0.10 also adds the docked
+  // ToC panel's width token (UI-49, §3.8). The audit pins exactly that
+  // amended set — every other non-color declaration must stay byte-identical
+  // to v0.0.6.
+  const amended = new Map([
+    ["row-height", "157px"],
+    ["row-cover-gap", "8px"],
+    ["card-content-pad", "5px"],
+    ["toc-panel-width", "300px"],
+  ]);
   const extra = [...curLight.keys()].filter(
-    (name) => !colorNames.has(name) && !baseLight.has(name) && !v07Amended.has(name),
+    (name) => !colorNames.has(name) && !baseLight.has(name) && !amended.has(name),
   );
   const dropped = [...colorNames].filter((name) => !curLight.has(name));
   check(
@@ -10796,10 +11845,10 @@ async function flowDarkRamp() {
     `extra: ${extra.join(", ") || "none"} dropped: ${dropped.join(", ") || "none"}`,
   );
   const changedOther = [...baseLight.keys()].filter(
-    (name) => !colorNames.has(name) && curLight.get(name) !== (v07Amended.get(name) ?? baseLight.get(name)),
+    (name) => !colorNames.has(name) && curLight.get(name) !== (amended.get(name) ?? baseLight.get(name)),
   );
-  const missingAmended = [...v07Amended].filter(([name, value]) => curLight.get(name) !== value).map(([name]) => name);
-  check("AC-81: the metrics, type and motion declarations are unchanged from v0.0.6 except the DR-189 row and DR-245 card-inset amendments",
+  const missingAmended = [...amended].filter(([name, value]) => curLight.get(name) !== value).map(([name]) => name);
+  check("AC-81: the metrics, type and motion declarations are unchanged from v0.0.6 except the amended set (DR-189 row metrics, DR-245 card inset, UI-45/UI-51 row re-derivations, UI-49 panel width)",
     changedOther.length === 0 && missingAmended.length === 0,
     `${changedOther.join(", ")}${missingAmended.length ? ` amended-not-pinned: ${missingAmended.join(", ")}` : ""}`);
   const rootAt = current.indexOf(":root {");
@@ -12032,6 +13081,248 @@ async function flowEpubReader() {
     if (panelGone !== true) throw new Error("the ToC panel would not close (Escape and the trigger both left it open)");
   }
 
+  // ---- AC-148 (UI-48 MODIFIED / UI-49, SPEC-v0.0.10 §3.8, the user's
+  // decision DR-327): the pin in the EPUB host — the same shared panel.
+  // State at this point: panel closed, chapter 4 current, "Chapter 2"
+  // expanded. The layout claim here is the reading column: the flow narrows
+  // by exactly the panel column, the mounted content stays fully inside the
+  // narrowed box (the reflowable text re-wraps within the narrowed width —
+  // the `.reading` column is cap-bounded, so the machine-observable contract
+  // is exact box narrowing + containment, not a font-dependent re-wrap
+  // delta), and the position model keeps landing exactly after the
+  // re-layout (the §3.8 "the mount-window chapter sizing and the position
+  // model measure the narrower column" rule, proven through the exact jump).
+  const epubBaseline = await s.evaluate(`
+    return (() => {
+      const flow = document.querySelector('.flow');
+      const reading = document.querySelector('.reading');
+      if (!flow || !reading) return null;
+      const fr = flow.getBoundingClientRect();
+      const rr = reading.getBoundingClientRect();
+      return {
+        flowInner: flow.clientWidth,
+        readingLeft: Math.round(rr.left - fr.left),
+        readingWidth: Math.round(rr.width),
+      };
+    })();
+  `);
+  await clickReaderControl(s, () => document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const epubOverlay = await s.waitFor(
+    `return document.querySelector('.menu.toc-panel:not(.toc-docked)') ? true : null;`, { timeout: 5000 });
+  const epubPinControl = await s.evaluate(`
+    return (() => {
+      const row = document.querySelector('.menu.toc-panel .toc-toolbar');
+      if (!row) return null;
+      const controls = Array.from(row.querySelectorAll('.control'));
+      const pin = controls.find((c) => c.getAttribute('aria-label') === 'Pin panel');
+      if (!pin) return null;
+      const rr = row.getBoundingClientRect();
+      const pr = pin.getBoundingClientRect();
+      return {
+        count: controls.length,
+        last: pin === controls[controls.length - 1],
+        pressed: pin.getAttribute('aria-pressed'),
+        rightGap: Math.round(rr.right - parseFloat(getComputedStyle(row).paddingRight) - pr.right),
+      };
+    })();
+  `);
+  check("AC-148: the EPUB panel's toolbar row carries the same pin control at its right end (UI-48 MODIFIED / UI-49 — the shared panel, both hosts, no per-host branch)",
+    epubOverlay && epubPinControl && epubPinControl.count === 2 && epubPinControl.last &&
+      epubPinControl.pressed === "false" && Math.abs(epubPinControl.rightGap) <= 2,
+    JSON.stringify(epubPinControl));
+
+  const epubPinned = await clickReaderControl(s, () =>
+    document.querySelector('.menu.toc-panel [aria-label="Pin panel"]'));
+  const epubDocked = await s.waitFor(`
+    return (() => {
+      const panel = document.querySelector('.toc-docked');
+      const overlay = document.querySelector('.menu.toc-panel:not(.toc-docked)');
+      const stripBtn = document.querySelector('.reader-controls button[aria-label="Table of contents"]');
+      const controls = document.querySelector('.reader-controls');
+      const flow = document.querySelector('.flow');
+      const reading = document.querySelector('.reading');
+      if (!panel || overlay || !stripBtn || !controls || !flow || !reading) return null;
+      const styles = getComputedStyle(document.documentElement);
+      const panelWidth = parseFloat(styles.getPropertyValue('--toc-panel-width'));
+      const chromeHeight = parseFloat(styles.getPropertyValue('--toolbar-height'));
+      const pr = panel.getBoundingClientRect();
+      if (Math.round(pr.width) !== panelWidth) return null;
+      const fr = flow.getBoundingClientRect();
+      const rr = reading.getBoundingClientRect();
+      return {
+        left: Math.round(pr.left), top: Math.round(pr.top), bottom: Math.round(pr.bottom),
+        width: Math.round(pr.width), chromeHeight,
+        controlsTop: Math.round(controls.getBoundingClientRect().top),
+        pressed: stripBtn.getAttribute('aria-pressed'),
+        flowInner: flow.clientWidth,
+        readingLeft: Math.round(rr.left - fr.left),
+        readingWidth: Math.round(rr.width),
+        // DR-342: the pin at the docked row's right end, both hosts.
+        pinRightGap: (() => {
+          const toolbar = panel.querySelector('.toc-toolbar');
+          const pin = panel.querySelector('[aria-label="Pin panel"]');
+          if (!toolbar || !pin) return -999;
+          const tbCs = getComputedStyle(toolbar);
+          return Math.round(toolbar.getBoundingClientRect().right - parseFloat(tbCs.paddingRight) - pin.getBoundingClientRect().right);
+        })(),
+      };
+    })();
+  `, { timeout: 10000 });
+  check("AC-148: pinning in the EPUB window docks the panel at the left edge from below the chrome strip to the control strip at the fixed width; the strip control reflects the open panel (UI-48 MODIFIED)",
+    epubPinned && epubDocked && epubDocked.left === 0 && Math.abs(epubDocked.top - epubDocked.chromeHeight) <= 1 &&
+      Math.abs(epubDocked.bottom - epubDocked.controlsTop) <= 2 && epubDocked.pressed === "true",
+    JSON.stringify(epubDocked));
+  // DR-342: the shared row recipe flexes on its own — the pin's
+  // `margin-left: auto` lands it at the right end in the docked state in
+  // this host too.
+  check("AC-148: the pin control sits at the EPUB docked toolbar row's right end as well (UI-48 MODIFIED, DR-342)",
+    epubDocked && Math.abs(epubDocked.pinRightGap) <= 2,
+    JSON.stringify(epubDocked && { pinRightGap: epubDocked.pinRightGap }));
+  const epubStillRendered = epubDocked && await s.evaluate(epubChapterMounted("Reading Chapter Four"));
+  check("AC-148: the reading column narrows with the box — the flow narrows by exactly the panel column, the mounted content stays fully inside the narrowed width and still renders (the reflowable surface follows the smaller box, §3.8)",
+    epubDocked && epubBaseline &&
+      epubDocked.flowInner === epubBaseline.flowInner - epubDocked.width &&
+      epubDocked.readingLeft >= 0 &&
+      epubDocked.readingLeft + epubDocked.readingWidth <= epubDocked.flowInner + 2 &&
+      epubDocked.readingWidth <= epubBaseline.readingWidth + 2 &&
+      epubStillRendered === true,
+    `before: ${JSON.stringify(epubBaseline)} | after: ${JSON.stringify(epubDocked)} | rendered: ${JSON.stringify(epubStillRendered)}`);
+
+  // The re-wrap half, made observable: at the window's built width the
+  // typographic cap (68ch) is narrower than the box even after the panel
+  // column, so the column is cap-bound — correct behavior, no re-wrap to
+  // see. Under a narrower simulated window (the AC-96 setMetrics pattern)
+  // the box becomes the binding constraint: the cap releases and the
+  // column re-wraps at the narrowed width — the §3.8 claim in its strong
+  // form. The flow delta is exactly the simulated window delta.
+  await s.setMetrics(800, 700);
+  const epubNarrow = await s.waitFor(`
+    return (() => {
+      const panel = document.querySelector('.toc-docked');
+      const flow = document.querySelector('.flow');
+      const reading = document.querySelector('.reading');
+      if (!panel || !flow || !reading) return null;
+      const fr = flow.getBoundingClientRect();
+      const rr = reading.getBoundingClientRect();
+      return {
+        flowInner: flow.clientWidth,
+        readingLeft: Math.round(rr.left - fr.left),
+        readingWidth: Math.round(rr.width),
+      };
+    })();
+  `, { timeout: 8000 });
+  const epubNarrowRendered = epubNarrow && await s.evaluate(epubChapterMounted("Reading Chapter Four"));
+  check("AC-148: with the box the binding constraint the column follows it — the flow narrows by the window delta and the reading column re-wraps at the narrowed width, content still rendered (the cap only guards line length, §3.8)",
+    epubNarrow && epubNarrowRendered === true &&
+      Math.abs(epubDocked.flowInner - epubNarrow.flowInner - 200) <= 2 &&
+      Math.abs(epubNarrow.readingWidth - epubNarrow.flowInner) <= 2 &&
+      epubNarrow.readingLeft >= 0 &&
+      epubNarrow.readingWidth <= epubNarrow.flowInner + 2 &&
+      epubNarrow.readingWidth < epubDocked.readingWidth,
+    `docked(1000): ${JSON.stringify(epubDocked)} | docked(800): ${JSON.stringify(epubNarrow)} | rendered: ${JSON.stringify(epubNarrowRendered)}`);
+  await s.clearMetrics();
+  const epubRestored = await s.waitFor(`
+    return (() => {
+      const flow = document.querySelector('.flow');
+      if (!flow) return null;
+      return flow.clientWidth === ${epubDocked.flowInner} ? true : null;
+    })();
+  `, { timeout: 8000 });
+  if (epubRestored !== true) throw new Error("the EPUB flow did not return to its built geometry after the simulated resize");
+
+  // Entry selection in the pinned state: the jump lands exactly through the
+  // narrowed layout, and the panel stays open (UI-48: "entry selection
+  // keeps the pinned panel open").
+  const epubEntryClicked = await clickReaderControl(s, `() =>
+    Array.from(document.querySelectorAll('.toc-docked .toc-entry'))
+      .find((e) => (e.querySelector('.toc-title')?.textContent ?? '').trim() === "Chapter 2")`);
+  const epubJumped = await waitReadout(s, readoutAt(pctAt(starts[1]), 2), { timeout: 10000 });
+  const epubStillDocked = await s.evaluate(`return document.querySelector('.toc-docked') ? true : null;`);
+  check("AC-148: with the panel pinned an entry selection jumps within the book — landing exactly in the narrowed layout — and keeps the pinned panel open",
+    epubEntryClicked && !!epubJumped && epubStillDocked === true,
+    `readout: ${JSON.stringify(epubJumped?.aria ?? null)} | docked: ${JSON.stringify(epubStillDocked)}`);
+
+  // The visibility paths in the EPUB host (UI-48 MODIFIED as revised by
+  // DR-337): the strip control hides the docked panel keeping the pin, and
+  // shows it again at the same docked position.
+  await clickReaderControl(s, () => document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const epubHidden = await s.waitFor(`
+    return document.querySelector('.toc-docked') ? null : (() => {
+      const btn = document.querySelector('.reader-controls button[aria-label="Table of contents"]');
+      return {
+        pressed: btn?.getAttribute('aria-pressed') ?? null,
+        overlay: !!document.querySelector('.menu.toc-panel:not(.toc-docked)'),
+      };
+    })();
+  `, { timeout: 5000 });
+  check("AC-148: in the EPUB window the ToC control hides the pinned panel — no overlay opens, the pin is kept, and the control reflects the hidden panel (UI-48 MODIFIED as revised by DR-337)",
+    epubHidden && epubHidden.pressed === "false" && !epubHidden.overlay,
+    JSON.stringify(epubHidden));
+  await clickReaderControl(s, () => document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const epubDockedAgain = await s.waitFor(`
+    return (() => {
+      const panel = document.querySelector('.toc-docked');
+      const stripBtn = document.querySelector('.reader-controls button[aria-label="Table of contents"]');
+      const flow = document.querySelector('.flow');
+      if (!panel || !stripBtn || !flow) return null;
+      const chromeHeight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--toolbar-height'));
+      const pr = panel.getBoundingClientRect();
+      if (Math.round(pr.width) !== Math.round(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--toc-panel-width')))) return null;
+      return {
+        left: Math.round(pr.left), top: Math.round(pr.top), chromeHeight,
+        pressed: stripBtn.getAttribute('aria-pressed'),
+        flowInner: flow.clientWidth,
+      };
+    })();
+  `, { timeout: 8000 });
+  check("AC-148: in the EPUB window the ToC control shows the panel again at the same docked position — the pinned layout is kept, the flow stays narrowed beside it (UI-48 MODIFIED as revised by DR-337)",
+    epubDockedAgain && epubDockedAgain.left === 0 && Math.abs(epubDockedAgain.top - epubDockedAgain.chromeHeight) <= 1 &&
+      epubDockedAgain.pressed === "true" && epubDockedAgain.flowInner === epubDocked.flowInner,
+    JSON.stringify(epubDockedAgain));
+
+  // `Esc` closes the pinned panel first (UI-48: "Esc closes the pinned
+  // panel first") — the window stays and the pinned position is kept
+  // (DR-337): the next strip click re-shows it docked, not as an overlay.
+  await s.key("Escape", "Escape", 27);
+  const epubEscClosed = await s.waitFor(`return document.querySelector('.toc-docked') ? null : true;`, { timeout: 5000 });
+  const epubWindowStill = (await cdpReaderTargetIds()).includes(opened.id);
+  await clickReaderControl(s, () => document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const epubDockedAfterEsc = await s.waitFor(
+    `return document.querySelector('.toc-docked') ? true : null;`, { timeout: 8000 });
+  check("AC-148: in the EPUB window Esc closes the pinned panel first — the window stays open and the pinned position is kept; the ToC control re-shows the panel docked (the released guard extended to the docked state, §3.8; DR-337)",
+    epubEscClosed === true && epubWindowStill && epubDockedAfterEsc === true,
+    `esc: ${JSON.stringify(epubEscClosed)} | window: ${epubWindowStill} | re-shown docked: ${JSON.stringify(epubDockedAfterEsc)}`);
+
+  // The single un-pin path (DR-337): the panel's own pin control; after it
+  // the strip control opens the released overlay again (UI-48: "unpinning
+  // restores the released overlay").
+  await clickReaderControl(s, () => document.querySelector('.toc-docked [aria-label="Pin panel"]'));
+  const epubUnpinned = await s.waitFor(`
+    return document.querySelector('.toc-docked') ? null : (() => {
+      const btn = document.querySelector('.reader-controls button[aria-label="Table of contents"]');
+      return {
+        pressed: btn?.getAttribute('aria-pressed') ?? null,
+        overlay: !!document.querySelector('.menu.toc-panel:not(.toc-docked)'),
+      };
+    })();
+  `, { timeout: 5000 });
+  check("AC-148: in the EPUB window the panel's pin control is the only un-pin path — its click closes the docked panel and the strip control carries the released overlay grammar again (UI-48 MODIFIED as revised by DR-337)",
+    epubUnpinned && epubUnpinned.pressed === null && !epubUnpinned.overlay,
+    JSON.stringify(epubUnpinned));
+  await clickReaderControl(s, () => document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+  const epubOverlayBack = await s.waitFor(
+    `return document.querySelector('.menu.toc-panel:not(.toc-docked)') ? true : null;`, { timeout: 5000 });
+  check("AC-148: after unpinning the panel opens again as the released overlay (UI-48: 'unpinning restores the released overlay behavior')",
+    epubOverlayBack === true);
+  // Deterministic close for the rest of the flow (the D28 pattern above).
+  await s.key("Escape", "Escape", 27);
+  let epubPanelGone = await s.waitFor(`return document.querySelector('.menu.toc-panel') ? null : true;`, { timeout: 2500 });
+  if (epubPanelGone !== true) {
+    await clickReaderControl(s, () => document.querySelector('.reader-controls button[aria-label="Table of contents"]'));
+    epubPanelGone = await s.waitFor(`return document.querySelector('.menu.toc-panel') ? null : true;`, { timeout: 2500 });
+    if (epubPanelGone !== true) throw new Error("the pinned-test ToC panel would not close (Escape and the trigger both left it open)");
+  }
+
   // AC-135: an internal link in the fixture jumps to its target chapter —
   // mounting it and scrolling to the fragment.
   await s.key("Home", "Home", 36);
@@ -12215,7 +13506,7 @@ async function flowEpubReader() {
     const flow = document.querySelector('.flow');
     return flow.scrollTop + flow.clientHeight >= flow.scrollHeight - 2 ? true : null;
   `, { timeout: 5000 });
-  const endMounted = await s.evaluate(epubChapterMounted("Reading Chapter Four"));
+  const endMounted = await s.waitFor(epubChapterMounted("Reading Chapter Four"), { timeout: 5000 }); // DR-345: the mount is a reached state after a programmatic scroll — the D28 wait-for-render recipe, not a point-in-time probe
   const endFull = await waitReadout(s, readoutAt(100, 4));
   check("AC-135: End reaches the book end — the flow bottom with the last chapter mounted and the readout at 100%",
     atBottom === true && endMounted === true && !!endFull,
@@ -12525,6 +13816,309 @@ async function flowEpubPerformance() {
   await cDeleteByTitle("Stress 500");
 }
 
+// ---------------------------------------------------------------- v0.0.10 app updates (FR-25 / UI-52)
+
+// flowAppUpdate (AC-151, AC-152, AC-153 — SPEC-v0.0.10 §3.11): the fixture
+// endpoint is baked into the binary at build time (header note; DR-329 item
+// 3), the fixture manifest and artifact are generated here, never committed
+// (D15). Without the fixture build the app checks its real update source and
+// every claim below would be about the network, not about the app.
+const UPDATE_FIXTURES_DIR = join(root, "tmp", "update-fixtures");
+const UPDATE_FIXTURE_VERSION = "999.0.0"; // newer than every 0.x (DR-329 item 6)
+const UPDATE_FIXTURE_NOTES = "Fixture release notes: the update flow is verified end to end.";
+const UPDATE_ARTIFACT_BYTES = 768 * 1024;
+
+function buildUpdateFixtures() {
+  rmSync(UPDATE_FIXTURES_DIR, { recursive: true, force: true });
+  mkdirSync(UPDATE_FIXTURES_DIR, { recursive: true });
+  // Artifact (DR-329 item 4): where.exe — a real minimal PE the plugin's
+  // magic detection classifies as an NSIS installer — plus a 0x20 overlay to
+  // 768 KiB (DR-332 item 8): a trailing overlay is inert to the PE loader
+  // (NSIS installers are exactly that shape), and the overlay is what makes
+  // the download long enough to observe the progress bar.
+  const where = readFileSync(join(process.env.SystemRoot, "System32", "where.exe"));
+  const artifact = Buffer.concat([where, Buffer.alloc(UPDATE_ARTIFACT_BYTES - where.length, 0x20)]);
+  const artifactPath = join(UPDATE_FIXTURES_DIR, "update.exe");
+  writeFileSync(artifactPath, artifact);
+  // The artifact bytes are signed with the product private key (DR-329 item
+  // 3): `tauri signer sign` writes the signature to `<file>.sig` — the
+  // base64 form of its minisign block, which is exactly the manifest
+  // `signature` field the plugin's `base64_to_string` step expects (the
+  // recorded probe at …\.pdfkeeper\signing left the same shape).
+  // `--app-version` binds the signature to the version the manifest
+  // announces; the "current" manifest is never downloaded — `check()` stops
+  // at the version comparison — so one signature serves both scenarios.
+  const keyPath = join(homedir(), ".pdfkeeper", "signing", "key_pair.crt");
+  const sign = spawnSync(
+    process.execPath,
+    [
+      join(root, "ui", "node_modules", "@tauri-apps", "cli", "tauri.js"),
+      "signer", "sign", artifactPath, "--app-version", UPDATE_FIXTURE_VERSION,
+    ],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, TAURI_SIGNING_PRIVATE_KEY_PATH: keyPath, TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "" },
+    },
+  );
+  const signature = String(readFileSync(artifactPath + ".sig", "utf8")).trim();
+  const block = Buffer.from(signature, "base64").toString("utf8");
+  if (sign.status !== 0 || !block.includes("untrusted comment") || !block.includes(`version:${UPDATE_FIXTURE_VERSION}`)) {
+    throw new Error(`fixture signing failed (status ${sign.status}): ${sign.stdout || sign.stderr}`);
+  }
+  const appVersion = JSON.parse(readFileSync(join(root, "src-tauri", "tauri.conf.json"), "utf8")).version;
+  const url = `http://127.0.0.1:${UPDATE_FIXTURE_PORT}/update.exe`;
+  const pub_date = new Date().toISOString();
+  // Dynamic manifest format (DR-329 item 4) — target-independent.
+  return {
+    artifact,
+    newer: { version: UPDATE_FIXTURE_VERSION, notes: UPDATE_FIXTURE_NOTES, pub_date, url, signature },
+    current: { version: appVersion, notes: UPDATE_FIXTURE_NOTES, pub_date, url, signature },
+  };
+}
+
+function startUpdateFixtureServer(fixtures) {
+  const state = { manifest: fixtures.newer, requests: 0 };
+  const server = http.createServer((req, res) => {
+    if (req.url === "/latest.json") {
+      state.requests++; // the request count is the startup-check barrier (DR-332 item 6)
+      const body = JSON.stringify(state.manifest);
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+      res.end(body);
+      return;
+    }
+    if (req.url === "/update.exe") {
+      res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": fixtures.artifact.length });
+      // 32 KiB writes 150 ms apart (DR-332 item 8): TCP flow control turns
+      // them into a stream the progress events can show.
+      (async () => {
+        for (let off = 0; off < fixtures.artifact.length; off += 32768) {
+          if (res.destroyed) return;
+          res.write(fixtures.artifact.subarray(off, off + 32768));
+          await sleep(150);
+        }
+        res.end();
+      })().catch(() => res.destroy());
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  const sockets = new Set();
+  server.on("connection", (s) => {
+    sockets.add(s);
+    s.on("close", () => sockets.delete(s));
+  });
+  return new Promise((done, reject) => {
+    server.once("error", reject);
+    server.listen(UPDATE_FIXTURE_PORT, "127.0.0.1", () =>
+      done({
+        state,
+        stop: () => {
+          server.close();
+          for (const s of sockets) s.destroy(); // keep-alive connections would otherwise outlive the scenario
+        },
+      }),
+    );
+  });
+}
+
+async function dismissOpenToasts() {
+  for (;;) {
+    const closed = await execute(`
+      const close = document.querySelector('.toast .toast-close');
+      if (!close) return false;
+      close.click();
+      return true;
+    `);
+    if (!closed) return;
+    await sleep(100);
+  }
+}
+
+async function manualUpdateCheck() {
+  await openMenuSure(".settings-trigger", ".menu.settings-menu");
+  await clickStable(itemByLabel(".menu.settings-menu", "Check for updates"));
+}
+
+const availabilityAffordanceScript = `
+  const toast = Array.from(document.querySelectorAll('.toast')).find((t) => t.textContent.includes('999.0.0'));
+  if (!toast) return null;
+  return {
+    text: toast.textContent.replace(/\\s+/g, ' ').trim(),
+    install: Array.from(toast.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Install'),
+  };
+`;
+
+// The AC-153 silence window: no update affordance of any kind — not a
+// toast, not the availability affordance, not the download bar — observed
+// across the whole window (the check itself is a local round-trip either
+// way; 1.5 s covers its slowest honest completion).
+async function observeNoUpdateAffordance(windowMs) {
+  const deadline = Date.now() + windowMs;
+  for (;;) {
+    const seen = await execute(`
+      const toasts = Array.from(document.querySelectorAll('.toast')).map((t) => t.textContent);
+      const shown =
+        toasts.some((x) => x.includes('is available') || x.includes('up to date') || x.includes("Couldn't check for updates") || x.includes('could not be installed')) ||
+        Array.from(document.querySelectorAll('.progress-wrap')).some((g) => (g.getAttribute('aria-label') ?? '') === 'Downloading…');
+      return shown ? toasts.join(' | ') : null;
+    `);
+    if (seen) return { quiet: false, detail: seen };
+    if (Date.now() >= deadline) return { quiet: true };
+    await sleep(200);
+  }
+}
+
+async function appExitedOnItsOwn(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const alive = SCOPED
+      ? ownAppProcesses().length > 0
+      : spawnSync("tasklist", ["/IM", "pdfkeeper.exe", "/FO", "CSV"], { encoding: "utf8" }).stdout?.includes("pdfkeeper.exe");
+    if (!alive) return true;
+    if (Date.now() > deadline) return false;
+    await sleep(200);
+  }
+}
+
+async function flowAppUpdate() {
+  if (!buildUpdateFixture) {
+    skip(
+      "flowAppUpdate (all scenarios)",
+      "the binary was not built with the fixture update endpoint — run it named (SMOKE_FLOW=flowAppUpdate) or under scripts/ui-verify.mjs",
+    );
+    return;
+  }
+  const fixtures = buildUpdateFixtures();
+  let server = await startUpdateFixtureServer(fixtures);
+  try {
+    await dismissOpenToasts();
+
+    // AC-151, first clause: a newer-version manifest — the manual check
+    // surfaces the version, the notes text and an Install action.
+    server.state.manifest = fixtures.newer;
+    await manualUpdateCheck();
+    const availability = await waitForEval(availabilityAffordanceScript, { timeout: 15000 });
+    check(
+      "AC-151: a newer-version manifest surfaces the new version, its notes and an Install action",
+      !!availability && availability.text.includes(UPDATE_FIXTURE_NOTES) && availability.install,
+      availability ? availability.text : "no availability affordance appeared",
+    );
+    check(
+      "UI-52: the affordance is a quiet toast with an action — never a modal",
+      !(await execute(`return document.querySelector('.modal') ? true : false;`)),
+    );
+    await dismissOpenToasts();
+
+    // AC-151, second clause: a current-version manifest — the manual check
+    // reports exactly that.
+    server.state.manifest = fixtures.current;
+    await manualUpdateCheck();
+    check("AC-151: a current-version manifest makes the manual check report up to date",
+      !!(await toastContains("You're up to date")));
+    await dismissOpenToasts();
+
+    // AC-151, third clause: the fixture server stopped — the typed error.
+    server.stop();
+    server = null;
+    await manualUpdateCheck();
+    check("AC-151: an unreachable update source surfaces the typed error as a toast",
+      !!(await toastContains("Couldn't check for updates.")));
+    await dismissOpenToasts();
+
+    // AC-153: the startup check is silent and non-blocking — both fixture
+    // conditions, timed on the page clock (DR-332 item 6). The restart's
+    // appReady poll is the activation measurement; the fixture server's
+    // request count is the barrier that proves the check ran.
+    for (const scenario of ["reachable current manifest", "unreachable endpoint"]) {
+      if (scenario === "reachable current manifest") {
+        server = await startUpdateFixtureServer(fixtures);
+        server.state.manifest = fixtures.current;
+      }
+      const before = server ? server.state.requests : 0;
+      const activationMs = await restartApp();
+      check(
+        `AC-153 (${scenario}): the main window activates within the released startup budget with the update check in flight`,
+        activationMs <= 3000,
+        `activation ${Math.round(activationMs)} ms against the 3000 ms startup claim`,
+      );
+      if (server) {
+        const barrierDeadline = Date.now() + 10000;
+        while (server.state.requests <= before && Date.now() < barrierDeadline) await sleep(100);
+        check(`AC-153 (${scenario}): the startup check ran against the fixture endpoint`,
+          server.state.requests > before);
+      }
+      const quiet = await observeNoUpdateAffordance(1500);
+      check(`AC-153 (${scenario}): nothing is shown — no affordance, no report, no progress`,
+        quiet.quiet, quiet.detail);
+      if (server) {
+        server.stop();
+        server = null;
+      }
+    }
+
+    // AC-152: the newer manifest once more — this time the update is found
+    // by the startup check itself (UI-52 arms the affordance from it), the
+    // Install action is clicked, the download renders through the released
+    // job-progress affordance, and the install carries the app's exit.
+    server = await startUpdateFixtureServer(fixtures);
+    server.state.manifest = fixtures.newer;
+    await restartApp();
+    const startupArmed = await waitForEval(availabilityAffordanceScript, { timeout: 15000 });
+    check("UI-52: the startup check arms the availability affordance — the toast with the Install action",
+      !!startupArmed && startupArmed.install, startupArmed ? startupArmed.text : "nothing armed at startup");
+    await clickStable(`() => {
+      const toast = Array.from(document.querySelectorAll('.toast')).find((t) => t.textContent.includes('999.0.0'));
+      const button = toast && Array.from(toast.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Install');
+      return button ?? null;
+    }`);
+    let sawBar = false;
+    let advancing = false;
+    let sawMax = 0;
+    let maxNow = 0;
+    const downloadDeadline = Date.now() + 20000;
+    while (Date.now() < downloadDeadline) {
+      let bar = null;
+      try {
+        bar = await execute(`
+          const bar = document.querySelector('[role="progressbar"]');
+          if (!bar) return null;
+          const group = bar.closest('.progress-wrap');
+          return {
+            label: group?.getAttribute('aria-label') ?? '',
+            now: Number(bar.getAttribute('aria-valuenow') ?? 0),
+            max: Number(bar.getAttribute('aria-valuemax') ?? 0),
+          };
+        `);
+      } catch {
+        break; // the session went with the app
+      }
+      if (bar && bar.label === "Downloading…") {
+        sawBar = true;
+        sawMax = bar.max;
+        if (bar.now > 0) advancing = true;
+        maxNow = Math.max(maxNow, bar.now);
+      }
+      await sleep(150);
+    }
+    const exited = await appExitedOnItsOwn(15000);
+    check("AC-152: the download renders progress through the released job-progress affordance",
+      sawBar && advancing && sawMax === UPDATE_ARTIFACT_BYTES,
+      `bar ${sawBar ? "seen" : "absent"}, values ${maxNow}/${sawMax}`);
+    check("AC-152: the install completes by launching the installer, and the app exits for it",
+      exited,
+      exited
+        ? "the app process is gone — the plugin's install path ends with the app's exit (DR-329 item 4)"
+        : "the app never exited");
+    // D14: the flow hands the suite a working app — the install exit is the
+    // claim, not the state the flows after it may depend on.
+    await relaunchSession();
+  } finally {
+    if (server) server.stop();
+  }
+}
+
 const AREAS = {
   "getting-started": ["flowStartup", "flowDropAndSkip"], // the bulk empty/skeleton case: scripts/ui-10k.mjs (DR-161)
   "importing-pdfs": ["flowImportAssign", "flowMetaColumn", "flowImportProgress"], // the 10 000-document suite: scripts/ui-10k.mjs (DR-159, DR-161)
@@ -12537,7 +14131,9 @@ const AREAS = {
   "opening-and-deleting": ["flowOpen", "flowDelete", "flowContextMenu"],
   // v0.0.7: flowReaderToc (AC-78), flowReaderViewModes (AC-79/AC-80),
   // flowReaderPerformance (AC-73/AC-75 — the measured flow, `measure` group).
-  "reading-pdfs": ["flowReaderOpen", "flowReaderNavigation", "flowReaderZoom", "flowReaderClose", "flowReaderErrors", "flowReaderToc", "flowReaderViewModes", "flowReaderPerformance"],
+  // v0.0.10: flowReaderHorizontal (AC-142…AC-147, UI-34 MODIFIED);
+  // flowReaderSettings (AC-149, FR-24 / UI-50).
+  "reading-pdfs": ["flowReaderOpen", "flowReaderNavigation", "flowReaderZoom", "flowReaderClose", "flowReaderErrors", "flowReaderToc", "flowReaderViewModes", "flowReaderHorizontal", "flowReaderSettings", "flowReaderPerformance"],
   // v0.0.8 (FR-20 / AC-104, AC-105): the unlock form of a protected document.
   "password-protected-pdfs": ["flowProtected"],
   // v0.0.9 (FR-17 / UI-48, AC-125, AC-132…AC-137 + AC-138 measured flow, DR-300).
@@ -12555,6 +14151,8 @@ const AREAS = {
   "settings-and-appearance": ["flowThemeAndSettings", "flowDarkRamp", "flowTooltipSurfaces", "flowAbout", "flowScrollbars"],
   "the-app-window": ["flowDragRegion", "flowWindowChrome", "flowToolbarControls", "flowActionParity", "flowContextMenuSuppression", "flowReaderContextMenu"], // D20 / AC-116: the window-level context-menu guard (library + reader halves)
   "keyboard-shortcuts": ["flowKeyboardAudit"],
+  // v0.0.10 (FR-25 / UI-52, AC-151…AC-153): the app's own update flow.
+  "keeping-up-to-date": ["flowAppUpdate"],
 };
 
 // The mandatory prefix (AC-60: targeted runs start "after the mandatory
@@ -12645,6 +14243,11 @@ const FUNCTIONAL_SEQUENCE = [
   // The 2 000-document import and its cover queue are left in the library at
   // the flow's end: it runs last so nothing that reads the library follows it.
   ["flowImportProgress", flowImportProgress],
+  // v0.0.10 (FR-25 / UI-52, AC-151…AC-153): the app's own update flow —
+  // its restarts and the install exit touch nothing the other flows read
+  // (it reads no library state), so it runs after all of them; it hands the
+  // suite a fresh session at its end (D14).
+  ["flowAppUpdate", flowAppUpdate],
 ];
 
 // Reader section (multi tier, DR-147 CDP runtime), always last: the reader
@@ -12661,6 +14264,12 @@ const READER_SEQUENCE = [
   // scenarios are the baseline's, in fresh windows, in the default mode.
   ["flowReaderToc", flowReaderToc],
   ["flowReaderViewModes", flowReaderViewModes],
+  // v0.0.10 (SPEC-v0.0.10, AC-142…AC-147): the continuous-horizontal row
+  // runs next to the view-mode flow it extends.
+  ["flowReaderHorizontal", flowReaderHorizontal],
+  // v0.0.10 (FR-24 / UI-50, AC-149): the strip's settings menu — the theme
+  // cycle control at its right end.
+  ["flowReaderSettings", flowReaderSettings],
   // v0.0.8 (AC-104/AC-105): the protected-document unlock form, on its own
   // fixture; runs before the measured flow so the baseline windows stay clean.
   ["flowProtected", flowProtected],
@@ -12780,9 +14389,14 @@ async function runReaderSuite(wanted) {
 }
 
 async function main() {
+  // The flow selection first: it is what the fixture-endpoint build decision
+  // reads (DR-332 item 7) — a run that names flowAppUpdate (or the full
+  // suite) builds with the fixture update endpoint, and prepareEnvironment
+  // must know that before it owes a build.
+  const wanted = resolveWanted();
+  decideUpdateFixtureBuild(wanted);
   prepareEnvironment();
   checkTokenSource(); // AC-49 source half: no app needed, a file fact.
-  const wanted = resolveWanted();
   const wantReader = !wanted || wanted.some((n) => READER_FLOWS.has(n));
   const readerOnly = !!wanted && wantReader && wanted.every((n) => READER_FLOWS.has(n));
   // NFR-06 measures the suite's wall time against the app — both runtimes

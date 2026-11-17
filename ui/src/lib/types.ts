@@ -46,7 +46,7 @@ export interface RescanResult {
 }
 
 export interface JobProgress {
-  kind: string; // "import" | "rescan" | "cover"
+  kind: string; // "import" | "rescan" | "cover" | "update" (UI-52: the update download, fed from the frontend)
   processed: number;
   total: number;
 }

@@ -252,6 +252,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // FR-25 (DR-321/DR-329): the official updater plugin. Its own commands
+        // (`plugin:updater|check` etc.) are the whole command surface — no
+        // hand-written `app_*` commands; the fetch, version comparison,
+        // signature verification, download and installer launch all run in the
+        // plugin's Rust side (§3.11). The `plugins.updater` config carries the
+        // GitHub Releases endpoint and the minisign public key.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // The EPUB content protocol (§3.10 option A; the probe confirmed this
         // exact async shape, DR-297). The handler is a thin wrapper (R1.2
         // discipline applied to the protocol, DR-302 item 6): parse the URI,

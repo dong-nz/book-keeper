@@ -13,18 +13,19 @@ export interface WindowRange {
   totalHeight: number;
 }
 
-/** The list cover's width is the design constant (UI-45, DR-278): the user's
- *  Phase-B request of 2026-11-10 ("at least the width is 75px, calculate
- *  height") inverts the earlier derivation (UI-03 as modified by §3.12/
- *  DR-189), where the cover was the row minus the gaps and the width fell
- *  out of the A4 ratio at 51 px. Now the width is fixed at 75, the height
- *  is computed from the A4 ratio, and the row is the cover plus its insets.
- *  Mirrors no CSS token of its own — the cover is sized from these constants
- *  by the components — while the row height below mirrors `--row-height`
- *  and the gap mirrors `--row-cover-gap`, in the same lockstep the other
- *  metrics follow. */
-export const ROW_COVER_WIDTH = 75;
-/** The cover's A4-ratio height for the 75 px width: 75 × 297/210 = 106. */
+/** The list cover's width is the design constant (UI-45, DR-278; enlarged to
+ *  100 px by UI-51/DR-320 — the second Phase-B enlargement, the user's
+ *  request of 2026-11-12, same derivation direction). The original request of
+ *  2026-11-10 ("at least the width is 75px, calculate height") inverted the
+ *  earlier derivation (UI-03 as modified by §3.12/DR-189), where the cover
+ *  was the row minus the gaps and the width fell out of the A4 ratio at
+ *  51 px. The width is fixed — now at 100 — the height is computed from the
+ *  A4 ratio, and the row is the cover plus its insets. Mirrors no CSS token
+ *  of its own — the cover is sized from these constants by the components —
+ *  while the row height below mirrors `--row-height` and the gap mirrors
+ *  `--row-cover-gap`, in the same lockstep the other metrics follow. */
+export const ROW_COVER_WIDTH = 100;
+/** The cover's A4-ratio height for the 100 px width: 100 × 297/210 = 141. */
 export const ROW_COVER_HEIGHT = Math.round((ROW_COVER_WIDTH * 297) / 210);
 export const ROW_LINE = 18;
 /** The cover's inset against the row box's edges and the separator hairlines

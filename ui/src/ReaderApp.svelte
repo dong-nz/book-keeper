@@ -13,10 +13,12 @@
   import { Tooltip as TooltipKit } from "bits-ui"; // the app's own `Tooltip` component is the window's wrapper
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import WindowControls from "./components/WindowControls.svelte";
+  import SettingsMenu from "./components/SettingsMenu.svelte";
   import ReaderControls from "./components/ReaderControls.svelte";
   import ReaderView from "./components/ReaderView.svelte";
   import EpubReaderControls from "./components/EpubReaderControls.svelte";
   import EpubReaderView from "./components/EpubReaderView.svelte";
+  import TocDocked from "./components/TocDocked.svelte";
   import ToastStack from "./components/ToastStack.svelte";
   import Icon from "./components/Icon.svelte";
   import Tooltip from "./components/Tooltip.svelte";
@@ -45,6 +47,15 @@
   const epubStore = kind === "epub" ? new EpubReaderStore(docId) : null;
   const store = $derived(epubStore ?? pdfStore);
   const win = getCurrentWindow();
+  // §3.8 (UI-49, revised by DR-337): the pinned panel is part of the window
+  // layout — the grid becomes two-column while a ready window's store carries
+  // the pin AND the docked panel is open. Only a `ready` window can show it
+  // (the pin belongs to the reading surface; an error or loading state
+  // renders one column as before).
+  const dockedOpen = $derived(
+    (pdfStore !== null && pdfStore.status === "ready" && pdfStore.tocPinned && pdfStore.tocDockedOpen) ||
+      (epubStore !== null && epubStore.status === "ready" && epubStore.tocPinned && epubStore.tocDockedOpen),
+  );
 
   // Theme through the released path (DR-101): the stored choice wins,
   // "system" follows the OS — the same ramps, including the dark ramp, in
@@ -71,20 +82,33 @@
 
   // The reader window's own key map (UI-30). Esc closes this window —
   // with the ToC panel open it closes the panel first and the window
-  // stays open (UI-33, the released overlay-priority guard of §5.2: the
-  // kit's own handler consumes the key, and `overlayCount` — decremented
-  // only after the current task — covers the window listener in the same
-  // dispatch). With no overlay open the behavior is unchanged. The
-  // navigation keys are guarded (typing in the page field owns them).
+  // stays open (UI-33, the released overlay-priority guard of §5.2). The
+  // guard decides from the app's own overlay registry — an open overlay is
+  // one whose `OverlayAnchor` is mounted — and it runs in the CAPTURE
+  // phase, before any overlay kit sees the key: a just-closed menu's
+  // document-level Escape consumer (bits-ui's escape-layer) unregisters
+  // only asynchronously, and in the bubble phase its late `preventDefault`
+  // let it swallow the window's own Esc — the sequence Esc-overlay,
+  // Esc-within-a-few-ms Esc-window lost the window (DR-340). The behavior
+  // contract is unchanged: with an overlay mounted the key belongs to the
+  // overlay's own consumer (which runs after this listener), with none the
+  // window closes. The navigation keys stay in the bubble listener: the
+  // page field's typing and the tree rows' Arrow handling keep the
+  // released order.
   // The EPUB map (§3.13, UI-39 semantics with page → flow): ArrowUp/Down
   // one notch, PgUp/PgDn one viewport, Home/End book start/end — and
   // nothing else: no page arrows, no zoom keys (the named exclusions).
-  function onKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      if (event.defaultPrevented || feedback.overlayCount > 0) return;
+  $effect(() => {
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (feedback.overlayCount > 0) return;
+      event.preventDefault();
       void win.close();
-      return;
-    }
+    };
+    window.addEventListener("keydown", onEscape, true);
+    return () => window.removeEventListener("keydown", onEscape, true);
+  });
+  function onKeydown(event: KeyboardEvent) {
     if (isTextTarget(event.target)) return;
     const reader = epubStore ?? pdfStore;
     if (!reader) return;
@@ -252,7 +276,7 @@
 <!-- One Tooltip.Provider per window (the released §3.6 pattern): each window
      is its own app root, and the reader's control strip uses Tooltips. -->
 <TooltipKit.Provider delayDuration={300}>
-<div class="reader">
+<div class="reader" class:pinned={dockedOpen}>
   <header class="chrome" data-tauri-drag-region="deep">
     <Icon name="book-open" />
     <Tooltip text={store?.documentName ?? ""}>
@@ -261,6 +285,16 @@
       {/snippet}
     </Tooltip>
     <span class="chrome-spacer"></span>
+    <!-- UI-50 as revised by DR-338 and DR-344: the main window's settings menu, complete
+         (theme cycle, Settings…, Check for updates, About), in the chrome's
+         right end immediately before the window controls — next to the minimize
+         button, the user's placement — in every reader window, the PDF reader's
+         and the EPUB reader's alike (reader surfaces are consistent, DR-344).
+         The dialogs and the update check operate in this window through released
+         components — the OverlayAnchor guard the menu registers with, this
+         window's ToastStack, the plugin's app-level commands (the reader-windows
+         capability carries updater:default, DR-344). -->
+    <SettingsMenu />
     <WindowControls />
   </header>
 
@@ -269,9 +303,20 @@
        unchanged, the EPUB window the flow surface. The loading state renders
        nothing in both (the released rule). -->
   {#if pdfStore && pdfStore.status === "ready"}
+    <!-- Pinned (UI-49/§3.8): the panel is layout — the left column of the
+         page area, placed before the content column in the grid. -->
+    {#if pdfStore.tocPinned && pdfStore.tocDockedOpen}
+      <TocDocked store={pdfStore} />
+    {/if}
     <ReaderView store={pdfStore} />
     <ReaderControls store={pdfStore} />
   {:else if epubStore && epubStore.status === "ready"}
+    {#if epubStore.tocPinned && epubStore.tocDockedOpen}
+      <!-- The same panel in the EPUB window (UI-48 MODIFIED, DR-327); the
+           current-entry resolver is the store's own (§3.13), the same one
+           the strip passes. -->
+      <TocDocked store={epubStore} current={() => epubStore.currentTocIndex()} />
+    {/if}
     <EpubReaderView store={epubStore} />
     <EpubReaderControls store={epubStore} />
   {:else if store?.status === "error"}
@@ -355,6 +400,39 @@
     color: var(--text-primary);
     font-family: var(--font-ui);
     font-size: var(--text-13);
+  }
+
+  /* Pinned ToC panel (FR-24 / UI-49, SPEC-v0.0.10 §3.8): the page area
+     becomes a two-column region — the panel column at the window's left edge
+     (the fixed width recorded by DR-331), the content column beside it. The
+     chrome and control strips keep spanning the whole window; the panel owns
+     the middle row's first column, the view the second, so the content box
+     shrinks in the DOM and the released fit-width and mount-window machinery
+     measure the smaller box unchanged (the §3.8 "no pipeline change" rule). */
+  .reader.pinned {
+    grid-template-columns: var(--toc-panel-width) minmax(0, 1fr);
+  }
+
+  .reader.pinned .chrome {
+    grid-column: 1 / -1;
+  }
+
+  .reader.pinned :global(.toc-docked) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .reader.pinned :global(.reader-scroll),
+  .reader.pinned :global(.reader-row),
+  .reader.pinned :global(.reader-single),
+  .reader.pinned :global(.flow) {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .reader.pinned :global(.reader-controls) {
+    grid-column: 1 / -1;
+    grid-row: 3;
   }
 
   .chrome {

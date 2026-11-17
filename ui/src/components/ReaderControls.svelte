@@ -5,9 +5,11 @@
   // `n / N` page field), the zoom control (UI-30 as re-anchored by DR-221:
   // a zoom select carrying Fit width / Fit page / Actual Size and the fixed
   // ladder, the numeric readout in its trigger, with − / + walking the
-  // ladder), and the view-mode control (UI-34: three icon-only toggle
-  // buttons, active mode active). The order here is the order the modified
-  // requirement specifies. Values flow through the reader store only.
+  // ladder), the view-mode control (UI-34 as modified by SPEC-v0.0.10: four
+  // icon-only toggle buttons, active mode active). The order here is the
+  // order the modified requirements specify. Values flow through the reader
+  // store only. The settings control is no longer on the strip — UI-50 as
+  // revised by DR-338 places it in the window's chrome.
   import { DropdownMenu } from "bits-ui";
   import Icon from "./Icon.svelte";
   import OverlayAnchor from "./OverlayAnchor.svelte";
@@ -29,6 +31,9 @@
     { mode: "single", icon: "page-single", labelKey: "reader.view.single" },
     { mode: "continuous", icon: "page-stack", labelKey: "reader.view.continuous" },
     { mode: "facing", icon: "page-spread", labelKey: "reader.view.facing" },
+    // v0.0.10 (UI-34 MODIFIED, DR-290): the fourth mode, after facing; the
+    // default stays continuous (FR-17).
+    { mode: "horizontal", icon: "page-row", labelKey: "reader.view.horizontal" },
   ];
 
   let {

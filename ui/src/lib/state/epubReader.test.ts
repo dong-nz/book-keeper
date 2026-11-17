@@ -331,6 +331,40 @@ describe("ToC derivations (§3.13)", () => {
   });
 });
 
+describe("the ToC pin (UI-48 MODIFIED / UI-49, SPEC-v0.0.10 §3.8, revised by DR-337)", () => {
+  it("is session state of the window store: unpinned by default, closed through the reset", () => {
+    const store = storeWith(manifest());
+    expect(store.tocPinned).toBe(false); // every new reader window starts unpinned (OQ-60 → A)
+    expect(store.tocDockedOpen).toBe(false); // the docked panel is shown only while pinned (DR-337)
+    store.setTocPinned(true);
+    expect(store.tocPinned).toBe(true);
+    expect(store.tocDockedOpen).toBe(true); // pinning writes visibility with the mode
+    // The single un-pin path (DR-337): the pin control writes false here,
+    // and the panel closes with the mode — the same rule as the PDF store,
+    // §3.8 EPUB host.
+    store.setTocPinned(false);
+    expect(store.tocPinned).toBe(false);
+    expect(store.tocDockedOpen).toBe(false);
+    expect(new EpubReaderStore(42).tocPinned).toBe(false); // per window, not inherited
+    expect(new EpubReaderStore(42).tocDockedOpen).toBe(false);
+  });
+
+  it("separates visibility from the pin: the strip control and Esc hide and re-show the panel keeping the pinned position", () => {
+    const store = storeWith(manifest());
+    store.setTocPinned(true);
+    store.setTocDockedOpen(false);
+    expect(store.tocDockedOpen).toBe(false);
+    expect(store.tocPinned).toBe(true);
+    store.setTocDockedOpen(true);
+    expect(store.tocDockedOpen).toBe(true);
+    expect(store.tocPinned).toBe(true);
+    store.setTocDockedOpen(false);
+    store.setTocDockedOpen(false); // idempotent — hiding an already hidden panel
+    expect(store.tocPinned).toBe(true);
+    expect(store.tocDockedOpen).toBe(false);
+  });
+});
+
 describe("store navigation (the released goToPage path, flow version)", () => {
   it("lands at a chapter's start with the released +1 px snap tolerance, clamped", () => {
     const store = storeWith(manifest());

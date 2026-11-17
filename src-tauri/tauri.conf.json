@@ -33,6 +33,14 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/dong-nz/pdf-keeper/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5MEQ2REQwRjFBNTRFMzUKUldRMVRxWHgwRzBONlZIdWhEdXNha3MrOVFvZjdlbi9ab1NhS0wxOURQL1V1UVRxTit4WWVKQVMK"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi", "dmg", "appimage", "deb"],

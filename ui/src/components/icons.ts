@@ -47,6 +47,16 @@ export const ICONS = {
   "page-single": ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6"],
   "page-stack": ["M8 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z", "M4 6v12a2 2 0 0 0 2 2h12"],
   "page-spread": ["M2 4h8v16H2z", "M14 4h8v16h-8z"],
+  // Continuous horizontal (UI-34 MODIFIED, v0.0.10, DR-331): three pages
+  // in a row, the middle one taller — the row read at a glance, distinct
+  // from `page-spread`'s two-page pair.
+  "page-row": ["M2 7h4v10H2z", "M10 5h4v14h-4z", "M18 7h4v10h-4z"],
+  // The ToC panel's pin control (FR-24/UI-49, v0.0.10): a thumbtack — the
+  // head and its pin drawn in the catalog's stroke geometry.
+  pin: ["M9 3h6l1.5 8h3v2H4.5v-2h3L9 3z", "M12 13v8"],
+  // DR-336: the unpinned state of the ToC pin control — the same thumbtack
+  // with a diagonal slash, same stroke family, reads as "not pinned".
+  unpin: ["M9 3h6l1.5 8h3v2H4.5v-2h3L9 3z", "M12 13v8", "M5 3l14 14"],
   keyboard: ["M2 4h20v16H2z", "M6 8h.01", "M10 8h.01", "M14 8h.01", "M18 8h.01", "M6 12h.01", "M10 12h.01", "M14 12h.01", "M18 12h.01", "M7 16h10"],
   info: ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20", "M12 16v-4", "M12 8h.01"],
   // Window controls (UI-07) and the View menu's column stepper share these.

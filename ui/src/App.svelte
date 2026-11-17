@@ -18,6 +18,7 @@
   import { isTextTarget, searchFocus } from "$lib/focus";
   import { guardContextMenu } from "$lib/contextmenu";
   import { applyTheme, onSystemThemeChange } from "$lib/theme";
+  import { checkForUpdates } from "$lib/updates";
   import { t } from "$lib/i18n";
   import type { SortDir, SortKey, SortSecondary } from "$lib/types";
 
@@ -68,6 +69,13 @@
       applyRestoredFilter(restored.last_filter);
     }
     await library.refresh();
+    // FR-25 / UI-52: the startup update check — fire-and-forget after the
+    // mount sequence (AC-153: it never delays a window, shows nothing when
+    // the app is current or the source is unreachable; a found update arms
+    // the availability toast). App only mounts in the main window — reader
+    // windows are routed elsewhere in main.ts — so "never on reader windows"
+    // is structural here, not a condition to write.
+    void checkForUpdates(false);
   });
 
   function onGlobalKeydown(event: KeyboardEvent) {

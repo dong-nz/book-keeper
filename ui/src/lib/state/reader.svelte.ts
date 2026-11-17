@@ -83,13 +83,16 @@ const PREVIEW_RELEASE_MS = 600;
 
 export type ReaderStatus = "loading" | "ready" | "error";
 
-/** View modes (UI-34, DR-180): the store's `viewMode` is the single source
- *  for the layout, the strip control's active state, and the navigation
- *  semantics (DR-156's one-state-source discipline). `continuous` is the
- *  released default; pairs are consecutive in reading order (1|2, 3|4, …).
+/** View modes (UI-34, DR-180; UI-34 MODIFIED in v0.0.10 by DR-290 adds
+ *  `horizontal` — pages in one left-to-right row, the continuous model on
+ *  the horizontal axis, never the default): the store's `viewMode` is the
+ *  single source for the layout, the strip control's active state, and the
+ *  navigation semantics (DR-156's one-state-source discipline). `continuous`
+ *  is the released default; pairs are consecutive in reading order (1|2, 3|4,
+ *  …); the row is consecutive in reading order on the x-axis.
  *  Named apart from the document-area `ViewMode` in `lib/types.ts` — list
  *  versus grid is a different axis. */
-export type ReaderViewMode = "single" | "continuous" | "facing";
+export type ReaderViewMode = "single" | "continuous" | "facing" | "horizontal";
 
 export interface PageImage {
   /** The CSS width this image was fetched at — a zoom change makes the
@@ -189,10 +192,25 @@ export interface TocStore {
   outline: OutlineEntry[];
   tocCollapsed: ReadonlySet<number>;
   tocExpandMode: boolean;
+  /** Whether the panel is pinned as a docked layout panel (FR-24/UI-49,
+   *  SPEC-v0.0.10 §3.8): session state of the window's store, default false
+   *  (OQ-60 closed → A, DR-327). */
+  tocPinned: boolean;
+  /** Whether the docked panel is shown (DR-337): the visibility state kept
+   *  separate from the pin — the ToC control and `Esc` toggle it, the pin
+   *  control owns the mode. Meaningful only while pinned; default false. */
+  tocDockedOpen: boolean;
   tocVisible(): { entry: OutlineEntry; index: number }[];
   isTocParent(index: number): boolean;
   toggleTocEntry(index: number): void;
   tocToggleAll(): void;
+  /** The single pin path (§3.8, revised by DR-337): the panel's pin control
+   *  reaches it alone; it writes visibility with the mode (pin → shown,
+   *  un-pin → closed). */
+  setTocPinned(pinned: boolean): void;
+  /** The visibility path (DR-337): the strip control in the pinned state
+   *  and the docked panel's `Esc` write it; it never changes the pin. */
+  setTocDockedOpen(open: boolean): void;
   goToPage(page: number): void;
 }
 
@@ -226,6 +244,17 @@ export class ReaderStore {
    *  the tree opens collapsed, so the first action is expand-all. Same
    *  session scope as the set. */
   tocExpandMode = $state(true);
+  /** Whether the ToC panel is pinned as a docked layout panel at the window's
+   *  left edge (FR-24/UI-49, SPEC-v0.0.10 §3.8). The docked layout must be
+   *  known to the view to re-lay out the content column, so the store — the
+   *  window's single source of view state (DR-155) — carries it. Default
+   *  `false`; per-window session scope, not inherited by new windows
+   *  (OQ-60 closed → A, DR-327); no settings field. */
+  tocPinned = $state(false);
+  /** Whether the docked panel is shown (DR-337): visibility is separate from
+   *  the pin — the strip control and `Esc` toggle this, the pin control owns
+   *  the mode. Session scope like the pin; default `false`. */
+  tocDockedOpen = $state(false);
   /** Single-page mode's mounted page (UI-34): in that mode the current
    *  page is index-driven, not scroll-driven; `goToPage` writes it. */
   singleIndex = $state(1);
@@ -258,6 +287,12 @@ export class ReaderStore {
   /** Set by ReaderView on every measure: the scroller's viewport height —
    *  the distance one `PgUp`/`PgDn` travels (UI-30). */
   viewportHeight = $state(0);
+  /** UI-34 MODIFIED (v0.0.10, DR-290): the horizontal mode's counterparts —
+   *  the row's scroll position and viewport width, written by the view on
+   *  every measure. The same DR-155 rule on the other axis: the page label
+   *  and the mount window both derive from these, in one flush. */
+  scrollLeft = $state(0);
+  viewportWidth = $state(0);
   /** The scroller's position, written by ReaderView on every measure
    *  (DR-155): the single source both the page label and the mount window
    *  derive from, so they update in one flush and can never be read
@@ -281,6 +316,12 @@ export class ReaderStore {
       const center = this.scrollTop + this.viewportHeight / 2;
       return Math.min(2 * indexAt(rows, center) + 1, this.doc?.page_count ?? 1);
     }
+    if (this.viewMode === "horizontal") {
+      // UI-34 MODIFIED (v0.0.10): the page containing the viewport's
+      // horizontal center — `pageAt` over the row's width-based offset
+      // table, evaluated against the row position (DR-155 unchanged).
+      return this.pageAt(this.rowXOffsets(), this.scrollLeft + this.viewportWidth / 2);
+    }
     return this.pageAt(this.pageOffsets(), this.scrollTop);
   });
   /** Requests in flight, keyed by page with the width they were asked at:
@@ -294,7 +335,9 @@ export class ReaderStore {
 
   /** `PgUp`/`PgDn` (UI-30; UI-34 semantics per mode): continuous scrolls
    *  one viewport through the view's scroller; single moves one page;
-   *  facing moves one row (two pages). */
+   *  facing moves one row (two pages); horizontal (v0.0.10, DR-290) moves
+   *  one viewport along the row — the released viewport-step rule on the
+   *  horizontal axis (UI-34 MODIFIED). */
   scrollViewport(pages: number): void {
     if (this.viewMode === "single") {
       this.goToPage(this.currentPage + pages);
@@ -302,6 +345,10 @@ export class ReaderStore {
     }
     if (this.viewMode === "facing") {
       this.goToPage(this.currentPage + 2 * pages);
+      return;
+    }
+    if (this.viewMode === "horizontal") {
+      this.onScrollBy?.(pages * this.viewportWidth);
       return;
     }
     this.onScrollBy?.(pages * this.viewportHeight);
@@ -314,10 +361,13 @@ export class ReaderStore {
     this.goToPage(this.currentPage + (this.viewMode === "facing" ? 2 * delta : delta));
   }
 
-  /** `ArrowDown`/`ArrowUp` (UI-39/DR-228): one wheel notch. Continuous and
-   *  facing scroll the stack through the view's scroll callback; single
-   *  delegates to the view's notch handler, which applies the DR-227 edge
-   *  rule (page step at a reached edge, container scroll otherwise). */
+  /** `ArrowDown`/`ArrowUp` (UI-39/DR-228; UI-39 MODIFIED v0.0.10 extends
+   *  the mode list: in horizontal the notch scrolls the ROW — the faithful
+   *  counterpart of the wheel, which scrolls the row). One wheel notch:
+   *  continuous, horizontal and facing scroll through the view's scroll
+   *  callback; single delegates to the view's notch handler, which applies
+   *  the DR-227 edge rule (page step at a reached edge, container scroll
+   *  otherwise). */
   scrollNotch(delta: number): void {
     if (this.viewMode === "single") {
       this.onNotch?.(delta);
@@ -364,6 +414,21 @@ export class ReaderStore {
     if (this.tocExpandMode) this.tocExpandAll();
     else this.tocCollapseAll();
     this.tocExpandMode = !this.tocExpandMode;
+  }
+
+  /** The pin's single write path (UI-49/§3.8, revised by DR-337): the
+   *  panel's pin control reaches it alone, and it writes the docked panel's
+   *  visibility with the mode — pinning shows the panel, un-pinning closes
+   *  it and returns to the released overlay behavior. */
+  setTocPinned(pinned: boolean): void {
+    this.tocPinned = pinned;
+    this.tocDockedOpen = pinned;
+  }
+
+  /** The visibility path (DR-337): the strip control in the pinned state
+   *  and the docked panel's `Esc` write it; it never changes the pin. */
+  setTocDockedOpen(open: boolean): void {
+    this.tocDockedOpen = open;
   }
 
   /** Switch view mode keeping the current page (UI-34): single mounts the
@@ -450,6 +515,19 @@ export class ReaderStore {
     return stackOffsets(this.pageHeights(), PAGE_GAP);
   }
 
+  /** Continuous horizontal row prefix offsets (UI-34 MODIFIED, v0.0.10,
+   *  DR-290): the same `stackOffsets` rule on the x-axis — the pages'
+   *  display widths at the current zoom, per-page for mixed-size documents
+   *  (the same no-measurement rule `pageHeights` applies to the y-axis).
+   *  `window()` is axis-agnostic; this is the table its x-axis use reads. */
+  rowXOffsets(): number[] {
+    if (!this.doc) return [];
+    return stackOffsets(
+      this.doc.pages.map((_, index) => this.pageWidth(index + 1)),
+      PAGE_GAP,
+    );
+  }
+
   /** Facing-mode row heights (UI-34): a row's height is the taller of its
    *  pair; an unpaired last page is a row of one — the layout degrades
    *  without a special case. */
@@ -493,7 +571,8 @@ export class ReaderStore {
       return;
     }
     const facing = this.viewMode === "facing";
-    const offsets = facing ? this.rowOffsets() : this.pageOffsets();
+    const horizontal = this.viewMode === "horizontal";
+    const offsets = facing ? this.rowOffsets() : horizontal ? this.rowXOffsets() : this.pageOffsets();
     const index = facing ? Math.floor((clamped - 1) / 2) : clamped - 1;
     // +1 px (DR-148): the compositor snaps a scroll to device pixels, which
     // can land a fraction short of the page top — `pageAt` would then name
@@ -519,11 +598,23 @@ export class ReaderStore {
    *  stays mounted. */
   #keepZoomAnchor(): void {
     if (this.viewMode === "single") return;
-    const offsets = this.viewMode === "facing" ? this.rowOffsets() : this.pageOffsets();
+    // v0.0.10 (DR-290): the horizontal mode runs the same rule on the
+    // x-axis — the anchor is the page at the viewport's LEFT edge, and the
+    // clamped case names the page at the RIGHT edge (the row's counterpart
+    // of the bottom-clamped sequence).
+    const horizontal = this.viewMode === "horizontal";
+    const offsets =
+      this.viewMode === "facing"
+        ? this.rowOffsets()
+        : horizontal
+          ? this.rowXOffsets()
+          : this.pageOffsets();
+    const position = horizontal ? this.scrollLeft : this.scrollTop;
+    const viewport = horizontal ? this.viewportWidth : this.viewportHeight;
     let page = this.currentPage;
-    const maxScroll = Math.max(0, (offsets[offsets.length - 1] ?? 0) - this.viewportHeight);
-    if (offsets.length > 1 && this.scrollTop >= maxScroll - 2) {
-      page = this.pageAt(offsets, this.scrollTop + this.viewportHeight - 1);
+    const maxScroll = Math.max(0, (offsets[offsets.length - 1] ?? 0) - viewport);
+    if (offsets.length > 1 && position >= maxScroll - 2) {
+      page = this.pageAt(offsets, position + viewport - 1);
     }
     this.pendingReveal = page;
     this.revealNonce++;

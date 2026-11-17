@@ -56,6 +56,14 @@ class FeedbackStore {
     this.#push({ message, kind: "info" });
   }
 
+  /** An info toast carrying an action (UI-52's availability affordance): it
+   *  waits for the person, like an error toast — the action is the point of
+   *  showing it (DR-332 item 1). Returns the toast id so the caller can
+   *  recognize its own affordance while it is open. */
+  notifyWithAction(key: MsgKey, params: MsgParams, action: ToastAction): number {
+    return this.#push({ message: t(key, params), kind: "info", action });
+  }
+
   reportError(payload: AppErrorPayload, action?: ToastAction): void {
     this.#push({ message: describeError(payload), kind: "error", action, detail: payload });
   }
@@ -79,14 +87,16 @@ class FeedbackStore {
     this.#timers.delete(id);
   }
 
-  #push(toast: Omit<Toast, "id">): void {
+  #push(toast: Omit<Toast, "id">): number {
     const id = this.#nextId++;
     this.toasts = [...this.toasts, { id, ...toast }];
-    // Info toasts auto-dismiss; error toasts stay until acted on or
-    // dismissed (UI-05 / status-feedback.md).
-    if (toast.kind === "info") {
+    // Plain info toasts auto-dismiss; error toasts and toasts carrying an
+    // action stay until acted on or dismissed (UI-05 / status-feedback.md;
+    // the action clause is UI-52's, DR-332 item 1).
+    if (toast.kind === "info" && !toast.action) {
       this.#timers.set(id, setTimeout(() => this.dismiss(id), 6000));
     }
+    return id;
   }
 }
 

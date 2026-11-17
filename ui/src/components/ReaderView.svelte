@@ -16,6 +16,19 @@
   import { edgeStep, type ReaderStore } from "$lib/state/reader.svelte";
   import { t } from "$lib/i18n";
 
+  // DR-341 (the real close of DR-334): the overlay `<img>` is permanently
+  // present (DR-318), and after the release step (DR-323) its `full` is
+  // null — with the src attribute simply absent, a sized image element with
+  // no src still paints Chromium's broken-image placeholder at opacity 1
+  // (`data-loaded` stays set after the fade). A decodable src never renders
+  // the glyph, and the attribute-only patch rule (DR-318) is untouched. The
+  // placeholder is a 1×1 transparent GIF served from the app's own origin
+  // (`ui/public/`, CSP `img-src 'self'`) — the app's image surfaces all
+  // come from controlled origins (the EPUB sanitizer rewrites author
+  // data:-URIs through the content protocol), so `data:` stays out of the
+  // CSP rather than widening it for one internal detail.
+  const TRANSPARENT_PIXEL = "/transparent-1px.gif";
+
   let {
     store,
   }: {
@@ -29,11 +42,17 @@
   const pageCount = $derived(store.doc?.page_count ?? 0);
   // DR-155: the mount window and the page label derive from the store's
   // own scroll position — one source, one flush, never read inconsistent.
-  // Facing mode windows over rows (UI-34); continuous over pages.
+  // Facing mode windows over rows (UI-34); continuous over page heights;
+  // horizontal (v0.0.10, DR-290) over the row's width-based table
+  // (`rowXOffsets`) on the x-axis — `window()` is axis-agnostic (position,
+  // viewport extent, offsets), and its `padTop`/`totalHeight` carry the
+  // row's left pad and total width.
   const win = $derived(
     mode === "facing"
       ? mountWindow(store.scrollTop, store.viewportHeight, store.rowOffsets())
-      : mountWindow(store.scrollTop, store.viewportHeight, store.pageOffsets()),
+      : mode === "horizontal"
+        ? mountWindow(store.scrollLeft, store.viewportWidth, store.rowXOffsets())
+        : mountWindow(store.scrollTop, store.viewportHeight, store.pageOffsets()),
   );
   // Single mode mounts exactly the current page (UI-34: index-driven).
   const singlePage = $derived(store.currentPage);
@@ -96,9 +115,17 @@
   // performs the motion — same callback pattern as `library.onQueryReset`.
   // The notch callback (UI-39/DR-228) is the single-mode keyboard wheel:
   // the view applies the DR-227 edge rule, the store routes the modes.
+  // v0.0.10 (DR-290): in horizontal mode the same offsets and deltas are
+  // applied on the x-axis — the store's math is axis-agnostic, the view
+  // owns the axis. The effect re-runs on a mode switch (it reads `mode`
+  // and the rebound `scroller`), so the registrations always name the
+  // live element.
   $effect(() => {
-    store.onScrollTo = (offsetPx) => scroller?.scrollTo({ top: offsetPx });
-    store.onScrollBy = (deltaPx) => scroller?.scrollBy({ top: deltaPx });
+    const horizontal = mode === "horizontal";
+    store.onScrollTo = (offsetPx) =>
+      scroller?.scrollTo(horizontal ? { left: offsetPx } : { top: offsetPx });
+    store.onScrollBy = (deltaPx) =>
+      scroller?.scrollBy(horizontal ? { left: deltaPx } : { top: deltaPx });
     store.onNotch = (deltaPx) => notchScroll(deltaPx);
     return () => {
       store.onScrollTo = null;
@@ -157,14 +184,33 @@
     el.scrollBy({ top: deltaPx });
   }
 
+  // Continuous horizontal (UI-34 MODIFIED, v0.0.10 DR-290): the wheel's
+  // counterpart of the row — UI-39 names the arrow keys as "the faithful
+  // counterpart of the wheel, which scrolls the row", so the wheel owns the
+  // row: a vertical delta scrolls the row horizontally. A real horizontal
+  // delta (trackpad pan, Shift+wheel) is left to the browser's native
+  // horizontal scroll.
+  function rowWheel(e: WheelEvent) {
+    const el = scroller;
+    if (!el || mode !== "horizontal") return;
+    if (e.deltaX !== 0) return;
+    e.preventDefault();
+    el.scrollBy({ left: e.deltaY });
+  }
+
   function measure() {
     if (!scroller) return;
     // DR-155: the position belongs to the store — the label and the mount
-    // window both derive from it, in the same flush.
+    // window both derive from it, in the same flush. v0.0.10 (DR-290):
+    // both axes are written; each mode's derivation reads its own axis.
     store.scrollTop = scroller.scrollTop;
+    store.scrollLeft = scroller.scrollLeft;
     store.viewportHeight = scroller.clientHeight;
+    store.viewportWidth = scroller.clientWidth;
     // Fit-width is derived from the content box (AC-66): the window minus
     // the two standard gutters (UI-19), exactly as DocumentArea measures it.
+    // The fit base is the same in horizontal mode (UI-34 MODIFIED: fit the
+    // current page to the viewport; the row scrolls past it).
     store.fitWidth = Math.max(0, scroller.clientWidth - 2 * CONTENT_GUTTER);
   }
 
@@ -187,10 +233,12 @@
         // Fit-width re-derives on every resize (UI-30/AC-66): the geometry is
         // computed from the new width, the mounted pages re-request at it.
         store.fitWidth = Math.max(0, scroller.clientWidth - 2 * CONTENT_GUTTER);
-        // The viewport height is measured here too — `observe` fires once
+        // The viewport extent is measured here too — `observe` fires once
         // immediately, so the first PgUp/PgDn already knows its travel
-        // distance (a scroll-only measurement would make it a no-op).
+        // distance (a scroll-only measurement would make it a no-op), on
+        // either axis (v0.0.10 horizontal mode steps by the width).
         store.viewportHeight = scroller.clientHeight;
+        store.viewportWidth = scroller.clientWidth;
       });
     });
     observer.observe(scroller);
@@ -211,23 +259,29 @@
            in at its own decode completion — the resolution swap reads as
            sharpening, not a flash. Decorative: the base image carries the
            page's accessible name. DR-318: the overlay element is ALWAYS
-           present (its src simply appears with the full stage) — the branch
-           never changes shape, so an entry update is an attribute-only
-           patch: the base image node is never rebuilt, and the painted
-           preview is never torn down (a rebuilt <img> must decode again —
-           that gap was the surviving flash). DR-323: the load event hands
-           the page to the store's release timer — after the fade the full
-           stage becomes the base src and this overlay's src clears, so the
+           present (its src is the transparent placeholder until the full
+           stage appears — DR-341) — the branch never changes shape, so an
+           entry update is an attribute-only patch: the base image node is
+           never rebuilt, and the painted preview is never torn down (a
+           rebuilt <img> must decode again — that gap was the surviving
+           flash). DR-323: the load event hands the page to the store's
+           release timer — after the fade the full stage becomes the base
+           src and this overlay's src returns to the placeholder, so the
            coexistence is the fade's own window, not the page's whole
            mounted lifetime. -->
       <img
         class="page-full"
-        src={image.full}
+        src={image.full ?? TRANSPARENT_PIXEL}
         alt=""
         aria-hidden="true"
         data-loaded={undefined}
         style="width: {width}px; height: {height}px"
         onload={(e) => {
+          // Only the full stage's own load drives the fade and the release
+          // (DR-316/DR-323). The placeholder (and a stale load event that
+          // lands after the src patch) must not set `data-loaded` — an
+          // early fade would re-create the flash the seam exists to hide.
+          if (image.full === null || e.currentTarget.currentSrc !== image.full) return;
           e.currentTarget.setAttribute("data-loaded", "");
           store.previewShown(page, width);
         }}
@@ -249,6 +303,26 @@
   <div class="reader-single" bind:this={scroller} onwheel={edgeNavigate}>
     {#if store.status === "ready" && measured}
       {@render pageBox(singlePage, singleHeight)}
+    {/if}
+  </div>
+{:else if mode === "horizontal"}
+  <!-- Continuous horizontal (UI-34 MODIFIED, v0.0.10 DR-290): one row of
+       pages in reading order, free horizontal scroll — the continuous model
+       on the x-axis. Same windowing: row geometry IS page geometry (the
+       same offset table), `padTop`/`totalHeight` carry the row's left pad
+       and total width, same OVERSCAN bounds (§3.3). The row is vertically
+       centered with auto margins — DR-205's rule on the other axis:
+       centered when it fits, start-aligned when taller, so a page taller
+       than the viewport stays fully reachable through vertical scroll. -->
+  <div class="reader-row" bind:this={scroller} onscroll={measure} onwheel={rowWheel}>
+    {#if store.status === "ready" && measured && win.end > win.start}
+      <div class="row-track" style="width: {win.totalHeight}px">
+        <div class="row-window" style="transform: translateX({win.padTop}px)">
+          {#each Array.from({ length: win.end - win.start }, (_, i) => win.start + i) as index (index)}
+            {@render pageBox(index + 1, heights[index])}
+          {/each}
+        </div>
+      </div>
     {/if}
   </div>
 {:else}
@@ -300,6 +374,51 @@
 
   .stack {
     position: relative;
+  }
+
+  /* Continuous horizontal (UI-34 MODIFIED, v0.0.10, DR-290): the scroller
+     owns the x-axis — free horizontal scroll, the same content gutters
+     (fit-width measures this box), and the same `overflow-anchor: none`
+     (DR-152 on the x-axis: windowed mounting must not let the engine drag
+     the measured position). The vertical axis stays reachable: with
+     `overflow-x: auto` the visible `overflow-y` computes as `auto`, so a
+     page taller than the viewport scrolls vertically — the row's
+     counterpart of a zoomed page in single mode. */
+  .reader-row {
+    flex: 1;
+    min-height: 0;
+    overflow-x: auto;
+    overflow-anchor: none;
+    padding: 0 var(--content-gutter);
+    box-sizing: border-box;
+  }
+
+  /* The row's track: the full row width as an explicit box — the honest
+     scrollbar rule `.stack` follows for `totalHeight` (NFR-01) — at least
+     the viewport height, so the row's auto margins have a cross size to
+     center against; it grows to a taller page, whose top stays reachable
+     because the auto margins collapse to zero (DR-205's pattern, other
+     axis). */
+  .row-track {
+    display: flex;
+    min-height: 100%;
+  }
+
+  /* The row's window: mounted pages in reading order, left to right, the
+     standard 12 px gap (the same token/constant lockstep as `.window`'s
+     `--card-gap`/`PAGE_GAP`), translated by the left pad — the counterpart
+     of `.window`'s translateY pattern. `margin-block: auto` centers the row
+     in the viewport when it fits and collapses to zero when it does not;
+     the pages carry the same auto margins on the cross axis for centering
+     within the row (the counterpart of `.row`'s `margin-inline: auto`). */
+  .row-window {
+    display: flex;
+    gap: var(--card-gap);
+    margin-block: auto;
+  }
+
+  .reader-row .page {
+    margin-block: auto;
   }
 
   /* Facing mode's pair row (UI-34): two pages, the standard gap, the

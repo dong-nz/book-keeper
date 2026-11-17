@@ -74,6 +74,9 @@ const en = {
   // and its key left with `AppMenu.svelte`.
   "settings.menu": "Settings",
   "settings.open": "Settings",
+  // v0.0.10 (FR-25 / UI-52, DR-332 item 3): the manual update check — the
+  // menu item between Settings… and About….
+  "settings.checkUpdates": "Check for updates",
   "settings.title": "Settings",
   "settings.appearance": "Appearance",
   "settings.theme": "Theme",
@@ -125,6 +128,18 @@ const en = {
   "job.import": "Importing…",
   "job.rescan": "Checking files…",
   "job.cover": "Generating covers…",
+  // v0.0.10 (UI-52): the update download rides the same bar (DR-332 item 4).
+  "job.update": "Downloading…",
+
+  // App updates (FR-25 / UI-52, DR-332 item 2): the availability affordance
+  // carries the version, and the notes variant only when the release carries
+  // notes text; "up to date" and an unreachable source are plain toasts.
+  "updates.available": "PDF Keeper {version} is available",
+  "updates.availableNotes": "PDF Keeper {version} is available — {notes}",
+  "updates.install": "Install",
+  "updates.uptodate": "You're up to date",
+  "updates.checkFailed": "Couldn't check for updates.",
+  "updates.installFailed": "The update could not be installed.",
 
   // Empty states
   "empty.library.title": "Your library is empty",
@@ -269,9 +284,14 @@ const en = {
   "reader.toc.collapseAll": "Collapse all",
   "reader.toc.expandEntry": "Expand section",
   "reader.toc.collapseEntry": "Collapse section",
+  // The pin control (FR-24/UI-49, v0.0.10): one static name + the pressed
+  // state carries the toggle (the released toggle affordance).
+  "reader.toc.pin": "Pin panel",
   "reader.view.single": "Single page",
   "reader.view.continuous": "Continuous",
   "reader.view.facing": "Facing pages",
+  // v0.0.10 (UI-34 MODIFIED, DR-290): the fourth view mode.
+  "reader.view.horizontal": "Continuous horizontal",
   // v0.0.8: the unlock form of a protected document (FR-20, AC-104/AC-105).
   "reader.password.title": "This document has a password",
   "reader.password.field": "Password",
