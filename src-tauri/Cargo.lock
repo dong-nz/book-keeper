@@ -331,6 +331,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookkeeper"
+version = "0.0.10"
+dependencies = [
+ "image",
+ "log",
+ "lopdf",
+ "pdfium-render",
+ "quick-xml",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-updater",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
 name = "brotli"
 version = "9.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2945,27 +2966,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "pdfkeeper"
-version = "0.0.10"
-dependencies = [
- "image",
- "log",
- "lopdf",
- "pdfium-render",
- "quick-xml",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-updater",
- "thiserror 2.0.21",
- "zip",
 ]
 
 [[package]]
