@@ -8,10 +8,12 @@
 # (a `-` in the tag, e.g. `v0.0.0-preflight`) publish as a draft release —
 # the pipeline pre-flight that does not consume a version (NFR-11).
 #
-# Repository secrets required: TAURI_SIGNING_PRIVATE_KEY and
-# TAURI_SIGNING_PRIVATE_KEY_PASSWORD — the private counterpart of the pubkey
-# pinned in src-tauri/tauri.conf.json (the same key the flowAppUpdate
-# fixture uses from ~/.bookkeeper/signing/).
+# Repository secret required: TAURI_SIGNING_PRIVATE_KEY — the private
+# counterpart of the pubkey pinned in src-tauri/tauri.conf.json (the same key
+# the flowAppUpdate fixture uses from ~/.bookkeeper/signing/). The key has no
+# password (DR-377); TAURI_SIGNING_PRIVATE_KEY_PASSWORD is passed through for
+# a future key that has one, and an unset/empty value signs fine (verified
+# with the CLI against this key).
 name: Release
 
 on:
@@ -46,10 +48,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Version guard — the tag must match the app version
+      - name: Version guard — the tag must match the app version (a pre-flight may add a -suffix)
         run: |
           app_version=$(node -e "console.log(require('./src-tauri/tauri.conf.json').version)")
-          if [ "v${app_version}" != "${GITHUB_REF_NAME}" ]; then
+          tag_version="${GITHUB_REF_NAME%%-*}"
+          if [ "v${app_version}" != "${tag_version}" ]; then
             echo "tag ${GITHUB_REF_NAME} does not match tauri.conf.json version ${app_version}" >&2
             exit 1
           fi
@@ -153,6 +156,7 @@ jobs:
       - name: Assemble latest.json
         run: |
           version="${GITHUB_REF_NAME#v}"
+          version="${version%%-*}" # a pre-flight suffix is not part of the version
           node scripts/publish-release.mjs \
             --dist tmp/release/flat \
             --version "$version" \

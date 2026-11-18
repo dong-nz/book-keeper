@@ -9,7 +9,9 @@ name: CI
 
 on:
   push:
+    branches: ["master"] # tag pushes belong to release.yml; a pre-flight tag must not run CI (DR-382)
   pull_request:
+    branches: ["master"]
 
 concurrency:
   group: ci-${{ github.ref }}

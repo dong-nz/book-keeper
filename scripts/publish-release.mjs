@@ -42,7 +42,10 @@ for (const [name, value] of Object.entries({ dist, version, tag, repo, notes: no
   }
 }
 
-if (tag !== `v${version}`) {
+// The tag carries the version; a pre-flight tag may add a `-suffix`
+// (release.yml publishes those as drafts — NFR-11).
+const versionEsc = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+if (!new RegExp(`^v${versionEsc}(-[0-9A-Za-z.-]+)?$`).test(tag)) {
   console.error(`tag ${tag} does not match version ${version}`);
   process.exit(2);
 }
