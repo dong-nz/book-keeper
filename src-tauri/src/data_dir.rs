@@ -1,14 +1,14 @@
 //! Data-directory resolution (DR-162): the one place that decides where the
-//! app writes. `PDFKEEPER_DATA_DIR` is the verification-harness override that
+//! app writes. `BOOKKEEPER_DATA_DIR` is the verification-harness override that
 //! lets the two UI suites run in parallel against isolated libraries; unset,
 //! the released Tauri resolution stands unchanged. Same pattern as the
-//! `PDFKEEPER_COVER_WORKERS` override: a test-only mechanism, no UI surface.
+//! `BOOKKEEPER_COVER_WORKERS` override: a test-only mechanism, no UI surface.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 
-pub const ENV_VAR: &str = "PDFKEEPER_DATA_DIR";
+pub const ENV_VAR: &str = "BOOKKEEPER_DATA_DIR";
 
 /// The resolved directory, managed as app state so the `app_data_dir` command
 /// reports exactly the directory the app itself writes to (R1.4: the read

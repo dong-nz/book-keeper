@@ -11,7 +11,7 @@
 # Repository secrets required: TAURI_SIGNING_PRIVATE_KEY and
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD — the private counterpart of the pubkey
 # pinned in src-tauri/tauri.conf.json (the same key the flowAppUpdate
-# fixture uses from ~/.pdfkeeper/signing/).
+# fixture uses from ~/.bookkeeper/signing/).
 name: Release
 
 on:

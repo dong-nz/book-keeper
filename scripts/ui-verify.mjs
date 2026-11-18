@@ -20,9 +20,9 @@
 //                                          last (long lead time, no throughput
 //                                          claims)
 // Every lane runs against its own data directory under
-// …\com.pdfkeeper.app\parallel\lanes\<flow>, its own tauri-driver ports, and
+// …\com.bookkeeper.app\parallel\lanes\<flow>, its own tauri-driver ports, and
 // scoped cleanup (it touches only its own process tree). Every lane also
-// carries `PDFKEEPER_UPDATE_FIXTURE=1` (DR-332 item 7): the full mode's flow
+// carries `BOOKKEEPER_UPDATE_FIXTURE=1` (DR-332 item 7): the full mode's flow
 // set contains flowAppUpdate, so the build owner builds the binary with the
 // fixture update endpoint and every lane shares that one build. The scheduler runs
 // barrier-separated groups (DR-164, order revised by DR-168): the build owner
@@ -105,7 +105,7 @@ const REPORT_PATH = (() => {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15) + "Z";
   return resolve(join(import.meta.dirname, "..", "tmp", "test-reports", `verify-${stamp}.md`));
 })();
-const PARALLEL = join(process.env.APPDATA, "com.pdfkeeper.app", "parallel");
+const PARALLEL = join(process.env.APPDATA, "com.bookkeeper.app", "parallel");
 const SCALE_FLOW_NAMES = ["flowVirtualization", "flowWidthMatrix", "flowEmptyAndSkeleton"];
 
 // The lane table. In full mode the lanes carry their DR-164 group:
@@ -153,7 +153,7 @@ function buildLanes() {
 }
 
 function globalSweep(what) {
-  for (const image of ["pdfkeeper.exe", "msedgedriver.exe", "tauri-driver.exe"]) {
+  for (const image of ["bookkeeper.exe", "msedgedriver.exe", "tauri-driver.exe"]) {
     spawnSync("taskkill", ["/IM", image, "/F"], { stdio: "ignore" });
   }
   console.log(`[verify] global sweep ${what}`);
@@ -170,7 +170,7 @@ function runLane(lane) {
   const script = lane.runner === "smoke" ? "scripts/ui-smoke.mjs" : "scripts/ui-10k.mjs";
   const env = {
     ...process.env,
-    PDFKEEPER_DATA_DIR: lane.dataDir,
+    BOOKKEEPER_DATA_DIR: lane.dataDir,
     SMOKE_SCOPED: "1",
     SMOKE_DRIVER_PORT: String(4444 + lane.index),
     SMOKE_NATIVE_PORT: String(17556 + lane.index),
@@ -179,7 +179,7 @@ function runLane(lane) {
     // binary carries the fixture config — the other lanes' startup checks
     // then hit a local port with nothing listening, which is the silent
     // fast path, not the network.
-    PDFKEEPER_UPDATE_FIXTURE: "1",
+    BOOKKEEPER_UPDATE_FIXTURE: "1",
   };
   for (const key of ["SMOKE_SET", "SMOKE_FLOW", "SMOKE_10K_FLOW", "SMOKE_PREFIX_QUIET", "SMOKE_CDP_PORT"]) {
     delete env[key];

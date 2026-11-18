@@ -86,7 +86,7 @@ const MAX_COVER_WORKERS: usize = 8;
 const DEFAULT_MAX_COVER_WORKERS: usize = 4;
 
 /// Encode-pool size (D17): default `min(4, max(1, ⌊cores/2⌋))`; the
-/// `PDFKEEPER_COVER_WORKERS` override is clamped to 1..8. Takes the override
+/// `BOOKKEEPER_COVER_WORKERS` override is clamped to 1..8. Takes the override
 /// as an argument so tests verify the clamp without touching process env.
 fn pool_size(override_value: Option<&str>) -> usize {
     if let Some(value) = override_value
@@ -149,7 +149,7 @@ pub fn start_pool(
     sink: Arc<dyn EventSink>,
     service: Arc<RenderService>,
 ) -> CoverQueue {
-    let requested = std::env::var("PDFKEEPER_COVER_WORKERS").ok();
+    let requested = std::env::var("BOOKKEEPER_COVER_WORKERS").ok();
     start_pool_with_workers(dir, sink, pool_size(requested.as_deref()), service)
 }
 
@@ -781,7 +781,7 @@ mod tests {
 
     #[test]
     fn cover_pool_size_clamps_the_override_and_bounds_the_default() {
-        // D17: PDFKEEPER_COVER_WORKERS clamps to 1..8; the default is
+        // D17: BOOKKEEPER_COVER_WORKERS clamps to 1..8; the default is
         // min(4, max(1, cores/2)) and never 0 or above 4.
         assert_eq!(pool_size(Some("1")), 1);
         assert_eq!(pool_size(Some("2")), 2);

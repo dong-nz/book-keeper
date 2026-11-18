@@ -8,7 +8,7 @@
   // false`, the kit's declarative stay-open). Settings… (the dialog);
   // Check for updates (UI-52, FR-25 — the manual check path, DR-332 item 3:
   // the released `rescan` glyph, the menu closes on selection like the other
-  // action items); About PDF Keeper… (UI-12 as modified).
+  // action items); About Book Keeper… (UI-12 as modified).
   // Every write goes through the settings store — the one path to the key
   // (R1.6), the same one the dialog uses. The internal value for Auto stays
   // `system` — only the name changed (§3.13); no data-model change.

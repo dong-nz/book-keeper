@@ -96,8 +96,8 @@ const en = {
   "theme.auto": "Auto",
   "theme.light": "Light",
   "theme.dark": "Dark",
-  "menu.about": "About PDF Keeper",
-  "about.title": "About PDF Keeper",
+  "menu.about": "About Book Keeper",
+  "about.title": "About Book Keeper",
   "about.name": "Application",
   "about.version": "Version",
 
@@ -141,8 +141,8 @@ const en = {
   // App updates (FR-25 / UI-52, DR-332 item 2): the availability affordance
   // carries the version, and the notes variant only when the release carries
   // notes text; "up to date" and an unreachable source are plain toasts.
-  "updates.available": "PDF Keeper {version} is available",
-  "updates.availableNotes": "PDF Keeper {version} is available — {notes}",
+  "updates.available": "Book Keeper {version} is available",
+  "updates.availableNotes": "Book Keeper {version} is available — {notes}",
   "updates.install": "Install",
   "updates.uptodate": "You're up to date",
   "updates.checkFailed": "Couldn't check for updates.",

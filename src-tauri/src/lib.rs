@@ -284,7 +284,7 @@ pub fn run() {
         // discipline applied to the protocol, DR-302 item 6): parse the URI,
         // move the work to a worker thread (R3.5), answer. All serving logic
         // is `epubsrv::serve`.
-        .register_asynchronous_uri_scheme_protocol("pdfkeeper-epub", |ctx, request, responder| {
+        .register_asynchronous_uri_scheme_protocol("bookkeeper-epub", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let authority = request
                 .uri()
@@ -298,7 +298,7 @@ pub fn run() {
         })
         .setup(|app| {
             // The data directory is decided exactly once (DR-162): the
-            // harness override when PDFKEEPER_DATA_DIR is set, otherwise the
+            // harness override when BOOKKEEPER_DATA_DIR is set, otherwise the
             // released Tauri resolution. Everything below — db, covers,
             // reader — writes under this path, and the `app_data_dir`
             // command reports this same value.
@@ -400,7 +400,7 @@ pub fn run() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("PDF Keeper failed to start")
+        .expect("Book Keeper failed to start")
         .run(|_app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 applog::info("lifecycle", "exit");

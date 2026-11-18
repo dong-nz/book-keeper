@@ -31,19 +31,19 @@ const MAX_TRACKED_ENTRIES: usize = 128;
 /// frontend and the manifest command are given.
 pub fn base_url(doc_id: i64) -> String {
     if cfg!(windows) {
-        format!("http://pdfkeeper-epub.localhost/{doc_id}/")
+        format!("http://bookkeeper-epub.localhost/{doc_id}/")
     } else {
-        format!("pdfkeeper-epub://{doc_id}/")
+        format!("bookkeeper-epub://{doc_id}/")
     }
 }
 
 /// The protocol request split into (doc-id, package entry path). Three URI
-/// shapes arrive: the custom form `pdfkeeper-epub://<doc-id>/<path>` (the
+/// shapes arrive: the custom form `bookkeeper-epub://<doc-id>/<path>` (the
 /// authority carries the doc-id); the Windows origin form as the engine
-/// issues it, `http://pdfkeeper-epub.localhost/<doc-id>/<path>` (empty or
-/// `pdfkeeper-epub.localhost` authority); and the same Windows request as
+/// issues it, `http://bookkeeper-epub.localhost/<doc-id>/<path>` (empty or
+/// `bookkeeper-epub.localhost` authority); and the same Windows request as
 /// wry hands the handler after its scheme rewrite —
-/// `pdfkeeper-epub://localhost/<doc-id>/<path>`, authority `localhost`, the
+/// `bookkeeper-epub://localhost/<doc-id>/<path>`, authority `localhost`, the
 /// doc-id in the first path segment (measured 2026-11-11 in the running
 /// app, DR-305; the §3.10 probe did not pin this form down). The entry
 /// path is normalized by the §3.2 rule — percent-decode, backslash
@@ -53,7 +53,7 @@ pub fn base_url(doc_id: i64) -> String {
 pub fn parse_request(authority: &str, path: &str) -> Option<(i64, String)> {
     let (doc_id, entry_path) =
         if authority.is_empty()
-            || authority.eq_ignore_ascii_case("pdfkeeper-epub.localhost")
+            || authority.eq_ignore_ascii_case("bookkeeper-epub.localhost")
             || authority.eq_ignore_ascii_case("localhost")
         {
             let trimmed = path.trim_start_matches('/');
@@ -950,7 +950,7 @@ mod tests {
         // The Windows origin form: the first path segment is the doc-id.
         assert_eq!(
             parse_request(
-                "pdfkeeper-epub.localhost",
+                "bookkeeper-epub.localhost",
                 "/12/OEBPS/text/ch01.xhtml"
             ),
             Some((12, "OEBPS/text/ch01.xhtml".to_string()))
@@ -991,9 +991,9 @@ mod tests {
     fn base_url_follows_the_platform_branch() {
         let url = base_url(7);
         if cfg!(windows) {
-            assert_eq!(url, "http://pdfkeeper-epub.localhost/7/");
+            assert_eq!(url, "http://bookkeeper-epub.localhost/7/");
         } else {
-            assert_eq!(url, "pdfkeeper-epub://7/");
+            assert_eq!(url, "bookkeeper-epub://7/");
         }
     }
 

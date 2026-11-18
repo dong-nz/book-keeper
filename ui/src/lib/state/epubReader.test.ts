@@ -52,7 +52,7 @@ import { PAGE_GAP } from "./reader.svelte";
 import type { EpubManifestDto, OutlineEntry } from "../types";
 import { settings } from "./settings.svelte";
 
-const BASE = "http://pdfkeeper-epub.localhost/42/";
+const BASE = "http://bookkeeper-epub.localhost/42/";
 
 /** A three-chapter book: 1000 / 2000 / 3000 uncompressed bytes, total 6000.
  *  Chapter byte starts are 0 / 1000 / 3000 — 16.667 % and 50 % boundaries. */

@@ -1,5 +1,5 @@
 [package]
-name = "pdfkeeper"
+name = "bookkeeper"
 version = "0.0.10"
 edition = "2024"
 

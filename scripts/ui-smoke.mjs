@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // UI smoke script (SPEC-v0.0.1.md §5.3.12): drives the REAL built app
-// (src-tauri/target/debug/pdfkeeper.exe) through tauri-driver (W3C WebDriver,
+// (src-tauri/target/debug/bookkeeper.exe) through tauri-driver (W3C WebDriver,
 // proxied to msedgedriver on Windows). Assertions are made against the live
 // DOM and the real command boundary; keyboard flows use real key events.
 // Since v0.0.6 (DR-147) the reader flows run on a second runtime: the same
@@ -15,9 +15,9 @@
 //     mode runs every UI test case as its own lane (this file hosts the
 //     functional and reader lanes, scripts/ui-10k.mjs the docs lanes), coarse
 //     mode the two-suite split; every lane gets its own data directory
-//     (PDFKEEPER_DATA_DIR), ports, and scoped cleanup.
+//     (BOOKKEEPER_DATA_DIR), ports, and scoped cleanup.
 //   Lane-mode environment (set by scripts/ui-verify.mjs):
-//     PDFKEEPER_DATA_DIR=<absolute path>  the lane's own data directory
+//     BOOKKEEPER_DATA_DIR=<absolute path>  the lane's own data directory
 //     SMOKE_SCOPED=1                      cleanup touches only this process's
 //                                         own tree; global image kills only in
 //                                         single-suite mode
@@ -35,11 +35,11 @@
 //   the-app-window, keyboard-shortcuts. Unknown area names error.
 //   SMOKE_FLOW=flowTags,flowDelete  run only these flows (narrows
 //   SMOKE_SET when both are given; debugging aid). Unknown flow names error.
-// The second harness override (after PDFKEEPER_DATA_DIR, DR-331 item 6,
+// The second harness override (after BOOKKEEPER_DATA_DIR, DR-331 item 6,
 // DR-332 item 7): the fixture update endpoint baked into the binary at build
 // time (`TAURI_CONFIG`, port 14299). The app's update source is compiled
 // config, not a runtime argument, so flowAppUpdate's fixture endpoint is a
-// build decision: scripts/ui-verify.mjs sets `PDFKEEPER_UPDATE_FIXTURE=1` for
+// build decision: scripts/ui-verify.mjs sets `BOOKKEEPER_UPDATE_FIXTURE=1` for
 // every lane (its flow set always contains flowAppUpdate); a standalone run
 // decides from its own resolved flow selection — a run that names
 // flowAppUpdate or flowReaderSettings (DR-344) or the full suite builds with
@@ -63,11 +63,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const APP_EXE = join(root, "src-tauri", "target", "debug", "pdfkeeper.exe");
+const APP_EXE = join(root, "src-tauri", "target", "debug", "bookkeeper.exe");
 // Same variable the app-side resolver reads (DR-162): scripts/ui-verify.mjs
 // points each suite at its own isolated library under the app data dir;
 // standalone runs keep the app's own directory.
-export const DATA_DIR = process.env.PDFKEEPER_DATA_DIR || join(process.env.APPDATA, "com.pdfkeeper.app");
+export const DATA_DIR = process.env.BOOKKEEPER_DATA_DIR || join(process.env.APPDATA, "com.bookkeeper.app");
 // Under the orchestrator the two suites run at once: cleanup closes only
 // this suite's own windows, never image-name kills that would hit the
 // other suite's app.
@@ -161,7 +161,7 @@ function sameCssColor(a, b) {
 // D15 (AC-55): the binary is owned by the working tree — a build is only owed
 // when an input is newer than it. When the check passes the run says so.
 // A plain `cargo build`/`cargo test` (the Rust-core stage builds with them)
-// also produces target/debug/pdfkeeper.exe — but without the embedded
+// also produces target/debug/bookkeeper.exe — but without the embedded
 // frontend, so that binary opens devUrl and the window shows "localhost
 // refused to connect". A binary newer than the stamp the Tauri CLI build
 // leaves next to it was therefore not built by the CLI: it is stale too.
@@ -181,7 +181,7 @@ const TAURI_CONFIG_FIXTURE = JSON.stringify({
     },
   },
 });
-let buildUpdateFixture = process.env.PDFKEEPER_UPDATE_FIXTURE === "1";
+let buildUpdateFixture = process.env.BOOKKEEPER_UPDATE_FIXTURE === "1";
 export function decideUpdateFixtureBuild(wanted) {
   // Orchestrated runs are already decided by the marker; a standalone run
   // decides from its own resolved selection (`wanted` null = the full suite,
@@ -257,7 +257,7 @@ export function prepareEnvironment() {
   // Standalone runs sweep stray apps; under the orchestrator the other
   // suite may already have its app up — a global kill is its job (DR-162).
   if (!SCOPED) {
-    spawnSync("taskkill", ["/IM", "pdfkeeper.exe", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill", ["/IM", "bookkeeper.exe", "/F"], { stdio: "ignore" });
   }
   rmSync(DATA_DIR, { recursive: true, force: true }); // fresh library per run
   const docs = existsSync(FIXTURE_DOCS) ? readdirSync(FIXTURE_DOCS) : [];
@@ -283,7 +283,7 @@ export function startDriver() {
     { stdio: ["ignore", "pipe", "pipe"], env },
   );
   // The app under test always lives inside this driver's process subtree
-  // (tauri-driver → msedgedriver → pdfkeeper.exe, verified 2026-11-07), so
+  // (tauri-driver → msedgedriver → bookkeeper.exe, verified 2026-11-07), so
   // the subtree walk below identifies exactly this suite's app (DR-162).
   suiteDriverPid = driver.pid;
   driver.stderr.on("data", (d) => process.stderr.write(`[driver] ${d}`));
@@ -321,7 +321,7 @@ function processChildren() {
   return children;
 }
 
-// This suite's app processes: pdfkeeper.exe descendants of its own driver.
+// This suite's app processes: bookkeeper.exe descendants of its own driver.
 // The other suite's app hangs under the other driver and never appears.
 function ownAppProcesses() {
   if (!suiteDriverPid) return [];
@@ -330,7 +330,7 @@ function ownAppProcesses() {
   const stack = [suiteDriverPid];
   while (stack.length) {
     for (const child of children.get(stack.pop()) ?? []) {
-      if (child.name === "pdfkeeper.exe") out.push(child.pid);
+      if (child.name === "bookkeeper.exe") out.push(child.pid);
       stack.push(child.pid);
     }
   }
@@ -1541,7 +1541,7 @@ async function setViewMode(mode) {
 // Scoped mode (DR-162): the other suite's app shares the image name, so the
 // poll looks only at this suite's own app (subtree of its driver) and a
 // timeout force-kill touches only that tree.
-async function waitProcessExit(image = "pdfkeeper.exe", timeoutMs = 15000) {
+async function waitProcessExit(image = "bookkeeper.exe", timeoutMs = 15000) {
   if (SCOPED) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -1830,7 +1830,7 @@ export async function functionalCdpPort() {
       [
         "-NoProfile",
         "-Command",
-        'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "--webview-exe-name=pdfkeeper" } | ForEach-Object { "{0}`t{1}" -f $_.ProcessId, $_.CommandLine }',
+        'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "--webview-exe-name=bookkeeper" } | ForEach-Object { "{0}`t{1}" -f $_.ProcessId, $_.CommandLine }',
       ],
       { encoding: "utf8", windowsHide: true },
     );
@@ -1900,7 +1900,7 @@ async function startCdpApp() {
       }
     }
   } else {
-    spawnSync("taskkill", ["/IM", "pdfkeeper.exe", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill", ["/IM", "bookkeeper.exe", "/F"], { stdio: "ignore" });
     spawnSync("taskkill", ["/IM", "msedgewebview2.exe", "/F"], { stdio: "ignore" });
   }
   rmSync(CDP_PROFILE, { recursive: true, force: true });
@@ -1931,7 +1931,7 @@ function stopCdpApp() {
     if (cdpApp) spawnSync("taskkill", ["/PID", String(cdpApp.pid), "/T", "/F"], { stdio: "ignore" });
   } else {
     if (cdpApp) cdpApp.kill();
-    spawnSync("taskkill", ["/IM", "pdfkeeper.exe", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill", ["/IM", "bookkeeper.exe", "/F"], { stdio: "ignore" });
     spawnSync("taskkill", ["/IM", "msedgewebview2.exe", "/F"], { stdio: "ignore" });
   }
   cdpApp = null;
@@ -5284,7 +5284,7 @@ async function flowAbout() {
   check("UI-17: the Settings menu carries the theme cycle item, Settings and About",
     items.some((text) => /^Theme: (Light|Dark|Auto)$/.test(text)) &&
       items.some((text) => text.trim() === "Settings") &&
-      items.some((text) => text.startsWith("About PDF Keeper")),
+      items.some((text) => text.startsWith("About Book Keeper")),
     JSON.stringify(items));
 
   let highlighted = false;
@@ -5299,7 +5299,7 @@ async function flowAbout() {
   await keys("Enter");
 
   const dialog = await waitForEval(
-    `return document.querySelector('.modal')?.textContent?.includes('About PDF Keeper') ? true : null;`,
+    `return document.querySelector('.modal')?.textContent?.includes('About Book Keeper') ? true : null;`,
     { timeout: 8000 },
   );
   check("AC-16: About opens through the shared modal wrapper", !!dialog);
@@ -7667,10 +7667,10 @@ async function flowThemeAndSettings() {
   check("AC-90: the status bar's counts are unchanged",
     barCount === browse["All documents"], `status bar: ${JSON.stringify(barCount)}, browse: ${JSON.stringify(browse["All documents"])}`);
   await openMenuSure(".settings-trigger", ".menu.settings-menu");
-  await clickMenuItem('.menu.settings-menu', "About PDF Keeper");
+  await clickMenuItem('.menu.settings-menu', "About Book Keeper");
   const aboutShown = await waitForEval(`
     const dialog = document.querySelector('.modal');
-    return dialog && dialog.textContent.includes('About PDF Keeper') ? true : null;
+    return dialog && dialog.textContent.includes('About Book Keeper') ? true : null;
   `, { timeout: 8000 });
   const aboutText = await execute(`return document.querySelector('.modal')?.textContent ?? null;`);
   check("AC-90: the About dialog is unchanged — it still shows the name and version the app reports",
@@ -12056,7 +12056,7 @@ async function flowReaderSettings() {
   };
   const menu0 = await openSettingsMenu();
   check("AC-149: the reader settings menu is the main window's settings menu, complete — the theme cycle item naming the theme in effect, Settings, Check for updates, About, in the main window's order (UI-50 as revised by DR-338)",
-    JSON.stringify(menu0) === JSON.stringify(["Theme: Auto", "Settings", "Check for updates", "About PDF Keeper"]) &&
+    JSON.stringify(menu0) === JSON.stringify(["Theme: Auto", "Settings", "Check for updates", "About Book Keeper"]) &&
       JSON.stringify(menu0) === JSON.stringify(mainItems),
     `reader: ${JSON.stringify(menu0)} | main: ${JSON.stringify(mainItems)}`);
 
@@ -12269,7 +12269,7 @@ async function flowReaderSettings() {
 // renderer metrics read at result.metrics, dropped frames and long tasks
 // from in-page samplers.
 // AC-73/AC-75 measure the APP PROCESS: every product cost they guard
-// (pdfium raster, PNG encode, cache write) runs inside pdfkeeper.exe, and
+// (pdfium raster, PNG encode, cache write) runs inside bookkeeper.exe, and
 // the baseline rows they compare against (M1 ≈ 447 ms/page, M2 ≈ 0.03 s)
 // carry the same scope — the baseline's own note separates the WebView2
 // processes' ≈ 0.7–0.9 s of page-image decode from the app-process row.
@@ -13590,7 +13590,7 @@ async function flowEpubReader() {
   // AC-136's "no package content is copied to disk": the app data directory
   // is scanned before and after every open; none of the package's entry
   // names may appear in it.
-  const appDataDir = join(process.env.APPDATA ?? "", "com.pdfkeeper.app");
+  const appDataDir = join(process.env.APPDATA ?? "", "com.bookkeeper.app");
   const scanEntryNames = () => {
     const names = new Set();
     const walk = (dir) => {
@@ -14660,11 +14660,11 @@ function buildUpdateFixtures() {
   // 3): `tauri signer sign` writes the signature to `<file>.sig` — the
   // base64 form of its minisign block, which is exactly the manifest
   // `signature` field the plugin's `base64_to_string` step expects (the
-  // recorded probe at …\.pdfkeeper\signing left the same shape).
+  // recorded probe at …\.bookkeeper\signing left the same shape).
   // `--app-version` binds the signature to the version the manifest
   // announces; the "current" manifest is never downloaded — `check()` stops
   // at the version comparison — so one signature serves both scenarios.
-  const keyPath = join(homedir(), ".pdfkeeper", "signing", "key_pair.crt");
+  const keyPath = join(homedir(), ".bookkeeper", "signing", "key_pair.crt");
   const sign = spawnSync(
     process.execPath,
     [
@@ -14791,7 +14791,7 @@ async function appExitedOnItsOwn(timeoutMs) {
   for (;;) {
     const alive = SCOPED
       ? ownAppProcesses().length > 0
-      : spawnSync("tasklist", ["/IM", "pdfkeeper.exe", "/FO", "CSV"], { encoding: "utf8" }).stdout?.includes("pdfkeeper.exe");
+      : spawnSync("tasklist", ["/IM", "bookkeeper.exe", "/FO", "CSV"], { encoding: "utf8" }).stdout?.includes("bookkeeper.exe");
     if (!alive) return true;
     if (Date.now() > deadline) return false;
     await sleep(200);
@@ -15183,7 +15183,7 @@ async function runWebDriverSuite(wanted) {
     // image-wide kill would hit the other suite's app (DR-162). The
     // orchestrator sweeps leftovers globally when both suites are done.
     if (!SCOPED) {
-      spawnSync("taskkill", ["/IM", "pdfkeeper.exe", "/F"], { stdio: "ignore" });
+      spawnSync("taskkill", ["/IM", "bookkeeper.exe", "/F"], { stdio: "ignore" });
     }
   }
 }

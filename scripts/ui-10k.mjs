@@ -34,7 +34,7 @@
 //        node scripts/ui-verify.mjs — full verification (DR-162, DR-163):
 //        full mode runs each flow of this suite as its own lane, coarse mode
 //        as one "docs" lane, each with its own data directory
-//        (PDFKEEPER_DATA_DIR), driver ports, and scoped cleanup.
+//        (BOOKKEEPER_DATA_DIR), driver ports, and scoped cleanup.
 // Exit code: 0 all checks pass, 1 any check fails.
 
 import { spawnSync } from "node:child_process";
@@ -335,7 +335,7 @@ async function main() {
     // Scoped mode: the session delete closed this suite's app; an
     // image-wide kill would hit the other suite's app (DR-162).
     if (!SCOPED) {
-      spawnSync("taskkill", ["/IM", "pdfkeeper.exe", "/F"], { stdio: "ignore" });
+      spawnSync("taskkill", ["/IM", "bookkeeper.exe", "/F"], { stdio: "ignore" });
     }
   }
 

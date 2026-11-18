@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PDF Keeper",
+  "productName": "Book Keeper",
   "version": "0.0.10",
-  "identifier": "com.pdfkeeper.app",
+  "identifier": "com.bookkeeper.app",
   "build": {
     "beforeDevCommand": "pnpm run vite",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "PDF Keeper",
+        "title": "Book Keeper",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost pdfkeeper-epub: http://pdfkeeper-epub.localhost; style-src 'self' 'unsafe-inline' pdfkeeper-epub: http://pdfkeeper-epub.localhost; font-src 'self' pdfkeeper-epub: http://pdfkeeper-epub.localhost; connect-src 'self' pdfkeeper-epub: http://pdfkeeper-epub.localhost",
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost bookkeeper-epub: http://bookkeeper-epub.localhost; style-src 'self' 'unsafe-inline' bookkeeper-epub: http://bookkeeper-epub.localhost; font-src 'self' bookkeeper-epub: http://bookkeeper-epub.localhost; connect-src 'self' bookkeeper-epub: http://bookkeeper-epub.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": [
@@ -36,7 +36,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/dong-nz/pdf-keeper/releases/latest/download/latest.json"
+        "https://github.com/dong-nz/book-keeper/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5MEQ2REQwRjFBNTRFMzUKUldRMVRxWHgwRzBONlZIdWhEdXNha3MrOVFvZjdlbi9ab1NhS0wxOURQL1V1UVRxTit4WWVKQVMK"
     }

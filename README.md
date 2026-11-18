@@ -1,4 +1,4 @@
-# PDF Keeper
+# Book Keeper
 
 A cross-platform desktop app for managing a PDF library. PDFs stay where they are — the app keeps a library index (SQLite) with metadata, categories, favorites, cover thumbnails and search; files are read in the app's own reader or opened with the OS viewer, never imported into a private store.
 
@@ -47,7 +47,7 @@ pnpm run tauri:dev                 # dev app with hot reload (Vite dev server + 
 pnpm run tauri:build               # release build
 ```
 
-Library data lives in the OS app-data directory of `com.pdfkeeper.app`: `library.db` plus the `covers/` thumbnail cache. Without `pdfium.*` in `src-tauri/binaries/` the app runs fully, just without cover thumbnails.
+Library data lives in the OS app-data directory of `com.bookkeeper.app`: `library.db` plus the `covers/` thumbnail cache. Without `pdfium.*` in `src-tauri/binaries/` the app runs fully, just without cover thumbnails.
 
 ## Production builds by platform
 
@@ -56,7 +56,7 @@ Library data lives in the OS app-data directory of `com.pdfkeeper.app`: `library
 ### Windows (x64)
 
 - Prerequisites: rustup + Microsoft C++ Build Tools ("Desktop development with C++"), WebView2 runtime (preinstalled on Windows 10/11), and the VBSCRIPT optional feature for MSI builds; Node LTS + pnpm.
-- Artifacts: `bundle/nsis/PDF Keeper_<ver>_x64-setup.exe` (NSIS) and `bundle/msi/PDF Keeper_<ver>_x64_en-US.msi`; the installer places `pdfkeeper.exe` with `binaries/pdfium.dll` beside it.
+- Artifacts: `bundle/nsis/Book Keeper_<ver>_x64-setup.exe` (NSIS) and `bundle/msi/Book Keeper_<ver>_x64_en-US.msi`; the installer places `bookkeeper.exe` with `binaries/pdfium.dll` beside it.
 - This path is built and run-verified in this repository.
 
 ### Linux (x64)
