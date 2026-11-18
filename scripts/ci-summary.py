@@ -5,12 +5,15 @@
 # D29's data source; the 300 s gate is the local contract (DR-357), not this
 # script's call. Extracted from the inline form the first YAML validation
 # rejected (a column-0 script body breaks a block scalar) — same behavior,
-# now testable on a synthetic payload (see the spec's CI design).
+# testable on a synthetic payload (see the spec's CI design). The jobs API
+# answers `{"count": …, "jobs": […]}`; a plain array is accepted too (DR-393:
+# the first live run red because only the array shape was handled).
 import json
 import sys
 from datetime import datetime
 
-jobs = json.load(sys.stdin)
+payload = json.load(sys.stdin)
+jobs = payload["jobs"] if isinstance(payload, dict) else payload
 
 
 def parse(s):
@@ -37,5 +40,5 @@ for name, seconds in rows:
 if starts and ends:
     combined = (max(ends) - min(starts)).total_seconds()
     print()
-    print(f"Combined span: {int(combined)} s (budget 300000 ms is the local contract, "
-          "DR-357 — the CI lane job reports its measured wall in its own summary).")
+    print(f"Combined span: {int(combined)} s (the 300 s gate is the local verification "
+          "contract, DR-353/DR-357 — the lane wall is measured in the local runs).")
