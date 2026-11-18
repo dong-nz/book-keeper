@@ -43,11 +43,21 @@ if (existsSync(target) && !process.argv.includes("--force")) {
   process.exit(0);
 }
 
-const release = await (
-  await fetch("https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest", {
-    headers: { accept: "application/vnd.github+json" },
-  })
-).json();
+// API request: with a token when one is given (GITHUB_TOKEN in CI) —
+// unauthenticated calls from GitHub runners' shared IPs hit the 60/h IP
+// rate limit (observed on the macOS job, run 44240701768, DR-384). A
+// failed lookup says so plainly instead of crashing as a TypeError later.
+const apiRes = await fetch("https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest", {
+  headers: {
+    accept: "application/vnd.github+json",
+    ...(process.env.GITHUB_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
+  },
+});
+const release = await apiRes.json();
+if (!apiRes.ok || !Array.isArray(release.assets)) {
+  console.error(`release lookup failed: HTTP ${apiRes.status} ${release.message ?? ""}`.trim());
+  process.exit(1);
+}
 
 const findFile = (dir, name) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

@@ -91,6 +91,8 @@ jobs:
           key: release-${{ matrix.os }}
 
       - name: Fetch the Pdfium library (DR-50c; --universal per DR-359 on macOS)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # authenticated API lookup (DR-384: the runners' shared unauthenticated IPs hit the 60/h rate limit)
         run: node scripts/fetch-pdfium.mjs ${{ matrix.fetch-pdfium }}
 
       - name: Install UI dependencies
