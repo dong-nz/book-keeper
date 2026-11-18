@@ -138,6 +138,8 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
       - name: Combined wall-time report
         env:
           GH_TOKEN: ${{ github.token }}
