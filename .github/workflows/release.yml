@@ -33,15 +33,19 @@ jobs:
           - os: windows-latest
             fetch-pdfium: ""
             extra-rust-targets: ""
+            bundle-dir: src-tauri/target/release/bundle
           - os: macos-latest
             # DR-358 a: one universal artifact serves both darwin manifest
             # keys (the plugin's lookup is exact {os}-{arch}; the runners are
             # arm64-only, so a per-arch build could not fill darwin-x86_64).
             fetch-pdfium: "--universal" # DR-359: the sidecar must be universal too
             extra-rust-targets: "x86_64-apple-darwin"
+            # A --target build writes its bundles under the target name (DR-385).
+            bundle-dir: src-tauri/target/universal-apple-darwin/release/bundle
           - os: ubuntu-24.04
             fetch-pdfium: ""
             extra-rust-targets: ""
+            bundle-dir: src-tauri/target/release/bundle
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -100,9 +104,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # `tauri build` filters the configured bundle targets to the current OS
-      # (nsis+msi here, dmg+app.tar.gz there, deb+AppImage there). The
-      # config override adds the updater artifacts (app.tar.gz, .sig) for
-      # this build only — tauri.conf.json stays as released (DR-358 b).
+      # (nsis+msi here, app+dmg there, deb+AppImage there). The config
+      # override adds the updater artifacts (app.tar.gz, .sig) for this build
+      # only — tauri.conf.json stays as released (DR-358 b). The target union
+      # includes `app`: the macOS updater artifact (app.tar.gz + .sig) comes
+      # from the app target alone, and the shipped config's installers-only
+      # list has none of the darwin keys (the CLI's own warning, DR-385).
       # The CLI is invoked the way the harness invokes it (from the repo
       # root, so `src-tauri/` resolves).
       - name: Build the bundles — tauri build
@@ -113,13 +120,13 @@ jobs:
           target_arg=""
           if [ "${{ matrix.os }}" = "macos-latest" ]; then target_arg="--target universal-apple-darwin"; fi # the CLI's universal target name; both arch targets installed above (DR-383)
           node ui/node_modules/@tauri-apps/cli/tauri.js build \
-            --config '{"bundle":{"createUpdaterArtifacts":true}}' $target_arg
+            --config '{"bundle":{"createUpdaterArtifacts":true,"targets":["nsis","msi","app","dmg","appimage","deb"]}}' $target_arg
 
       - name: Upload the bundles
         uses: actions/upload-artifact@v7
         with:
           name: bundles-${{ matrix.os }}
-          path: src-tauri/target/release/bundle/
+          path: ${{ matrix.bundle-dir }}/ # a --target build writes under the target name (DR-385)
           if-no-files-found: error
 
   publish:
