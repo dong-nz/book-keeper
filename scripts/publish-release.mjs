@@ -67,26 +67,28 @@ function notesText() {
 }
 
 // Updater artifacts per manifest key (DR-358 a): the NSIS setup exe (Windows),
-// the universal app tarball (both darwin keys), the AppImage (Linux). Every
-// one must carry the version in its file name — `tauri build` names them
-// `<Product>_<version>_<arch>…` — and its `.sig` sibling.
+// the app tarball (both darwin keys), the AppImage (Linux). The names are
+// what `tauri build` really produces (the fourth pre-flight run, DR-386):
+// Windows/Linux name artifacts `<Product>_<version>_<arch>…`, but the macOS
+// updater artifact is `<Product>.app.tar.gz` — no version, no arch — so the
+// version guard applies to the two that carry it and not to darwin.
 const EXPECTED = [
-  { key: "windows-x86_64", match: (f) => /_x64-setup\.exe$/.test(f) },
-  { key: "darwin-aarch64", match: (f) => /_universal\.app\.tar\.gz$/.test(f) },
-  { key: "darwin-x86_64", match: (f) => /_universal\.app\.tar\.gz$/.test(f) },
-  { key: "linux-x86_64", match: (f) => /_x86_64\.AppImage$/.test(f) },
+  { key: "windows-x86_64", match: /_x64-setup\.exe$/, versioned: true },
+  { key: "darwin-aarch64", match: /\.app\.tar\.gz$/, versioned: false },
+  { key: "darwin-x86_64", match: /\.app\.tar\.gz$/, versioned: false },
+  { key: "linux-x86_64", match: /\.AppImage$/, versioned: true },
 ];
 
 const files = readdirSync(dist);
 const platforms = {};
 const problems = [];
-for (const { key, match } of EXPECTED) {
-  const file = files.find(match);
+for (const { key, match, versioned } of EXPECTED) {
+  const file = files.find((f) => match.test(f));
   if (!file) {
     problems.push(`no artifact for ${key}`);
     continue;
   }
-  if (!file.includes(`_${version}_`)) {
+  if (versioned && !file.includes(`_${version}_`)) {
     problems.push(`${file} does not carry version ${version}`);
     continue;
   }
@@ -97,8 +99,10 @@ for (const { key, match } of EXPECTED) {
   }
   // The manifest `signature` field is the .sig file's base64 text verbatim —
   // the form the plugin's `base64_to_string` step expects (DR-329's probe).
+  // The URL carries the name percent-encoded (GitHub's own asset-URL form):
+  // product names contain spaces (the real names, DR-386).
   platforms[key] = {
-    url: `https://github.com/${repo}/releases/download/${tag}/${file}`,
+    url: `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(file)}`,
     signature: readFileSync(sigPath, "utf8").trim(),
   };
 }
