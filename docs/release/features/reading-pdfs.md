@@ -2,7 +2,7 @@
 
 > **Status: ✅ Shipped in v0.0.6, updated in v0.0.7, v0.0.8, v0.0.9 and v0.0.10** — verified by running the app.
 
-PDF Keeper now opens documents **inside itself**. Double-click a document (or press `Enter` on a focused row, or choose **Open** in its right-click menu) and the document opens in its own reading window — no other application needs to start.
+Book Keeper now opens documents **inside itself**. Double-click a document (or press `Enter` on a focused row, or choose **Open** in its right-click menu) and the document opens in its own reading window — no other application needs to start.
 
 ## The reading window
 

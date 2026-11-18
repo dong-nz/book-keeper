@@ -1,12 +1,12 @@
 # Getting started
 
-> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.6, v0.0.7, v0.0.8 and v0.0.9** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.6, v0.0.7, v0.0.8, v0.0.9 and v0.0.11** — verified by running the app.
 
 ## System requirements
 Windows 10+ (the v0.0.1 installer). macOS 12+ and Linux (AppImage or .deb) are target platforms; their builds arrive with a later release. Fully offline — no account, no network needed.
 
 ## First run
-1. Install the package for your platform and launch PDF Keeper.
+1. Install the package for your platform and launch Book Keeper.
 2. The library starts empty. Use **Import PDFs** (toolbar) to add documents — see [importing-files.md](importing-files.md).
 3. Your PDFs stay where they are; the app only keeps an index of them.
 
@@ -35,7 +35,7 @@ The index is stored per user in the OS user-data directory. Removing a document 
 
 > **Amendment (2026-11-09, v0.0.7):** catching this page up with what the application actually does now, verified by running it.
 >
-> - **Opening a document opens it inside PDF Keeper.** Since v0.0.6 a double-click (or `Enter`) opens the document in the app's own reading window; the right-click menu also offers **Open in external viewer** for your system's PDF viewer ([reading-pdfs.md](reading-pdfs.md), [opening-and-deleting.md](opening-and-deleting.md)). The "Typical flow" above reads: Import → organize → search → **read**.
+> - **Opening a document opens it inside Book Keeper.** Since v0.0.6 a double-click (or `Enter`) opens the document in the app's own reading window; the right-click menu also offers **Open in external viewer** for your system's PDF viewer ([reading-pdfs.md](reading-pdfs.md), [opening-and-deleting.md](opening-and-deleting.md)). The "Typical flow" above reads: Import → organize → search → **read**.
 > - **Your library's location is easier to reach and easier to open.** It's shown in **Settings ▸ Settings**, under a **Data location** heading (no longer under "Library"), and next to it is a button that opens that folder in your system's file manager ([settings-and-appearance.md](settings-and-appearance.md)).
 > - **The bottom bar's document count is labeled** — "1,234 documents" — and hover labels across the app are drawn in the app's own readable tooltip style ([status-feedback.md](status-feedback.md), [the-app-window.md](the-app-window.md)).
 > - **Importing never blocks the app**: search, browsing and opening documents keep working while an import runs, and its progress is visible from start to finish ([importing-files.md](importing-files.md)).
@@ -55,3 +55,11 @@ The index is stored per user in the OS user-data directory. Removing a document 
 > - **A double-click on a book opens it in the app's own reader**, just like a PDF ([reading-epubs.md](reading-epubs.md)).
 >
 > System requirements, installation, data location, and the rest of this page are unchanged.
+
+> **Amendment (2026-11-18, v0.0.11): installers for all three platforms, and the app is now named Book Keeper** (verified by building and packaging the release on Windows, macOS and Linux).
+>
+> - **System requirements, now for real:** Windows 10+ (an installer `.exe` or `.msi`), **macOS 12+** (a `.dmg`), **Linux** (a `.deb` or an AppImage). Every published release carries installers for all three; you download them from the application's releases page (and the app itself can fetch its updates from there — [keeping-the-app-updated.md](keeping-the-app-updated.md)).
+> - **First run on each platform.** On Windows, Windows may say the app is from an *"Unknown publisher"* — that's because these installers carry no purchased store certificate yet: choose **More info → Run anyway**, and it runs normally from then on. On a Mac, the first open shows the "downloaded from the Internet" notice — right-click the app and choose **Open** once; after that it opens normally. Both are packaging notices, not judgments about the app.
+> - **The name.** The application is **Book Keeper** (it was PDF Keeper). Nothing else changed: same features, same library, same data folder.
+>
+> Importing, organizing, and the rest of this page are unchanged.

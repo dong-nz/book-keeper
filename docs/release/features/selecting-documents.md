@@ -2,7 +2,7 @@
 
 > **Status: ✅ Shipped in v0.0.3, updated in v0.0.4, v0.0.7 and v0.0.8** — verified by running the app, in both list and grid, with the mode on and off.
 
-PDF Keeper has two ways to use a click, and one button in the top bar decides which one you get.
+Book Keeper has two ways to use a click, and one button in the top bar decides which one you get.
 
 ## Browsing mode (the default)
 

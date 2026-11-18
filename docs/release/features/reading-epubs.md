@@ -2,7 +2,7 @@
 
 > **Status: ✅ Shipped in v0.0.9, updated in v0.0.10** — verified by running the app.
 
-PDF Keeper now reads **EPUB books inside itself**, in their own window, the way it reads PDFs ([reading-pdfs.md](reading-pdfs.md)). A book is one continuous, flowing text — it adapts to the window's width and to the text size you choose, and you read it by scrolling, the way you'd read it on any e-reader.
+Book Keeper now reads **EPUB books inside itself**, in their own window, the way it reads PDFs ([reading-pdfs.md](reading-pdfs.md)). A book is one continuous, flowing text — it adapts to the window's width and to the text size you choose, and you read it by scrolling, the way you'd read it on any e-reader.
 
 ## Opening a book
 

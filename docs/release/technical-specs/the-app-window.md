@@ -6,9 +6,9 @@ The OS title bar is removed and the app draws its own window controls, its own s
 
 ## Window configuration (`src-tauri/tauri.conf.json`)
 
-- `app.windows[0]`: `title: "PDF Keeper"`, `width: 1280`, `height: 800`, `minWidth: 900`, `minHeight: 600`, **`decorations: false`** — the frameless window the toolbar's controls replace.
+- `app.windows[0]`: `title: "Book Keeper"`, `width: 1280`, `height: 800`, `minWidth: 900`, `minHeight: 600`, **`decorations: false`** — the frameless window the toolbar's controls replace.
 - `app.security.csp` unchanged from v0.0.1 (DR-44): `default-src 'self'; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'`. Because `connect-src` falls back to `'self'`, Tauri's `ipc://localhost` custom-protocol fetch is blocked and every command travels over the documented fallback transport — a JSON message through `window.chrome.webview.postMessage` (measured at the command boundary, DR-89). The app behaves identically; the smoke harness observes the same boundary the app uses.
-- Version identity: `productName: "PDF Keeper"`, `version: "0.0.4"` — the single source the About dialog and the Settings dialog's Library section read. `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `ui/package.json` carry the same 0.0.4 so no build artifact reports a different release than the packaged app.
+- Version identity: `productName: "Book Keeper"`, `version: "0.0.4"` — the single source the About dialog and the Settings dialog's Library section read. `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `ui/package.json` carry the same 0.0.4 so no build artifact reports a different release than the packaged app.
 
 ## Capabilities (`src-tauri/capabilities/default.json`)
 
@@ -25,7 +25,7 @@ The OS title bar is removed and the app draws its own window controls, its own s
 ## App menu and About (UI-12 — app menu removed in v0.0.3)
 
 - `components/AppMenu.svelte` — **removed in v0.0.3** (UI-12 as modified; the component is deleted, R7.4, and its catalog key `menu.app` with it — `i18n/coverage.test.ts` fails on an unused key, so the removal is enforced by the existing test rather than by a note). The control was a `bits-ui` DropdownMenu trigger immediately left of the window controls with exactly one item.
-- The About surface is unchanged in every respect and is now reached from the Settings menu ([settings-and-appearance.md](settings-and-appearance.md)) as *About PDF Keeper…*.
+- The About surface is unchanged in every respect and is now reached from the Settings menu ([settings-and-appearance.md](settings-and-appearance.md)) as *About Book Keeper…*.
 - `components/AboutDialog.svelte` — the shared `Modal` (420px, focus-trapped, Esc and close button), showing two definition rows: the application name and the version. Since v0.0.3 the dialog's Escape is answered by `Modal.svelte`'s own guard rather than by the kit's escape-layer stack (DR-106, settings-and-appearance.md).
 - `app_about(app: AppHandle) -> AboutDto { name, version }` (`src-tauri/src/commands.rs`) — a thin wrapper over `app.package_info()`, no service module needed because there is no product logic to test. The frontend contains no version string: the value the dialog displays is the value the packaged application reports, which is what `flowAbout` compares.
 
