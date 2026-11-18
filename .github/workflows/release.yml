@@ -149,16 +149,19 @@ jobs:
           name: bundles-ubuntu-24.04
           path: tmp/release/dist
 
-      # The bundles arrive in per-type subdirectories (nsis/, msi/, macos/,
-      # dmg/, appimage/, deb/); the manifest assembler scans one flat
-      # directory, and the Release asset names are flat anyway. Names are
-      # version-and-platform-unique across platforms — a collision here would
-      # mean a broken build, and the assembler's own missing-artifact check
-      # (or a mismatched version in a file name) turns that red.
+      # The bundle tree carries build intermediates (the AppImage staging
+      # tree, the deb control/data tars — the fifth run's Release carried 269
+      # assets for 11 real artifacts, DR-387). The Release must carry only
+      # the real artifacts: filter by the artifact extensions, flatten to one
+      # directory, and normalize spaces to dots — GitHub's asset API rewrites
+      # spaces to dots in asset names itself, so the manifest URLs and the
+      # served asset names must agree on the dot form. Names are
+      # version-and-platform-unique; the assembler's own missing-artifact
+      # check (or a mismatched version in a name) turns a broken build red.
       - name: Flatten the bundle tree
         run: |
           mkdir -p tmp/release/flat
-          find tmp/release/dist -type f -exec cp -n {} tmp/release/flat/ \;
+          find tmp/release/dist -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.app.tar.gz' -o -name '*.sig' \) -exec sh -c 'cp -n "$1" "tmp/release/flat/$(basename "$1" | tr " " ".")"' _ {} \;
           ls tmp/release/flat
 
       # The manifest (scripts/publish-release.mjs): version, notes from the
@@ -175,14 +178,16 @@ jobs:
             --notes "docs/release/notes/v${version}.md" \
             --out tmp/release/latest.json
 
-      # The Release itself: every artifact + the manifest, on the same tag
-      # the app's update endpoint reads (M3). A `-` in the tag means a
-      # pre-release pre-flight: published as a draft, invisible to the
+      # The Release itself: the real artifacts only (the filtered flat
+      # directory — not the raw bundle tree, DR-387) plus the manifest, on
+      # the same tag the app's update endpoint reads (M3); the manifest
+      # first, so a burst limit can never strand it. A `-` in the tag means
+      # a pre-flight: published as a draft, invisible to the
       # updater endpoint (`releases/latest` serves published releases only).
       - name: Publish the GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            tmp/release/dist/**
             tmp/release/latest.json
+            tmp/release/flat/*
           draft: ${{ contains(github.ref_name, '-') }}
