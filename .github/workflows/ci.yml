@@ -1,10 +1,10 @@
-# NFR-10 (SPEC-v0.0.11 §3.4): the CI verification pipeline. Every push and
-# every pull request runs the verification layers on the three-OS matrix; any
-# red layer is a red pipeline (AC-157). The lane runner (scripts/ui-verify.mjs)
-# runs on the Windows job only (OQ-64 A — the harness is Windows-shaped).
-# Per-job and combined wall times are reported in the run summary (AC-158,
-# D29's data source); the CI lane job measures the wall against the 300 s
-# budget but does not gate on it — the gate is the local contract (DR-357).
+# NFR-10 (SPEC-v0.0.11 §3.4, as modified by DR-390): the CI verification
+# pipeline. Every push and every pull request runs the verification layers on
+# the three-OS matrix; any red layer is a red pipeline (AC-157). The UI lane
+# runner is not a CI layer — the user's decision of 2026-11-18 (DR-390); the
+# real-app layer stays the local Phase-A/C entry point (scripts/ui-verify.mjs,
+# unchanged). Per-job and combined wall times are reported in the run summary
+# (AC-158, D29's data source).
 name: CI
 
 on:
@@ -30,8 +30,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      TAURI_DRIVER_VERSION: "2.1.0" # toolchain for the lane runner (AGENTS §2), not a product dependency
     steps:
       - uses: actions/checkout@v7
 
@@ -72,12 +70,6 @@ jobs:
       - name: Fetch the Pdfium library (DR-50c — src-tauri/binaries is generated, never committed)
         run: node scripts/fetch-pdfium.mjs
 
-      # The lane runner starts `~/.cargo/bin/tauri-driver.exe` by path
-      # (ui-smoke.mjs `CARGO_BIN`); the toolchain prerequisite, Windows only.
-      - name: Install tauri-driver (lane runner prerequisite, not a product dependency)
-        if: matrix.os == 'windows-latest'
-        run: cargo install tauri-driver --version "${TAURI_DRIVER_VERSION}" --locked
-
       - name: Install UI dependencies
         working-directory: ui
         run: pnpm install --frozen-lockfile
@@ -98,28 +90,6 @@ jobs:
       - name: Frontend types — svelte-check
         working-directory: ui
         run: pnpm run check
-
-      # The lane runner (OQ-64 A: Windows only). SMOKE_VERIFY_WALL_GATE=0 per
-      # DR-357: the combined wall is measured and published (AC-158), the
-      # verdict follows the lanes' check results. The runner owns its build
-      # (D15) and its fixtures (R6.2) — nothing else to prepare.
-      - name: UI lane runner — scripts/ui-verify.mjs
-        if: matrix.os == 'windows-latest'
-        timeout-minutes: 45
-        env:
-          SMOKE_VERIFY_WALL_GATE: "0"
-        run: |
-          node scripts/ui-verify.mjs --report tmp/test-reports/ci-verify.md | tee tmp/test-reports/ci-verify.log
-          echo '## Lane runner summary (AC-158)' >>"$GITHUB_STEP_SUMMARY"
-          grep -E '^\[verify\]' tmp/test-reports/ci-verify.log >>"$GITHUB_STEP_SUMMARY" || true
-
-      - name: Upload the lane report
-        if: matrix.os == 'windows-latest' && always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: verify-report-${{ matrix.os }}
-          path: tmp/test-reports/
-          if-no-files-found: ignore
 
       - name: Wall clock — job summary (AC-158)
         if: always()

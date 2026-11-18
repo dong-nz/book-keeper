@@ -2133,8 +2133,26 @@ mod tests {
             "an existing file at the target is rejected"
         );
 
-        // A case-only rename resolves to the file itself on case-insensitive
-        // filesystems — the documented accepted `name_conflict` (DR-266 d).
+        // Nothing moved by any rejected attempt: both files and both records
+        // are untouched, and no cover was enqueued (DR-266 d: typed
+        // rejections happen before any file or row moves). These claims hold
+        // on every filesystem because everything so far was rejected. The
+        // order matters (DR-391): this block used to follow the case-only
+        // probe below — on case-sensitive filesystems that rename is accepted
+        // and moves its file, which made the test red on Linux.
+        assert!(fs::exists(&first.path).unwrap() && fs::exists(&second.path).unwrap());
+        let first_row = on(&db, |conn| get_document(conn, &covers_dir, first.id)).unwrap();
+        assert_eq!(first_row.filename, "info-none.pdf");
+        let second_row = on(&db, |conn| get_document(conn, &covers_dir, second.id)).unwrap();
+        assert_eq!(second_row.filename, "info-title.pdf");
+        assert!(receiver.try_recv().is_err(), "rejected renames enqueue nothing");
+
+        // A case-only rename is filesystem-shaped, per DR-266 d: on a
+        // case-insensitive filesystem it resolves to the file itself — the
+        // documented accepted `name_conflict`, nothing moves; on a
+        // case-sensitive filesystem it is an ordinary accepted rename that
+        // behaves like one (file moves, row follows, auto title re-derives,
+        // exactly one cover enqueues). The probe distinguishes the two.
         let case_probe = fs::metadata(temp.path().join("info-none.PDF")).is_ok();
         let case_only = on(&db, |conn| {
             rename_document(conn, &sink, &queue, first.id, "INFO-NONE.PDF")
@@ -2144,18 +2162,23 @@ mod tests {
                 matches!(case_only, Err(AppError::NameConflict { .. })),
                 "on a case-insensitive filesystem a case-only rename is a conflict"
             );
+            assert!(fs::exists(&first.path).unwrap(), "the conflict moved nothing");
+            assert!(receiver.try_recv().is_err(), "the conflict enqueued nothing");
         } else {
-            assert!(case_only.is_ok(), "on a case-sensitive filesystem it is a rename");
+            let renamed = case_only.expect("on a case-sensitive filesystem it is a rename");
+            assert_eq!(renamed.filename, "INFO-NONE.PDF");
+            assert!(
+                fs::exists(temp.path().join("INFO-NONE.PDF")).unwrap()
+                    && !fs::exists(&first.path).unwrap(),
+                "the file follows the new name"
+            );
+            let moved_row = on(&db, |conn| get_document(conn, &covers_dir, first.id)).unwrap();
+            assert_eq!(moved_row.filename, "INFO-NONE.PDF");
+            assert_eq!(moved_row.title, "INFO-NONE", "the auto title re-derives (AC-109 gate)");
+            let job = receiver.try_recv().expect("the accepted rename enqueues its cover");
+            assert_eq!(job.doc_id, first.id);
+            assert!(receiver.try_recv().is_err(), "one accepted rename enqueues exactly one job");
         }
-
-        // Nothing moved: both files and both records are untouched, and no
-        // cover was enqueued by any of the rejected attempts.
-        assert!(fs::exists(&first.path).unwrap() && fs::exists(&second.path).unwrap());
-        let first_row = on(&db, |conn| get_document(conn, &covers_dir, first.id)).unwrap();
-        assert_eq!(first_row.filename, "info-none.pdf");
-        let second_row = on(&db, |conn| get_document(conn, &covers_dir, second.id)).unwrap();
-        assert_eq!(second_row.filename, "info-title.pdf");
-        assert!(receiver.try_recv().is_err(), "rejected renames enqueue nothing");
 
         // A missing document cannot be renamed (AC-108's dialog only offers
         // the action when the file exists; the service enforces it too).
