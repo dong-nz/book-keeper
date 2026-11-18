@@ -30,6 +30,10 @@ tauri-plugin-updater = "2.14.1"
 # crates in the graph: 1.0.154 is what tauri already resolves.
 serde_json = "1.0.154"
 thiserror = "2.0.21"
+# DR-352 (user's answer A): the `log` facade bridge for the updater plugin's
+# own error records (the only signal for update-check failures). 0.4.35 is
+# what tauri already resolves — zero new crates in the graph.
+log = "0.4"
 
 [build-dependencies]
 tauri-build = { version = "2.7.4", features = [] }

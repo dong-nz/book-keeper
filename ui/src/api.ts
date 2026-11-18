@@ -55,6 +55,9 @@ export const COMMANDS = [
   "app_about",
   "app_data_dir",
   "app_open_data_dir",
+  "log_level_set",
+  "log_path",
+  "log_open",
 ] as const;
 
 export type CommandName = (typeof COMMANDS)[number];
@@ -232,6 +235,22 @@ export function appOpenDataDir(): Promise<void> {
  *  through the opener plugin's reveal capability. */
 export function appOpenContainingFolder(id: number): Promise<void> {
   return invoke("app_open_containing_folder", { id });
+}
+
+/** FR-26 (SPEC-v0.0.11 §3.2): persist the log level through the settings
+ *  store; the `settings_changed` event mirrors it into every window. */
+export function logLevelSet(level: string): Promise<void> {
+  return invoke("log_level_set", { level });
+}
+
+/** FR-26: the log file path for the Settings *Log* section's read-only row. */
+export function logPath(): Promise<string> {
+  return invoke("log_path", {});
+}
+
+/** FR-26: open the log file in the OS handler (creates it first). */
+export function logOpen(): Promise<void> {
+  return invoke("log_open", {});
 }
 
 export type { AppErrorPayload };

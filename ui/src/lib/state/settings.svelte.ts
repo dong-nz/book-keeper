@@ -38,6 +38,17 @@ function parseTextSize(value: string): number {
   return TEXT_SIZE_STEPS.includes(size) ? size : DEFAULT_TEXT_SIZE;
 }
 
+/** The application log level (FR-26, SPEC-v0.0.11 §3.2): the same
+ *  restatement pattern as the two validators above — the Rust side
+ *  (`service::set_setting` + `applog::set_level`) is the authority; this
+ *  only keeps a corrupt row from reaching the Log section. Anything that
+ *  is not `info` reads as `error`, the released default. */
+export type LogLevel = "error" | "info";
+
+function parseLogLevel(value: string): LogLevel {
+  return value === "info" ? "info" : "error";
+}
+
 class SettingsStore {
   view = $state<ViewMode>("list");
   gridColumns = $state<GridOverride>("auto");
@@ -45,6 +56,9 @@ class SettingsStore {
   /** The EPUB reading text size (§3.13): the ladder step the reader windows
    *  render at; only the EPUB strip writes it. */
   epubTextSize = $state<number>(DEFAULT_TEXT_SIZE);
+  /** The application log level (UI-53): mirrored from the settings store;
+   *  only the Settings *Log* section writes it. */
+  logLevel = $state<LogLevel>("error");
   loaded = $state(false);
 
   // Settings writes are debounced (R4.3) as one batch: a 300 ms window collects
@@ -88,6 +102,9 @@ class SettingsStore {
         break;
       case "epub_text_size":
         this.epubTextSize = parseTextSize(value);
+        break;
+      case "log_level":
+        this.logLevel = parseLogLevel(value);
         break;
       default:
         break;
@@ -135,6 +152,7 @@ class SettingsStore {
       this.theme =
         settings.theme === "light" || settings.theme === "dark" ? settings.theme : "system";
       this.epubTextSize = parseTextSize(settings.epub_text_size);
+      this.logLevel = parseLogLevel(settings.log_level);
       this.loaded = true;
       return {
         sort: settings.sort,
@@ -174,6 +192,20 @@ class SettingsStore {
     const size = TEXT_SIZE_STEPS.includes(value) ? value : DEFAULT_TEXT_SIZE;
     this.epubTextSize = size;
     this.#persist("epub_text_size", String(size));
+  }
+
+  /** The Log section's level selector (UI-53, AC-156): written through the
+   *  dedicated `log_level_set` command, not the debounced batch — the Rust
+   *  side stores it through the settings store and broadcasts
+   *  `settings_changed`, so the choice takes effect in every window without
+   *  a restart and the local mirror rides the same broadcast as every other
+   *  key (DR-230). A failed write is silent by the settings pattern; the
+   *  boundary logs it (FR-26). */
+  setLogLevel(value: LogLevel): void {
+    this.logLevel = value;
+    void api.logLevelSet(value).catch(() => {
+      /* silent by spec: a lost preference is not a user-facing error */
+    });
   }
 
   /** Called from the library store on every query change — the single

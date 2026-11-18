@@ -91,6 +91,10 @@ pub struct SettingsDto {
     /// EPUB reading text size, one ladder step (SPEC-v0.0.9 §3.9 consequence 6,
     /// DR-303 item 5); the default is the ladder's default step.
     pub epub_text_size: String,
+    /// Application log level (FR-26, SPEC-v0.0.11 §3.2): `"error"` or
+    /// `"info"`; the default is `error` — the released settings default
+    /// pattern.
+    pub log_level: String,
 }
 
 /// Backend → UI events (`status_updated`, `library_job_progress`,
@@ -113,7 +117,7 @@ pub struct SettingsChanged {
     pub value: String,
 }
 
-pub const SETTINGS_KEYS: [&str; 8] = [
+pub const SETTINGS_KEYS: [&str; 9] = [
     "view",
     "sort",
     "dir",
@@ -122,6 +126,7 @@ pub const SETTINGS_KEYS: [&str; 8] = [
     "theme",
     "last_filter",
     "epub_text_size",
+    "log_level",
 ];
 
 /// Absolute + lexically normalized path (RULES R2.5). Never touches the

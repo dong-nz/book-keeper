@@ -1,0 +1,174 @@
+# NFR-11 (SPEC-v0.0.11 §3.4/§3.5): the release pipeline. A tag push `v…`
+# builds the per-platform bundles on the CI matrix (not on a developer
+# machine), produces the signed update artifacts (DR-356 A mechanism,
+# DR-358: `createUpdaterArtifacts` injected per build, signing key from the
+# repository secrets; macOS builds `--target universal`, DR-358 a), and
+# publishes the GitHub Release carrying every artifact plus the `latest.json`
+# manifest the released updater endpoint already reads (M3). Pre-release tags
+# (a `-` in the tag, e.g. `v0.0.0-preflight`) publish as a draft release —
+# the pipeline pre-flight that does not consume a version (NFR-11).
+#
+# Repository secrets required: TAURI_SIGNING_PRIVATE_KEY and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD — the private counterpart of the pubkey
+# pinned in src-tauri/tauri.conf.json (the same key the flowAppUpdate
+# fixture uses from ~/.pdfkeeper/signing/).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false # AC-159: every platform reports its own artifact result
+      matrix:
+        include:
+          - os: windows-latest
+            fetch-pdfium: ""
+            extra-rust-targets: ""
+          - os: macos-latest
+            # DR-358 a: one universal artifact serves both darwin manifest
+            # keys (the plugin's lookup is exact {os}-{arch}; the runners are
+            # arm64-only, so a per-arch build could not fill darwin-x86_64).
+            fetch-pdfium: "--universal" # DR-359: the sidecar must be universal too
+            extra-rust-targets: "x86_64-apple-darwin"
+          - os: ubuntu-24.04
+            fetch-pdfium: ""
+            extra-rust-targets: ""
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version guard — the tag must match the app version
+        run: |
+          app_version=$(node -e "console.log(require('./src-tauri/tauri.conf.json').version)")
+          if [ "v${app_version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match tauri.conf.json version ${app_version}" >&2
+            exit 1
+          fi
+
+      - name: Install Linux build dependencies (Tauri)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 12.4.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add the universal build target (macOS, DR-358 a)
+        if: matrix.extra-rust-targets != ''
+        run: rustup target add ${{ matrix.extra-rust-targets }}
+
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.os }}
+
+      - name: Fetch the Pdfium library (DR-50c; --universal per DR-359 on macOS)
+        run: node scripts/fetch-pdfium.mjs ${{ matrix.fetch-pdfium }}
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: pnpm install --frozen-lockfile
+
+      # `tauri build` filters the configured bundle targets to the current OS
+      # (nsis+msi here, dmg+app.tar.gz there, deb+AppImage there). The
+      # config override adds the updater artifacts (app.tar.gz, .sig) for
+      # this build only — tauri.conf.json stays as released (DR-358 b).
+      # The CLI is invoked the way the harness invokes it (from the repo
+      # root, so `src-tauri/` resolves).
+      - name: Build the bundles — tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          target_arg=""
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then target_arg="--target universal"; fi
+          node ui/node_modules/@tauri-apps/cli/tauri.js build \
+            --config '{"bundle":{"createUpdaterArtifacts":true}}' $target_arg
+
+      - name: Upload the bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: bundles-${{ matrix.os }}
+          path: src-tauri/target/release/bundle/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download all bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: bundles-windows-latest
+          path: tmp/release/dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: bundles-macos-latest
+          path: tmp/release/dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: bundles-ubuntu-24.04
+          path: tmp/release/dist
+
+      # The bundles arrive in per-type subdirectories (nsis/, msi/, macos/,
+      # dmg/, appimage/, deb/); the manifest assembler scans one flat
+      # directory, and the Release asset names are flat anyway. Names are
+      # version-and-platform-unique across platforms — a collision here would
+      # mean a broken build, and the assembler's own missing-artifact check
+      # (or a mismatched version in a file name) turns that red.
+      - name: Flatten the bundle tree
+        run: |
+          mkdir -p tmp/release/flat
+          find tmp/release/dist -type f -exec cp -n {} tmp/release/flat/ \;
+          ls tmp/release/flat
+
+      # The manifest (scripts/publish-release.mjs): version, notes from the
+      # Ship notes page, per-platform artifact + signature (DR-358).
+      - name: Assemble latest.json
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          node scripts/publish-release.mjs \
+            --dist tmp/release/flat \
+            --version "$version" \
+            --tag "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --notes "docs/release/notes/v${version}.md" \
+            --out tmp/release/latest.json
+
+      # The Release itself: every artifact + the manifest, on the same tag
+      # the app's update endpoint reads (M3). A `-` in the tag means a
+      # pre-release pre-flight: published as a draft, invisible to the
+      # updater endpoint (`releases/latest` serves published releases only).
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            tmp/release/dist/**
+            tmp/release/latest.json
+          draft: ${{ contains(github.ref_name, '-') }}

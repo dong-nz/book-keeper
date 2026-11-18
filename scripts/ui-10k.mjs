@@ -38,14 +38,22 @@
 // Exit code: 0 all checks pass, 1 any check fails.
 
 import { spawnSync } from "node:child_process";
-import { basename } from "node:path";
+import { createHash } from "node:crypto";
+import {
+  copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
 
 import {
-  check, docCount, emitDrop, execute, openSession, prepareEnvironment,
+  check, DATA_DIR, docCount, emitDrop, execute, openSession, prepareEnvironment,
   NFR06_BUDGET_MS, results, runFlow, runPrefixFlows, SCOPED, sessionId, sleep, startDriver,
-  tierDocPaths, toastContains, timings, wd, EVAL, FIXTURE_DOCS, searchFor, clearSearch, waitForEval,
+  tierDocPaths, toastContains, timings, wd, EVAL, FIXTURE_DOCS, FIXTURE_CORE, CORPUS_DIR, searchFor, clearSearch, waitForEval,
   flowVirtualization, flowWidthMatrix, flowEmptyAndSkeleton,
 } from "./ui-smoke.mjs";
+
+// D29: the corpus build gate — set only when the measured import reached its
+// full target; the snapshot is published from it after the app closes.
+let importCompleted = false;
 
 async function flowImport10k(dropOk) {
   const paths = tierDocPaths(FIXTURE_DOCS);
@@ -92,6 +100,7 @@ async function flowImport10k(dropOk) {
     await sleep(250);
   }
   const elapsed = Date.now() - started;
+  importCompleted = total === target;
   check("AC-01 UI: 10,000 documents listed via the app", total === target, `status bar count: ${total}, ${elapsed} ms`);
   check("AC-22: the status bar shows the progress bar while a job runs", progressSeen, `progress bar seen during the import: ${progressSeen}`);
   check("AC-01 UI: whole import completes < 30 s (NFR-02)", elapsed < 30000, `${elapsed} ms`);
@@ -171,10 +180,18 @@ function resolveWanted10k() {
 // performs, but the claims belong to the import lane's test case — here the
 // import is setup: internal asserts only, no check recorded. The wait is more
 // patient than the measured window because a setup must not fail on load.
+// D29 (AC-162, spec §3.6 b): when the lane's library was seeded from the
+// published corpus (seedCorpus below), the setup is already satisfied and
+// the import is skipped.
 async function prepareCorpus(dropOk) {
   const paths = tierDocPaths(FIXTURE_DOCS);
   const before = await docCount();
   if (!Number.isFinite(before)) throw new Error(`prepareCorpus could not read the library count: ${before}`);
+  if (before === paths.length) {
+    console.log(`[corpus] the library already holds the ${paths.length}-document corpus — setup import skipped`);
+    return;
+  }
+  if (before !== 0) throw new Error(`prepareCorpus found an unexpected library (${before} documents) — the seeded corpus does not match this run`);
   const target = (before + paths.length).toLocaleString("en-US");
   const started = Date.now();
   if (dropOk) await execute(EVAL.emitDragDrop, [paths]);
@@ -191,9 +208,88 @@ async function prepareCorpus(dropOk) {
   }
 }
 
+// D29 (AC-162, spec §3.6 b): the shared read-only corpus. The import lane
+// owns the build — one 10 000-document import, published as a library
+// snapshot under tmp/corpus after the app closes (the checkpointed
+// library.db, never the regenerable caches: covers and logs stay out); the
+// scale lanes seed their own data directory from it before the app starts
+// instead of each importing its own copy — the import is the dominant wall
+// term (the v0.0.10 Phase C measurement, ROADMAP §4). The parallel-lane
+// isolation the current design guarantees is unchanged: a lane only ever
+// writes its own copy; the published corpus is read-only shared state, and
+// a lane whose seed is missing, foreign, or stale (a regenerated fixture
+// tree changes the identity) takes its own import, exactly as before.
+const CORPUS_MANIFEST = join(CORPUS_DIR, "corpus-manifest.json");
+
+function corpusIdentity() {
+  // The fixture generation the snapshot belongs to: the docs-tier file list
+  // plus the core manifest — make-fixtures rewrites both, so a regenerated
+  // fixture tree invalidates every published corpus.
+  const h = createHash("sha256");
+  h.update(tierDocPaths(FIXTURE_DOCS).join("\n"));
+  h.update(readFileSync(join(FIXTURE_CORE, "manifest.json")));
+  return h.digest("hex");
+}
+
+function findLibraryFiles(dir, acc = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) findLibraryFiles(p, acc);
+    else if (entry.name === "library.db" || entry.name.startsWith("library.db-")) acc.push(p);
+  }
+  return acc;
+}
+
+function publishCorpus() {
+  const files = findLibraryFiles(DATA_DIR);
+  if (!files.some((f) => f.endsWith("library.db"))) {
+    console.log("[corpus] no library found in the data directory — nothing published");
+    return;
+  }
+  rmSync(CORPUS_DIR, { recursive: true, force: true });
+  for (const f of files) {
+    const to = join(CORPUS_DIR, relative(DATA_DIR, f));
+    mkdirSync(dirname(to), { recursive: true });
+    copyFileSync(f, to);
+  }
+  writeFileSync(CORPUS_MANIFEST, JSON.stringify({
+    identity: corpusIdentity(),
+    documents: tierDocPaths(FIXTURE_DOCS).length,
+    builtAt: new Date().toISOString(),
+  }));
+  console.log(`[corpus] published ${files.length} library files to tmp/corpus`);
+}
+
+function seedCorpus() {
+  if (!existsSync(CORPUS_MANIFEST)) return;
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(CORPUS_MANIFEST, "utf8"));
+  } catch {
+    return;
+  }
+  if (manifest.identity !== corpusIdentity()) {
+    console.log("[corpus] published corpus is from a different fixture generation — importing this lane's own");
+    return;
+  }
+  const files = findLibraryFiles(CORPUS_DIR);
+  if (!files.some((f) => f.endsWith("library.db"))) return;
+  for (const f of files) {
+    const to = join(DATA_DIR, relative(CORPUS_DIR, f));
+    mkdirSync(dirname(to), { recursive: true });
+    copyFileSync(f, to);
+  }
+  console.log(`[corpus] seeded this lane's library from tmp/corpus (${files.length} files)`);
+}
+
 async function main() {
   const wanted = resolveWanted10k(); // unknown names error before any app work
   prepareEnvironment();
+  // D29: a scale-only lane seeds its library from the corpus the import lane
+  // published. The import lane and the full fixed-order run always start
+  // from a wiped library — the import there is the measured claim and, for
+  // the import lane, the corpus build itself.
+  if (wanted && !wanted.includes("flowImport10k")) seedCorpus();
   // NFR-06 measures the suite's wall time against the app; the build and
   // fixture generation are D15's concern (same rule as the main suite).
   const suiteStart = Date.now();
@@ -242,6 +338,14 @@ async function main() {
       spawnSync("taskkill", ["/IM", "pdfkeeper.exe", "/F"], { stdio: "ignore" });
     }
   }
+
+  // D29: the import lane owns the corpus build (spec §3.6 b). Published only
+  // from the import lane, only when the 10 000-document import reached its
+  // target, and only now — the session delete closed the app, so the
+  // snapshot is the checkpointed library. A failed or partial import
+  // publishes nothing; the scale lanes then take their own import, as
+  // before this change.
+  if (wanted && wanted.includes("flowImport10k") && importCompleted) publishCorpus();
 
   const runMs = Date.now() - suiteStart;
   console.log("\n[TIME] summary");

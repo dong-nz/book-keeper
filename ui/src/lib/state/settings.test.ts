@@ -7,12 +7,13 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { FilterState } from "../types";
 
-const { appSetSetting, appGetSettings } = vi.hoisted(() => ({
+const { appSetSetting, appGetSettings, logLevelSet } = vi.hoisted(() => ({
   appSetSetting: vi.fn(() => Promise.resolve()),
   appGetSettings: vi.fn(() => Promise.resolve({})),
+  logLevelSet: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock("../../api", () => ({ appSetSetting, appGetSettings }));
+vi.mock("../../api", () => ({ appSetSetting, appGetSettings, logLevelSet }));
 
 import { settings, decodeFilter } from "./settings.svelte";
 
@@ -36,6 +37,7 @@ describe("settings store", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     appSetSetting.mockClear();
+    logLevelSet.mockClear();
   });
   afterEach(() => vi.useRealTimers());
 
@@ -81,6 +83,34 @@ describe("settings store", () => {
     settings.rememberQuery({ ...filter, favorites_only: false, reading_only: true });
     vi.advanceTimersByTime(300);
     expect(written()).toContain("last_filter=reading&tags=3,1");
+  });
+
+  // UI-53 (FR-26, AC-156): the Log section's selector rides the dedicated
+  // `log_level_set` command — immediate, outside the debounced batch — so
+  // the level takes effect without a restart; the settings DTO's key is the
+  // restore path and a corrupt row reads as the released default.
+  it("writes the log level immediately, outside the settings batch", () => {
+    settings.setLogLevel("info");
+    expect(settings.logLevel).toBe("info");
+    expect(logLevelSet).toHaveBeenCalledTimes(1);
+    expect(logLevelSet).toHaveBeenCalledWith("info");
+    expect(appSetSetting).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(300);
+    expect(written()).not.toContain("log_level=info");
+  });
+
+  it("restores the stored log level and reads a corrupt row as Error", async () => {
+    appGetSettings.mockResolvedValueOnce({ log_level: "info" });
+    await settings.load();
+    expect(settings.logLevel).toBe("info");
+
+    appGetSettings.mockResolvedValueOnce({ log_level: "verbose" });
+    await settings.load();
+    expect(settings.logLevel).toBe("error");
+
+    appGetSettings.mockResolvedValueOnce({});
+    await settings.load();
+    expect(settings.logLevel).toBe("error");
   });
 });
 

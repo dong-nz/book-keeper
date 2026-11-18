@@ -70,6 +70,8 @@ export interface SettingsDto {
   /** EPUB reading text size, one ladder step in px as a string
    *  (SPEC-v0.0.9 §3.9 consequence 6, DR-303 item 5). */
   epub_text_size: string;
+  /** Application log level, `"error" | "info"` (FR-26, SPEC-v0.0.11 §3.2). */
+  log_level: string;
 }
 
 export interface AboutDto {

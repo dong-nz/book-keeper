@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params, params_from_iter, types::Value as SqlValue};
 
+use crate::applog;
 use crate::covers::{self, CoverJob, CoverQueue};
 use crate::db;
 use crate::error::{AppError, is_unique_violation};
@@ -336,7 +337,16 @@ pub fn import_paths(
                     skipped.push(normalized);
                 }
             }
-            _ => skipped.push(normalized),
+            // FR-26 (§3.2, import per-file failures): a document path that
+            // cannot be statted is a real failure — unlike the designed
+            // skips (non-documents, duplicates), it gets a log line. The
+            // pipeline behavior is unchanged: still a typed skip, never a
+            // failed import.
+            Err(io_error) => {
+                applog::error("import", &format!("cannot read {normalized}: {io_error}"));
+                skipped.push(normalized);
+            }
+            Ok(_) => skipped.push(normalized),
         }
     }
 
@@ -375,6 +385,12 @@ pub fn import_paths(
     }
 
     db.with_raw(|conn| emit_status(conn, sink))?;
+    // FR-26 Info lifecycle (OQ-67 answer A): import runs with counts — the
+    // run summary, not per-file detail (the failure lines above carry that).
+    applog::info(
+        "import",
+        &format!("import run finished: {imported} imported, {} skipped", skipped.len()),
+    );
     Ok(ImportResult { imported, skipped })
 }
 
@@ -399,10 +415,16 @@ fn extract_facts(path: &str) -> ExtractedFacts {
                 title: meta.title,
                 author: meta.author,
             },
-            Err(_) => ExtractedFacts {
-                title: None,
-                author: None,
-            },
+            Err(error) => {
+                // FR-26 (import per-file failures): the filename fallback is
+                // the released behavior (M17); the failure behind it is now
+                // visible in the log.
+                applog::error("import", &format!("cannot read package {path}: {error}"));
+                ExtractedFacts {
+                    title: None,
+                    author: None,
+                }
+            }
         };
     }
     let extracted = crate::pdfmeta::extract(path);
@@ -1172,6 +1194,9 @@ pub fn get_settings(conn: &Connection) -> Result<SettingsDto, AppError> {
         epub_text_size: db::get_setting(conn, "epub_text_size")?
             .filter(|v| is_valid_text_size(v))
             .unwrap_or_else(|| DEFAULT_TEXT_SIZE.into()),
+        log_level: db::get_setting(conn, "log_level")?
+            .filter(|v| matches!(v.as_str(), "error" | "info"))
+            .unwrap_or_else(|| "error".into()),
     })
 }
 
@@ -1250,6 +1275,7 @@ pub fn set_setting(
         "theme" => is_valid_theme(value),
         "last_filter" => is_valid_filter(value),
         "epub_text_size" => is_valid_text_size(value),
+        "log_level" => matches!(value, "error" | "info"),
         _ => false,
     };
     if !valid {
@@ -2739,6 +2765,48 @@ mod tests {
             ),
             ("none", "auto")
         );
+    }
+
+    /// FR-26 (SPEC-v0.0.11 §3.8): the level persists through the settings
+    /// table and survives a reopen; the grammar is exactly the two values;
+    /// no row is the default `error`.
+    #[test]
+    fn log_level_grammar_and_reopen_survival() {
+        let temp = TempDir::new("log-level-setting");
+        {
+            let conn = db::open(temp.path()).unwrap();
+            let sink = RecordingSink::default();
+            // No row: the default is Error (the released settings pattern).
+            assert_eq!(get_settings(&conn).unwrap().log_level, "error");
+
+            set_setting(&conn, &sink, "log_level", "info").unwrap();
+            assert_eq!(get_settings(&conn).unwrap().log_level, "info");
+
+            for value in ["warn", "", "Info", "ERROR"] {
+                assert!(
+                    matches!(
+                        set_setting(&conn, &sink, "log_level", value),
+                        Err(AppError::Validation(_))
+                    ),
+                    "log_level={value} should be rejected"
+                );
+            }
+            // The settings_changed emission is the released one (DR-230):
+            // the level rides the same event as every other key.
+            assert!(
+                sink
+                    .settings()
+                    .iter()
+                    .any(|(key, value)| key == "log_level" && value == "info"),
+                "the save notifies every window's mirror"
+            );
+        }
+        // Reopen: the stored value reads back through the same path.
+        let conn = db::open(temp.path()).unwrap();
+        assert_eq!(get_settings(&conn).unwrap().log_level, "info");
+        // A corrupt row written outside this boundary reads as the default.
+        db::set_setting(&conn, "log_level", "verbose").unwrap();
+        assert_eq!(get_settings(&conn).unwrap().log_level, "error");
     }
 
     #[test]

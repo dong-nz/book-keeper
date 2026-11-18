@@ -2952,6 +2952,7 @@ name = "pdfkeeper"
 version = "0.0.10"
 dependencies = [
  "image",
+ "log",
  "lopdf",
  "pdfium-render",
  "quick-xml",

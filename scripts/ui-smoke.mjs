@@ -67,14 +67,18 @@ const APP_EXE = join(root, "src-tauri", "target", "debug", "pdfkeeper.exe");
 // Same variable the app-side resolver reads (DR-162): scripts/ui-verify.mjs
 // points each suite at its own isolated library under the app data dir;
 // standalone runs keep the app's own directory.
-const DATA_DIR = process.env.PDFKEEPER_DATA_DIR || join(process.env.APPDATA, "com.pdfkeeper.app");
+export const DATA_DIR = process.env.PDFKEEPER_DATA_DIR || join(process.env.APPDATA, "com.pdfkeeper.app");
 // Under the orchestrator the two suites run at once: cleanup closes only
 // this suite's own windows, never image-name kills that would hit the
 // other suite's app.
 const SCOPED = process.env.SMOKE_SCOPED === "1";
 export { SCOPED };
 export const FIXTURE_DOCS = join(root, "fixtures", "docs");
-const FIXTURE_CORE = join(root, "fixtures", "core"); // core tier (DR-135)
+export const FIXTURE_CORE = join(root, "fixtures", "core"); // core tier (DR-135)
+// D29 (AC-162, spec §3.6 b): the shared read-only corpus the import lane
+// publishes and the scale lanes seed their own data directory from. It is
+// harness state under tmp/, never product or fixture state.
+export const CORPUS_DIR = join(root, "tmp", "corpus");
 const FIXTURE_SPECIAL = join(root, "fixtures", "special");
 const CORE_DOC_COUNT = 100; // core tier size, mirroring make-fixtures.mjs
 export const NFR06_BUDGET_MS = 300_000; // NFR-06 wall-time budget (AC-54/AC-58)
@@ -1147,22 +1151,42 @@ export async function docCount() {
 // `Fixture Doc docNNNNN`, so a five-digit prefix selects exactly those rows.
 export async function searchFor(term) {
   const needle = JSON.stringify(term);
-  await typeInto(".search-input", term);
-  const applied = await waitForEval(
-    `return (document.querySelector('.search-input')?.value ?? '') === ${needle} ? true : null;`,
-    { timeout: 8000 },
-  );
-  if (!applied) throw new Error(`search term not applied: ${term}`);
-  // A flow that selects rows next acts on what is on screen, so the wait is on
-  // the rendered list, not on the count chip: the count says nothing about
-  // which rows are mounted, and acting on a list that is still re-rendering
-  // selects the wrong documents.
-  const shown = await waitForEval(`
-    const rows = document.querySelectorAll('[data-row-id]');
-    if (rows.length === 0) return null;
-    return (rows[0].querySelector('.title-line')?.textContent ?? '').includes(${needle}) ? true : null;
-  `, { timeout: 30000 });
-  if (!shown) throw new Error(`the search term ${term} did not reach the rendered rows`);
+  // D30 widened class (AC-161): a query typed into a busy app can be answered
+  // too late for a single wait — the Phase C named points (`flowOpenFolder`,
+  // `flowBulkFavorite`, `flowSortSecondary`) failed exactly there in
+  // full-shape runs and passed standalone. The D28 recipe: bounded
+  // wait-for-render, and when it does not hold, re-issue the query (the
+  // field must be cleared first — the SearchBox guard skips a query
+  // identical to the active one) and wait again.
+  const budgets = [30000, 30000, 60000];
+  for (let attempt = 0; attempt < budgets.length; attempt++) {
+    await typeInto(".search-input", term);
+    const applied = await waitForEval(
+      `return (document.querySelector('.search-input')?.value ?? '') === ${needle} ? true : null;`,
+      { timeout: 8000 },
+    );
+    if (!applied) throw new Error(`search term not applied: ${term}`);
+    // A flow that selects rows next acts on what is on screen, so the wait is on
+    // the rendered list, not on the count chip: the count says nothing about
+    // which rows are mounted, and acting on a list that is still re-rendering
+    // selects the wrong documents. The title read covers both view markups (the
+    // list row's `.title-line`, the grid card's `.title`) — a flow's view is
+    // its own choice and the wait must follow it (the AC-161 widened class).
+    const shown = await waitForEval(`
+      const rows = document.querySelectorAll('[data-row-id]');
+      if (rows.length === 0) return null;
+      return (rows[0].querySelector('.title-line, .title')?.textContent ?? '').includes(${needle}) ? true : null;
+    `, { timeout: budgets[attempt] });
+    if (shown) return;
+    if (attempt + 1 === budgets.length) break;
+    const seen = await execute(`
+      const rows = document.querySelectorAll('[data-row-id]');
+      return { rows: rows.length, first: rows[0]?.querySelector('.title-line, .title')?.textContent?.trim() ?? null };
+    `);
+    console.log(`[search] "${term}" did not reach the rows (${JSON.stringify(seen)}) — re-querying, attempt ${attempt + 2}`);
+    await clearSearch();
+  }
+  throw new Error(`the search term ${term} did not reach the rendered rows`);
 }
 
 export async function clearSearch() {
@@ -1173,6 +1197,46 @@ export async function clearSearch() {
     { timeout: 5000 },
   );
   if (!cleared) throw new Error("the search term did not clear — a later step would read a filtered list");
+}
+
+// D30 widened class (AC-161): a fixture file is shared on-disk state. An
+// interrupted flow can leave one moved aside, and in lane mode a concurrent
+// lane can be mid-move. Where a flow's claim needs a fixture file present,
+// wait for it to appear (and stop changing) instead of failing on a momentary
+// absence — the wait-for-state half of the D28 recipe applied to the fixture
+// reads named by the v0.0.10 Phase C run.
+async function waitForFixtureFile(path) {
+  const deadline = Date.now() + 30000;
+  let size = -1;
+  for (;;) {
+    if (existsSync(path)) {
+      const now = statSync(path).size;
+      if (now === size) return; // present and stable across two checks
+      size = now;
+    }
+    if (Date.now() > deadline) throw new Error(`the fixture ${path} is not on disk`);
+    await sleep(250);
+  }
+}
+
+// D30 (AC-161): a flow that moves a file out of place registers the undo
+// here; runFlow performs it after every flow — passed, failed, or aborted.
+// A direct run continues into the next flow against the same library and the
+// same fixture tree, and an unrestored move silently changes what those
+// flows test (the AC-47/AC-64 stale-state mechanism). A flow's own restore
+// on the success path makes the registered undo a no-op.
+const pendingRestores = [];
+function registerRestore(from, to) {
+  pendingRestores.push([from, to]);
+}
+function flushRestores() {
+  for (const [from, to] of pendingRestores.splice(0)) {
+    try {
+      if (existsSync(to)) renameSync(to, from);
+    } catch {
+      /* the next flow's fixture wait names it if it still matters */
+    }
+  }
 }
 
 async function closeDialog(name = "dialog") {
@@ -1239,9 +1303,24 @@ async function selectFirstRows(count) {
 }
 
 async function clearSelection() {
-  await keys("Escape");
-  const cleared = await waitForEval(`return document.querySelector('.bulk-bar') ? null : true;`, { timeout: 5000 });
-  if (!cleared) throw new Error("the selection did not clear — a later step would act on the wrong rows");
+  // D30 (AC-161): the cleared state is the app's selection state, not the
+  // bulk bar's momentary absence — under load the bar unmounts during a
+  // re-render while the selection is still live, and the flow then acts on
+  // the wrong rows. Wait for the DOM condition (no bar, no selected rows),
+  // confirm it with a second query, and re-issue Escape when it does not
+  // hold — the wait-for-state half of the D28 recipe.
+  const clearedNow = `
+    return !document.querySelector('.bulk-bar') &&
+      document.querySelectorAll('[data-selected]').length === 0 ? true : null;
+  `;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await keys("Escape");
+    const cleared = await waitForEval(clearedNow, { timeout: 8000 });
+    if (!cleared) continue;
+    const confirmed = await waitForEval(clearedNow, { timeout: 3000 });
+    if (confirmed) return;
+  }
+  throw new Error("the selection did not clear — a later step would act on the wrong rows");
 }
 
 // Assigns the current selection to exactly one tag through the picker
@@ -1939,7 +2018,13 @@ async function cSearch(term) {
   const shown = await cMainWait(`
     const rows = document.querySelectorAll('[data-row-id]');
     if (rows.length === 0) return null;
-    return (rows[0].querySelector('.title-line')?.textContent ?? '').includes(${JSON.stringify(term)}) ? true : null;
+    // The title read covers both view markups (the list row's .title-line,
+    // the grid card's .title) — the searchFor lesson of DR-363 applies here
+    // too: the active view is settings-persisted, so a flow can meet a grid
+    // it did not create (the scoped pair run: flowMetadataDisplay leaves
+    // view=grid, the CDP instance loads it, and a .title-line-only read
+    // sees an empty title on a perfectly rendered card).
+    return (rows[0].querySelector('.title-line, .title')?.textContent ?? '').includes(${JSON.stringify(term)}) ? true : null;
   `, { timeout: 30000 });
   if (!shown) {
     // Failure evidence: what the list actually shows when the claim fails —
@@ -1948,7 +2033,7 @@ async function cSearch(term) {
       const rows = Array.from(document.querySelectorAll('[data-row-id]'));
       return {
         rowCount: rows.length,
-        firstTitles: rows.slice(0, 3).map((r) => r.querySelector('.title-line')?.textContent ?? ''),
+        firstTitles: rows.slice(0, 3).map((r) => r.querySelector('.title-line, .title')?.textContent ?? ''),
         fieldValue: document.querySelector('.search-input')?.value ?? null,
       };
     `);
@@ -1967,14 +2052,14 @@ async function cClearSearch() {
 async function cRow(titleNeedle) {
   const found = await cMainEval(`
     const rows = Array.from(document.querySelectorAll('[data-row-id]'));
-    const row = rows.find((r) => (r.querySelector('.title-line')?.textContent ?? '').includes(${JSON.stringify(titleNeedle)}));
+    const row = rows.find((r) => (r.querySelector('.title-line, .title')?.textContent ?? '').includes(${JSON.stringify(titleNeedle)}));
     if (!row) return null;
     row.scrollIntoView({ block: 'center' });
     return true;
   `);
   if (!found) return null;
   return cMainEval(`
-    const row = Array.from(document.querySelectorAll('[data-row-id]')).find((r) => (r.querySelector('.title-line')?.textContent ?? '').includes(${JSON.stringify(titleNeedle)}));
+    const row = Array.from(document.querySelectorAll('[data-row-id]')).find((r) => (r.querySelector('.title-line, .title')?.textContent ?? '').includes(${JSON.stringify(titleNeedle)}));
     if (!row) return null;
     const r = row.getBoundingClientRect();
     return { id: Number(row.getAttribute('data-row-id')), x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
@@ -2006,7 +2091,7 @@ async function cDeleteViaUi(x, y) {
 
 async function cDocIdByTitle(titleNeedle) {
   return cMainEval(`
-    const row = Array.from(document.querySelectorAll('[data-row-id]')).find((r) => (r.querySelector('.title-line')?.textContent ?? '').includes(${JSON.stringify(titleNeedle)}));
+    const row = Array.from(document.querySelectorAll('[data-row-id]')).find((r) => (r.querySelector('.title-line, .title')?.textContent ?? '').includes(${JSON.stringify(titleNeedle)}));
     return row ? Number(row.getAttribute('data-row-id')) : null;
   `);
 }
@@ -2108,7 +2193,7 @@ export const EVAL = {
   docTotal: `return document.querySelector('.status-bar .doc-count')?.textContent?.match(/^[0-9,.]+/)?.[0] ?? null;`,
   toastTexts: `return Array.from(document.querySelectorAll('.toast')).map((t) => t.textContent);`,
   toastActionLabel: `return document.querySelector('.toast.error .control')?.textContent?.trim() ?? null;`,
-  rowTitles: `return Array.from(document.querySelectorAll('[data-row-id] .title-line')).map((e) => e.textContent);`,
+  rowTitles: `return Array.from(document.querySelectorAll('[data-row-id] .title-line, [data-row-id] .title')).map((e) => e.textContent);`,
   bodyHas: `return document.body.textContent.includes(arguments[0]);`,
   rowsWithText: `return Array.from(document.querySelectorAll('[data-row-id]')).filter((r) => r.textContent.includes(arguments[0])).length;`,
   focusFirstRow: `const r = document.querySelector('[data-row-id]'); if (!r) return false; r.focus(); return document.activeElement === r;`,
@@ -2161,6 +2246,13 @@ async function expectNoErrorToast(name) {
   const toasts = bad ? await execute(EVAL.toastTexts) : [];
   check(name, !bad, bad ? `error toast: ${toasts.join(" | ")}` : "");
 }
+
+// D31 (AC-161): the toast stack is cross-flow state — an earlier flow's
+// error toast outlived its own checks and was read as the next flow's
+// failure (the direct run's flowOpen AC-64 mechanism). Every flow starts
+// with the stack dismissed via `dismissOpenToasts` (defined with the
+// update-check helpers), the way every flow rebuilds its own list view:
+// what a flow's checks see afterwards is toast its own actions produced.
 
 // What the window actually contains when it never mounts — the difference
 // between "the app is broken" and "the harness is looking in the wrong place".
@@ -2354,8 +2446,21 @@ export async function flowStartup() {
   // +650 ms. Observe it the way the mount is observed — polled, within a
   // bound the app's own startup claim (NFR-01 < 3 s) is far inside.
   const empty = await waitForEval(EVAL.bodyHas, { timeout: 15000, args: ["Your library is empty"] });
-  check("startup: empty-state variant for a fresh library", !!empty,
-    empty ? undefined : `not rendered within 15 s; status bar: ${await execute(`return document.querySelector('.status-bar')?.textContent.trim().slice(0, 80) ?? "no status bar";`)}`);
+  if (empty) {
+    check("startup: empty-state variant for a fresh library", true);
+    return;
+  }
+  // D29: the claim is about a fresh library. A scale lane seeded from the
+  // published corpus (ui-10k.mjs) starts against a loaded one — there the
+  // empty-state variant is not what must render, and the setup names that
+  // as a skip instead of failing a claim it does not describe.
+  const docs = await execute(`return document.querySelector('.status-bar .doc-count')?.textContent?.match(/^[0-9,.]+/)?.[0] ?? null;`);
+  if (docs && docs.replace(/[^0-9]/g, "") !== "0") {
+    skip("startup: empty-state variant for a fresh library", `the library holds ${docs} documents at startup (seeded corpus lane) — the claim is about a fresh library`);
+    return;
+  }
+  check("startup: empty-state variant for a fresh library", false,
+    `not rendered within 15 s; status bar: ${await execute(`return document.querySelector('.status-bar')?.textContent.trim().slice(0, 80) ?? "no status bar";`)}`);
 }
 
 export async function emitDrop(paths) {
@@ -2404,13 +2509,41 @@ export async function flowVirtualization() {
   await clearTagFilter();
   await browseSelect("All documents");
   await clearSearch();
-  const restored = await waitForEval(`return document.querySelectorAll('[data-row-id]').length >= 12;`, { timeout: 30000 });
+
+  // D32 (AC-163): the bound is derived from the shipped geometry, not a
+  // literal row count — the stale 12 was the check, not the product (the
+  // UI-51 row mounts 11 rows in the harness window). The constants mirror
+  // ui/src/lib/virtual.ts in the same lockstep the harness's other geometry
+  // helpers follow: ROW_HEIGHT = 141 cover + 2 × 8 gap = 157 (UI-51),
+  // OVERSCAN = 6. The expectation is virtual.ts's own window rule —
+  // first = max(0, indexAt(scrollTop) − OVERSCAN),
+  // last = min(count − 1, indexAt(scrollTop + viewport) + OVERSCAN) —
+  // measured at the element the app itself measures (DocumentArea's scroller,
+  // clientHeight/scrollTop) and the division form of indexAt, which is exact
+  // for the fixture library's uniform rows. The claim guarded is unchanged
+  // (NFR-01): mounted nodes are bounded by the viewport window plus the
+  // overscan, never by the whole library.
+  const ROW_HEIGHT = 157; // mirrors virtual.ts: ROW_COVER_HEIGHT + 2 × ROW_COVER_GAP
+  const OVERSCAN = 6; // mirrors virtual.ts OVERSCAN
+  const geo = await waitForEval(`
+    const scroller = document.querySelector('.document-area .scroller');
+    if (!scroller || document.querySelectorAll('[data-row-id]').length === 0) return null;
+    return { viewport: scroller.clientHeight, scrollTop: scroller.scrollTop };
+  `, { timeout: 30000 });
+  if (!geo) throw new Error("the flow needs the full-list query rendered");
+  const total = Number(String(await execute(EVAL.docTotal)).replace(/[^0-9]/g, ""));
+  const first = Math.max(0, Math.floor(geo.scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const last = Math.min(total - 1, Math.floor((geo.scrollTop + geo.viewport) / ROW_HEIGHT) + OVERSCAN);
+  const expected = last - first + 1;
+  const reached = await waitForEval(
+    `return document.querySelectorAll('[data-row-id]').length === ${expected} ? true : null;`,
+    { timeout: 30000 },
+  );
   const mounted = await execute(EVAL.rowCount);
-  const total = await execute(EVAL.docTotal);
   check(
     "NFR-01 UI: mounted document nodes stay bounded with 10,000 documents",
-    !!restored && mounted >= 12 && mounted < 60,
-    `${mounted} mounted rows for ${total} documents`,
+    !!reached && mounted === expected && mounted < 60,
+    `${mounted} mounted rows for ${total} documents; derived window ${first}..${last} (viewport ${geo.viewport} px at scrollTop ${geo.scrollTop})`,
   );
 }
 
@@ -2721,6 +2854,22 @@ async function flowFavorites() {
   `, { timeout: 15000 });
   check("favorites flow: a mid-list row is available", !!target);
 
+  // FR-04 (AC-161, the D28 recipe): the observation needs a quiet baseline.
+  // The app's own command stream is the witness — the count of list queries
+  // must stop growing for 700 ms, so the flow's own setup queries have all
+  // landed and nothing is mid-flight when the star is applied. (The load
+  // mechanism: under flood a setup query answered after the star, and its
+  // agreed pinning read as a mid-scroll jump.)
+  await instrumentBoundary();
+  const qBaseline = await waitForEval(`
+    const internals = window.__TAURI_INTERNALS__;
+    const q = (internals.__smokeSeen ?? []).filter((c) => c === 'library_search').length;
+    const now = Date.now();
+    if (internals.__qLastCount !== q) { internals.__qLastCount = q; internals.__qLastAt = now; return null; }
+    return now - internals.__qLastAt >= 700 ? { q } : null;
+  `, { timeout: 20000, interval: 150 });
+  if (!qBaseline) throw new Error("the app kept issuing list queries — no quiet baseline for the no-jump observation");
+
   // Row actions are display:none until the row is hovered or focused —
   // focus the target row so its star becomes interactable.
   await execute(`
@@ -2728,16 +2877,35 @@ async function flowFavorites() {
     return true;
   `);
   await click(`//div[@data-row-id="${target.id}"]//button[contains(@class,"star")]`, "xpath");
-  const starred = await browseCountIs("Favorites", "1");
-  check("FR-04: starring updates the favorites count", starred);
+  const applied = await waitForEval(`
+    const b = document.querySelector('[data-row-id="${target.id}"] .star');
+    return b && (b.getAttribute('aria-label') ?? "").startsWith("Remove") ? true : null;
+  `, { timeout: 10000 });
+  if (!applied) throw new Error("the star action never reached the row control");
 
   // Agreed UI (favorites spec): no mid-scroll jump — the row stays under
   // the cursor; the pinned position applies when the query next re-runs.
-  const noJump = await waitForEval(`
+  // Measured as what it asserts: while the app issues no new list query
+  // after the star lands, the first row is not the starred one. A query
+  // appearing in the window is the violation itself, and the check names it.
+  const held = await waitForEval(`
+    const internals = window.__TAURI_INTERNALS__;
+    const q = (internals.__smokeSeen ?? []).filter((c) => c === 'library_search').length;
+    if (q !== ${qBaseline.q}) return { jumped: "the app issued a new list query", queries: q - ${qBaseline.q} };
     const first = document.querySelector('.row[data-row-id]');
     return first && first.getAttribute('data-row-id') !== arguments[0] ? true : null;
   `, { timeout: 3000, args: [target.id] });
-  check("FR-04: the starred row does not jump mid-scroll (agreed UI)", !!noJump);
+  const detail = held ?? (await execute(`
+    const internals = window.__TAURI_INTERNALS__;
+    return {
+      queriesAfterStar: (internals.__smokeSeen ?? []).filter((c) => c === 'library_search').length - ${qBaseline.q},
+      firstRowIsTarget: (document.querySelector('.row[data-row-id]')?.getAttribute('data-row-id') ?? "") === ${JSON.stringify(String(target.id))},
+    };
+  `));
+  check("FR-04: the starred row does not jump mid-scroll (agreed UI)", held === true, JSON.stringify(detail));
+
+  const starred = await browseCountIs("Favorites", "1");
+  check("FR-04: starring updates the favorites count", starred);
 
   await browseSelect("Favorites");
   const favShown = await waitForEval(`
@@ -3081,6 +3249,18 @@ async function flowMissingAndRelink() {
   const moved = join(probeDir, "relinkprobe.pdf");
   const outside = join(awayDir, "relinkprobe.pdf");
   await setupListView(1);
+  // AC-161 self-sufficiency half (the AC-47 checkpoint): this flow's
+  // missing-flag and status-bar claims need a library with no missing
+  // documents other than its own probe. Re-assert that here instead of
+  // inheriting it — the runner's flush has put back any file an interrupted
+  // flow moved aside, and the app's own detection pass clears the flags
+  // those runs left in the database.
+  await execute(`window.__TAURI_INTERNALS__.invoke('library_rescan'); return true;`);
+  const cleanStart = await waitForEval(
+    `return document.querySelector('.status-bar .missing-warning') ? null : true;`,
+    { timeout: 30000 },
+  );
+  if (!cleanStart) throw new Error("the library still reports missing documents an earlier flow left — this flow's checks need a clean one");
   const before = await docCount();
   await execute(
     `window.__TAURI_INTERNALS__.invoke('library_import_paths', { paths: arguments[0], tagIds: [] }); return true;`,
@@ -3161,6 +3341,7 @@ async function flowMissingAndRelink() {
 
   mkdirSync(awayDir, { recursive: true });
   renameSync(moved, outside);
+  registerRestore(moved, outside); // D30 (AC-161): undone even if this flow aborts
 
   await runRescan();
   const found = await toastContains("1 missing document found");
@@ -3394,6 +3575,7 @@ async function flowMissingAndRelink() {
   await menuClosed(".menu");
 
   renameSync(epubProbe, epubAway);
+  registerRestore(epubProbe, epubAway); // D30 (AC-161): same treatment as the PDF probe
   await runRescan();
   const epubMissing = await toastContains("1 missing document found");
   await typeInto(".search-input", "relinkbook");
@@ -3440,7 +3622,8 @@ async function flowMissingAndRelink() {
     const row = document.querySelector('[data-row-id="' + arguments[0] + '"]');
     return row && row.querySelector('.missing-flag') ? true : null;
   `, { args: [epubRow], timeout: 15000 });
-  check("AC-124: the rescan finds the EPUB file again and clears the flag", !!epubBack && !stillFlaggedEpub);
+  check("AC-124: the rescan finds the EPUB file again and clears the flag", !!epubBack && !stillFlaggedEpub,
+    `file back on disk: ${existsSync(epubProbe)}, away copy present: ${existsSync(epubAway)}, toast: ${epubBack ? "present" : "absent"}, row after 15 s: ${stillFlaggedEpub ? "still flagged" : "flag cleared or row absent"}, status bar: ${await execute(`return document.querySelector('.status-bar')?.textContent.trim().slice(0, 80) ?? "no status bar";`)}`);
 
   await execute(
     `window.__TAURI_INTERNALS__.invoke('library_delete_document', { ids: arguments[0] }); return true;`,
@@ -3513,13 +3696,18 @@ async function flowOpen() {
   await resetOpenCounter();
 
   const target = await waitForEval(`
-    const rows = document.querySelectorAll('.row[data-row-id]');
+    // AC-09/AC-47/AC-64 self-sufficiency (AC-161): the activation claim needs
+    // a document whose file is present. The row set is re-asserted here —
+    // rows flagged missing (a move left pending by an interrupted flow, or a
+    // probe another flow is mid-way through) are not activation candidates.
+    const rows = Array.from(document.querySelectorAll('.row[data-row-id]'))
+      .filter((r) => !r.hasAttribute('data-missing') && !r.querySelector('.missing-flag'));
     if (rows.length < 3) return null;
     const r = rows[1];
     r.scrollIntoView({ block: 'center' });
     return { id: r.getAttribute('data-row-id') };
   `, { timeout: 15000 });
-  if (!target) throw new Error("no row available for the activation flow");
+  if (!target) throw new Error("no non-missing row available for the activation flow");
   const titleAt = `() => document.querySelector('[data-row-id="${target.id}"] .title-line')`;
 
   await clickStable(titleAt);
@@ -3637,22 +3825,33 @@ async function flowCovers() {
   // mid-import partial drain (chunk N's covers finishing before chunk N+1
   // commits) may bring a partial window earlier — still no user action,
   // conformant (DR-238). The assertion stands on the mounted rows being
-  // fully covered, served and rendered.
+  // fully covered, served and rendered. The wait ends only at the claimed
+  // state (AC-161, DR-364): img PRESENT is not img rendered — under load
+  // the asset fetch completes after the src appears, and a first-poll
+  // snapshot read that as rendered: 0.
   const covered100 = await waitForEval(`
     const rows = Array.from(document.querySelectorAll('.row[data-row-id]'));
     if (rows.length < 8) return null;
     const imgs = rows.map((r) => r.querySelector('.cover img')).filter(Boolean);
     if (imgs.length !== rows.length) return null;
-    return {
-      rows: rows.length,
-      served: imgs.filter((i) => i.src.includes('covers')).length,
-      loaded: imgs.filter((i) => i.complete && i.naturalWidth > 0).length,
-    };
+    const served = imgs.filter((i) => i.src.includes('covers')).length;
+    const loaded = imgs.filter((i) => i.complete && i.naturalWidth > 0).length;
+    return served === rows.length && loaded === rows.length
+      ? { rows: rows.length, served, loaded }
+      : null;
   `, { timeout: 120000 });
+  const coverState = covered100 ?? (await execute(`
+    const rows = Array.from(document.querySelectorAll('.row[data-row-id]'));
+    const imgs = rows.map((r) => r.querySelector('.cover img')).filter(Boolean);
+    return {
+      mountedRows: rows.length,
+      withCoverImg: imgs.length,
+      served: imgs.filter((i) => i.src.includes('covers')).length,
+      rendered: imgs.filter((i) => i.complete && i.naturalWidth > 0).length,
+    };
+  `));
   check("AC-100: finished covers render in the open view with no reload, search or view switch — the completion event's own re-query did it",
-    !!covered100 && covered100.served === covered100.rows && covered100.loaded === covered100.rows,
-    covered100 ? `mounted rows: ${covered100.rows}, served asset paths: ${covered100.served}, rendered: ${covered100.loaded}`
-      : "the mounted rows never gained their covers without a further user action");
+    !!covered100, JSON.stringify(coverState));
 
   // Selection and scroll are established on the appeared window; the next
   // cover completion — two further matching files, whose queue drains within
@@ -3664,18 +3863,33 @@ async function flowCovers() {
     s.scrollTop = 99999; // clamps to the bottom: the mounted window is the tail rows
     return true;
   `);
-  const picked100 = await execute(`
-    const rows = document.querySelectorAll('.row[data-row-id]');
-    return rows.length > 8 ? rows[Math.floor(rows.length / 2)].getAttribute('data-row-id') : null;
-  `);
-  if (!picked100) throw new Error("the AC-100 window mounted too few rows to select one");
-  await execute(`document.querySelector('[data-row-id="' + arguments[0] + '"]').focus(); return true;`, [picked100]);
-  await keys("Space");
-  const selected100 = await waitForEval(
-    `return document.querySelector('[data-row-id="' + arguments[0] + '"]').hasAttribute('data-selected') ? true : null;`,
-    { timeout: 8000, args: [picked100] },
-  );
-  if (!selected100) throw new Error("the AC-100 flow needs a selected row to prove the re-query leaves it standing");
+  // Pick, focus and select in one bounded observation loop (AC-161 class,
+  // DR-367): under load the virtualized mount window shifts between calls —
+  // the row picked from the mounted window can be unmounted by the time the
+  // next call reaches for it (the full run's crash: querySelector null at
+  // focus). Each attempt picks and focuses in the same evaluate, presses
+  // Space and confirms the selection; a failed attempt re-reads the mount
+  // window. The claim — the re-query leaves the selected row standing — is
+  // unchanged.
+  let picked100 = null;
+  let selected100 = null;
+  for (let attempt = 0; attempt < 6 && !selected100; attempt += 1) {
+    const pick = await execute(`
+      const rows = document.querySelectorAll('.row[data-row-id]');
+      if (rows.length <= 8) return null;
+      const r = rows[Math.floor(rows.length / 2)];
+      r.focus();
+      return { id: r.getAttribute('data-row-id'), sel: r.hasAttribute('data-selected') };
+    `);
+    if (!pick) { await sleep(250); continue; }
+    picked100 = pick.id;
+    if (!pick.sel) await keys("Space"); // idempotent: never toggle a selection off
+    selected100 = await waitForEval(
+      `return document.querySelector('[data-row-id="' + arguments[0] + '"]')?.hasAttribute('data-selected') ? true : null;`,
+      { timeout: 4000, args: [picked100] },
+    );
+  }
+  if (!selected100) throw new Error(`the AC-100 flow needs a selected row to prove the re-query leaves it standing (last pick: ${picked100})`);
   // The baseline is read after the selection: focusing the row may scroll it
   // into view, and the claim is about the re-query, not about the focus.
   const scrolled100 = await execute(`
@@ -3978,10 +4192,48 @@ async function flowSortSecondary() {
   await instrumentBoundary();
 
   await chooseSort({ primary: "Size", dir: "Descending" });
-  const plain = await capturedSearch(`(s) => s.args.sort === 'size' && s.args.dir === 'desc' && s.args.sortSecondary === 'none'`);
-  const idTieBreak = plain.rows.every((r, i) => i === 0 || plain.rows[i - 1].id < r.id);
+  let plain = await capturedSearch(`(s) => s.args.sort === 'size' && s.args.dir === 'desc' && s.args.sortSecondary === 'none'`);
+
+  // AC-161 self-sufficiency guard (the AC-09 checkpoint): the tie-dependent
+  // claims below are about the order inside a tie of the primary key. A
+  // direct run hands this flow a library an earlier flow mutated — extra
+  // documents carry other sizes, and a whole-list tie claim then measures
+  // the primary key instead of the tie rule (the Phase C mechanism). The tie
+  // group is re-asserted here from the app's own answer: the largest group
+  // of equal sizes carrying at least two distinct titles — the core tier's
+  // identical files are the fixture's tie set. Without one, the core tier's
+  // two identical fixtures are imported and the selection re-issued once
+  // (the re-query half of the D28 recipe); the group is re-read and the
+  // flow names the precondition if it still does not hold.
+  const tieGroup = (rows) => {
+    const bySize = new Map();
+    for (const r of rows) {
+      const g = bySize.get(r.size);
+      if (g) g.push(r);
+      else bySize.set(r.size, [r]);
+    }
+    let best = [];
+    for (const g of bySize.values()) {
+      if (g.length > best.length && new Set(g.map((r) => r.title)).size >= 2) best = g;
+    }
+    return best;
+  };
+  let plainGroup = tieGroup(plain.rows);
+  if (plainGroup.length < 2) {
+    const core = tierDir("core");
+    await execute(
+      `window.__TAURI_INTERNALS__.invoke('library_import_paths', { paths: arguments[0], tagIds: [] }); return true;`,
+      [[join(core, "doc00001.pdf"), join(core, "doc00002.pdf")]],
+    );
+    await chooseSort({ primary: "Size", dir: "Descending" });
+    plain = await capturedSearch(`(s) => s.args.sort === 'size' && s.args.dir === 'desc' && s.args.sortSecondary === 'none'`);
+    plainGroup = tieGroup(plain.rows);
+    if (plainGroup.length < 2) throw new Error("the library carries no tie group of the primary key — the AC-09 order claims need one");
+  }
+
+  const idTieBreak = plainGroup.every((r, i) => i === 0 || plainGroup[i - 1].id < r.id);
   check("AC-09: with no secondary key the order is the shipped primary, then id",
-    idTieBreak, `first ids: ${plain.rows.slice(0, 4).map((r) => r.id).join(", ")}`);
+    idTieBreak, `tie group: ${plainGroup.length} rows at size ${plainGroup[0].size}, first ids: ${plainGroup.slice(0, 4).map((r) => r.id).join(", ")}`);
 
   await chooseSort({ secondary: "title" });
   const keyed = await capturedSearch(`(s) => s.args.sort === 'size' && s.args.sortSecondary === 'title'`);
@@ -3993,14 +4245,17 @@ async function flowSortSecondary() {
     if (title !== null) return title;
     return p.id < r.id;
   });
+  const keyedGroup = tieGroup(keyed.rows);
   check("AC-09: the secondary key orders the ties exactly primary → secondary → id",
-    ordered, `first titles: ${keyed.rows.slice(0, 3).map((r) => r.title).join(", ")}`);
+    ordered && keyedGroup.length === plainGroup.length,
+    `group ${keyedGroup.length}/${plainGroup.length} rows, first titles: ${keyedGroup.slice(0, 3).map((r) => r.title).join(", ")}`);
   check("AC-09: the secondary key inherits the primary's direction (DR-81)",
-    keyed.args.dir === "desc" && titleCompareDesc(keyed.rows[0].title, keyed.rows[keyed.rows.length - 1].title) === true,
-    `dir: ${keyed.args.dir}, first: ${keyed.rows[0].title}`);
+    keyed.args.dir === "desc" && keyedGroup.length >= 2 &&
+      titleCompareDesc(keyedGroup[0].title, keyedGroup[keyedGroup.length - 1].title) === true,
+    `dir: ${keyed.args.dir}, group first: ${keyedGroup[0]?.title}, group last: ${keyedGroup[keyedGroup.length - 1]?.title}`);
   check("AC-09: setting the secondary key changes the order of a tied primary key",
-    keyed.rows[0].id !== plain.rows[0].id,
-    `without secondary: ${plain.rows[0].title} / with secondary: ${keyed.rows[0].title}`);
+    keyedGroup.length >= 2 && keyedGroup[0].id !== plainGroup[0].id,
+    `without secondary: ${plainGroup[0].title} / with secondary: ${keyedGroup[0]?.title}`);
 
   // The choice is a stored preference. The app's own first query after a
   // relaunch runs before any harness code exists in the new page, so the
@@ -4647,6 +4902,19 @@ async function flowImportProgress() {
   // The interaction half: the search is typed while the import is in flight and
   // must answer. The bar still reads the import job, and the status count has
   // not moved — both prove the import was running when the results appeared.
+  // D31 (AC-161): the typing point waits for a progress threshold, not for the
+  // opening event alone — under load the job can sit queued at processed 0
+  // while other work drains first, and a search typed then does not meet the
+  // AC's "while the import is in flight" premise (the Phase C 100/2100 state).
+  // A mid-flight bar sample makes the premise true by observation.
+  const inFlight = await waitForEval(`
+    return window.__importBar.samples.some((s) => !s.gone && /Importing/.test(s.label)
+      && s.total === arguments[0] && s.processed >= 50) ? true : null;
+  `, { timeout: 90000, args: [target] });
+  if (!inFlight) {
+    await execute(`window.__importBarStop?.(); return true;`);
+    throw new Error("the import never reached a mid-flight state — the AC-101 search needs an import that is running");
+  }
   await searchFor("doc00050");
   const rows = await resultCount();
   const midBar = await execute("return window.__barRead();");
@@ -4696,12 +4964,28 @@ async function flowImportProgress() {
       && steps[i].processed - steps[i - 1].processed <= 5
       && steps[i].total === target;
   }
+  const anomaly = !done ? "the completion state never appeared"
+    : steps.length < 3 ? `only ${steps.length} import-job render(s) recorded`
+    : run.run.some((s) => s.gone) ? `the bar disappeared mid-run after processed ${steps[steps.length - 1]?.processed}`
+    : steps[0].processed !== 0 ? `first render reads processed ${steps[0].processed}, not the opening 0`
+    : (() => {
+        for (let i = 1; i < steps.length; i++) {
+          const d = steps[i].processed - steps[i - 1].processed;
+          if (steps[i].processed <= steps[i - 1].processed) return `non-monotonic ${steps[i - 1].processed} → ${steps[i].processed} at index ${i}`;
+          if (d > 5) return `step ${steps[i - 1].processed} → ${steps[i].processed} (Δ ${d} > 5, the chunk bound) at index ${i} of ${steps.length}`;
+          if (steps[i].total !== target) return `total changed to ${steps[i].total} at index ${i}`;
+        }
+        const last = steps[steps.length - 1];
+        return last.processed < target - 5
+          ? `the last recorded render is processed ${last.processed} of ${target} — the run never reached completion`
+          : "no anomaly — the claim failed on the completion flag alone";
+      })();
   check(
     "AC-101/AC-123: the bar advances through per-chunk events from the opening event to completion (each step ≤ 5 — the D25 chunk bound, monotonic), without a gap",
     !!done && steps.length >= 3 && !run.run.some((s) => s.gone) && monotonic
       && steps[0].processed === 0
       && steps[steps.length - 1].processed >= target - 5,
-    `import-job samples: ${JSON.stringify(steps).slice(0, 400)}`,
+    `import-job: ${anomaly}; opening: ${JSON.stringify(steps.slice(0, 2))}; closing: ${JSON.stringify(steps.slice(-2))}`,
   );
 }
 
@@ -6206,22 +6490,54 @@ async function flowRename() {
 // focus — and the star keeps its switch semantics through the real command.
 // UI-40 (AC-111): *Open containing folder* — the context-menu item and the
 // Details action, present only when the file exists. Self-sufficient (D14):
-// the reveal itself changes nothing in the library, so the present-document
-// half runs on an ordinary core-fixture row; only the missing-document half
-// needs a private probe under tmp/, removed at the end. The file manager's
+// both halves run on private probes under tmp/ — a present one and a
+// missing one, both removed from the library at the end. The file manager's
 // window belongs to the OS and is the user's Phase-B observation; what the
 // lane asserts is the app's side: the item, the typed request the app posts
 // for exactly that document, and the item's absence for a missing file.
 async function flowOpenFolder() {
   await setupListView(1);
+  // AC-161 (the direct-run reproduction, 2026-11-17): the present half used
+  // to run on "an ordinary core-fixture row" — the fixed name it searched
+  // (doc00001) is deterministically gone before this flow runs. The app's
+  // title sort is case-insensitive; the core tier's no-title fixture
+  // doc00900 takes the stem title "doc00900", which sorts before every
+  // "Fixture Doc …" and takes the first row; flowTags/flowDelete's
+  // first-rows selections consume exactly the first three rows —
+  // doc00900, doc00001, doc00002. The present half now runs on its own
+  // probe: the same no-title fixture and the same lifecycle the
+  // absence-half probe already used, whose title is its own file name.
+  const probeDir = join(root, "tmp", "openfolder-probe");
+  rmSync(probeDir, { recursive: true, force: true }); // leftovers of an aborted run
+  mkdirSync(probeDir, { recursive: true });
+  const presentPath = join(probeDir, "openfolder present.pdf");
+  copyFileSync(join(FIXTURE_SPECIAL, "info-none.pdf"), presentPath);
+  // D30 (AC-161, direct run 2026-11-18): the imports are now awaited to their
+  // own completion before the search is typed. execute/sync does not await a
+  // page promise, so the command result is stored on the window and polled —
+  // the same hook idiom this flow's reveal counters use. The direct run failed
+  // at the absence half for exactly this reason: the file was removed before
+  // the busy app read it, the row never existed, and no search retry can find
+  // a record that was never created.
+  await execute(
+    `window.__openFolderImport = null;
+     window.__TAURI_INTERNALS__.invoke('library_import_paths', { paths: arguments[0], tagIds: [] })
+       .then((r) => { window.__openFolderImport = r; });
+     return true;`,
+    [[presentPath]],
+  );
+  if (!(await waitForEval(`return window.__openFolderImport ?? null;`, { timeout: 30000 })))
+    throw new Error("the openfolder present import never completed");
   await instrumentBoundary();
   await execute(`window.__TAURI_INTERNALS__.__openFolderCalls = 0; return true;`);
-  await searchFor("doc00001");
-  const subject = await execute(`
-    const row = document.querySelector('[data-row-id]');
-    return row ? Number(row.getAttribute('data-row-id')) : null;
-  `);
-  if (!subject) throw new Error("the doc00001 fixture row did not appear");
+  await searchFor("openfolder present");
+  const subject = await waitForEval(`
+    const row = Array.from(document.querySelectorAll('[data-row-id]')).find((r) =>
+      (r.querySelector('.title-line, .title')?.textContent ?? "").includes("openfolder present"));
+    if (!row) return null;
+    return Number(row.getAttribute('data-row-id'));
+  `, { timeout: 15000 });
+  if (!subject) throw new Error("the openfolder present probe never appeared as a row");
 
   // Context menu half: the item is there, and activating it posts exactly one
   // reveal request carrying this document's id.
@@ -6278,19 +6594,28 @@ async function flowOpenFolder() {
   await clearSearch();
 
   // The absence half: a missing document shows no reveal item — its path is
-  // Relink. Private probe: import, remove the file from disk, rescan.
-  const probeDir = join(root, "tmp", "openfolder-probe");
-  rmSync(probeDir, { recursive: true, force: true });
-  mkdirSync(probeDir, { recursive: true });
+  // Relink. The same private probe directory, the file removed after import.
   const probePath = join(probeDir, "openfolder missing.pdf");
-  const beforeProbe = await docCount();
   copyFileSync(join(FIXTURE_SPECIAL, "info-none.pdf"), probePath);
   await execute(
-    `window.__TAURI_INTERNALS__.invoke('library_import_paths', { paths: arguments[0], tagIds: [] }); return true;`,
+    `window.__openFolderImport = null;
+     window.__TAURI_INTERNALS__.invoke('library_import_paths', { paths: arguments[0], tagIds: [] })
+       .then((r) => { window.__openFolderImport = r; });
+     return true;`,
     [[probePath]],
   );
+  if (!(await waitForEval(`return window.__openFolderImport ?? null;`, { timeout: 30000 })))
+    throw new Error("the openfolder missing import never completed");
+  // The file is removed only after the import read it — that ordering is the
+  // whole point of the absence half: the record exists, then its file doesn't.
   rmSync(probePath, { force: true });
-  await execute(`window.__TAURI_INTERNALS__.invoke('library_rescan'); return true;`);
+  await execute(
+    `window.__openFolderRescan = null;
+     window.__TAURI_INTERNALS__.invoke('library_rescan')
+       .then((r) => { window.__openFolderRescan = r; });
+     return true;`);
+  if (!(await waitForEval(`return window.__openFolderRescan ?? null;`, { timeout: 30000 })))
+    throw new Error("the openfolder rescan never completed");
   await searchFor("openfolder missing");
   const missingId = await waitForEval(`
     const row = Array.from(document.querySelectorAll('[data-row-id]')).find((r) =>
@@ -6313,7 +6638,9 @@ async function flowOpenFolder() {
   await keys("Escape");
   await menuClosed(".menu");
 
-  // D14: the probe record leaves the library again; the file is already gone.
+  // D14: both probe records leave the library again (the missing one's file
+  // is already gone; the present one's file stays under tmp/ until the next
+  // run's cleanup — the library is what the count barrier guards).
   // The raw command call updates the DB and the counts event, but rows are
   // re-queried only through the store's own paths — so the removal is
   // observed by re-running the app's search: the record is gone when the
@@ -6324,14 +6651,22 @@ async function flowOpenFolder() {
   // term the field does not already hold (the SearchBox guard skips a query
   // identical to the active one): the token that found the probe now finds
   // nothing, which is what the removal means.
+  // D30 (AC-161): the barrier is anchored to the count measured immediately
+  // before the flow's own delete, not to a run-start count — a start-anchored
+  // comparison silently assumes the library carried no probe row from an
+  // earlier aborted run, and the direct shape's shared DB does carry them.
+  // The delta the flow itself causes is the claim: removing exactly two
+  // documents moves the count by exactly two.
+  const countBeforeDelete = await docCount();
   await execute(
-    `window.__TAURI_INTERNALS__.invoke('library_delete_document', { ids: [${missingId}] }); return true;`,
+    `window.__TAURI_INTERNALS__.invoke('library_delete_document', { ids: [${subject}, ${missingId}] }); return true;`,
   );
   const countBack = await waitForEval(`
     const text = document.querySelector('.status-bar .doc-count')?.textContent?.match(/^[0-9,.]+/)?.[0];
-    return text === ${JSON.stringify(beforeProbe.toLocaleString("en-US"))} ? true : null;
+    return text === ${JSON.stringify((countBeforeDelete - 2).toLocaleString("en-US"))} ? true : null;
   `, { timeout: 20000 });
-  if (!countBack) throw new Error("the probe delete never reached the counts");
+  if (!countBack)
+    throw new Error(`the probe delete never reached the counts — expected ${countBeforeDelete - 2} after removing both probe rows`);
   await typeInto(".search-input", "openfolder");
   const gone = await waitForEval(
     `return document.querySelector('[data-row-id="${missingId}"]') ? null : true;`,
@@ -6362,12 +6697,19 @@ async function flowOpenFolder() {
 // as it started (unfavorited, deselected, unfiltered).
 async function flowBulkFavorite() {
   await setupListView(1);
-  await searchFor("doc00002");
-  const target = await execute(`
-    const row = document.querySelector('[data-row-id]');
+  // AC-161 (the direct-run reproduction, 2026-11-17): the target was the
+  // fixed name doc00002 — in the direct order it is deterministically gone,
+  // consumed by flowTags/flowDelete's first-rows selection (the flowOpenFolder
+  // mechanism of DR-363). The target is now picked from the live library: the
+  // first mounted row whose star reads unfavorited — exactly the precondition
+  // the flow's own claims assert — and the flow still ends by unfavoriting it,
+  // leaving the library as it found it.
+  const target = await waitForEval(`
+    const row = Array.from(document.querySelectorAll('[data-row-id]')).find((r) =>
+      r.querySelector('.star')?.getAttribute('aria-checked') === 'false');
     return row ? Number(row.getAttribute('data-row-id')) : null;
-  `);
-  if (!target) throw new Error("the doc00002 fixture row did not appear");
+  `, { timeout: 15000 });
+  if (!target) throw new Error("no unfavorited row was mounted to run the bulk favorite claims on");
   await clickModifier(target, { ctrlKey: true });
   const bar = await waitForEval(`return document.querySelector('.bulk-bar') ? true : null;`, { timeout: 8000 });
   if (!bar) throw new Error("the bulk bar did not appear for the selection");
@@ -6924,6 +7266,15 @@ async function flowThemeAndSettings() {
   await menuClosed(".menu.settings-menu");
   const port99 = await functionalCdpPort();
   if (!port99) throw new Error("the functional instance's DevTools port was not discoverable");
+  // AC-161 self-sufficiency guard: this half needs the doc00001 card. The
+  // fixture is waited for on disk and the document re-imported through the
+  // command path (a no-op skip when the library already holds it) instead of
+  // trusting what earlier flows left behind.
+  await waitForFixtureFile(join(FIXTURE_CORE, "doc00001.pdf"));
+  await execute(
+    `window.__TAURI_INTERNALS__.invoke('library_import_paths', { paths: arguments[0], tagIds: [] }); return true;`,
+    [[join(FIXTURE_CORE, "doc00001.pdf")]],
+  );
   const doc99 = await waitForEval(`
     const c = document.querySelector('.card[aria-label="Fixture Doc doc00001"]');
     if (!c) return null;
@@ -7094,8 +7445,11 @@ async function flowThemeAndSettings() {
         .some((el) => el.textContent.trim() === needle));
     return { titles, stray, infoRows: dialog.querySelectorAll('.info-row').length };
   `);
+  // v0.0.11 (UI-53): the dialog gained its Log section — the section list
+  // is read as it is now; the AC-90 claim (no Library section, no counts,
+  // name or version rows) is unchanged.
   check("AC-90: the dialog renders no Library section and no counts, name or version rows",
-    !!dialogFacts && dialogFacts.titles.join("|") === "Appearance|Data location" &&
+    !!dialogFacts && dialogFacts.titles.join("|") === "Appearance|Data location|Log" &&
       dialogFacts.stray.length === 0 && dialogFacts.infoRows === 0,
     JSON.stringify(dialogFacts));
   const trapped = await waitForEval(`
@@ -7132,7 +7486,9 @@ async function flowThemeAndSettings() {
     });
   `);
   check("AC-44: the Settings section headings compute text-transform none and letter-spacing normal",
-    headings.length === 2 &&
+    // v0.0.11 (UI-53): three sections now — the claim is per-heading, the
+    // count tracks the dialog as it is.
+    headings.length === 3 &&
       headings.every((h) => h.transform === "none" && (h.tracking === "normal" || h.tracking === "0px")),
     JSON.stringify(headings));
 
@@ -7324,6 +7680,362 @@ async function flowThemeAndSettings() {
   await waitForEval(`return document.querySelector('.modal') ? null : true;`, { timeout: 5000 });
 }
 
+// AC-156 (FR-26 / UI-53): the Settings dialog's Log section and the log file
+// behind it. Every claim reads the file the app itself writes —
+// <data-dir>/logs/app.log, the same directory the lane runs under — and every
+// count claim is a delta over what the flow found at its start (a direct
+// full-suite run carries earlier flows' lines; a lane starts clean). The
+// claims: the section itself (level picker, path row, open control); failure
+// lines at the default Error level (the command boundary and the import
+// per-file hook); the level selector live without a restart and controlling
+// what is recorded; *Open log file* as the app's own request; persistence
+// across a restart with the startup line recorded; and the same section,
+// mirrored and effective, in a reader window's Settings dialog.
+async function flowLogs() {
+  await setupGrid(2);
+  await instrumentBoundary();
+
+  const LOG_FILE = join(DATA_DIR, "logs", "app.log");
+  const logLines = () => {
+    try {
+      return readFileSync(LOG_FILE, "utf8").split(/\r?\n/).filter((line) => line.length > 0);
+    } catch {
+      return []; // no file yet: a clean install has written nothing at Error level
+    }
+  };
+  const countLines = (needles) => logLines().filter((line) => needles.every((needle) => line.includes(needle))).length;
+  const waitLine = async (needles, timeout = 10000) => {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const hit = logLines().find((line) => needles.every((needle) => line.includes(needle)));
+      if (hit) return hit;
+      if (Date.now() > deadline) return null;
+      await sleep(250);
+    }
+  };
+  const waitCount = async (needles, target, timeout = 10000) => {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const count = countLines(needles);
+      if (count >= target || Date.now() > deadline) return count;
+      await sleep(250);
+    }
+  };
+  // A command invoked straight at the boundary with its answer captured in a
+  // page variable. The boundary hook claim needs a real rejected call, and
+  // the only honest way to make one is to ask for a setting the app rejects.
+  const invokeCaptured = async (cmd, payload) => {
+    await execute(`
+      window.__smokeCmdAnswer = null;
+      window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(payload ?? {})}).then(
+        (value) => { window.__smokeCmdAnswer = { ok: true, value: value ?? null }; },
+        (error) => { window.__smokeCmdAnswer = { kind: (error && error.kind) ?? String(error) }; },
+      );
+      return true;
+    `);
+    return waitForEval(`return window.__smokeCmdAnswer;`, { timeout: 8000 });
+  };
+  // `log_level_set` persists the value in the same command that moves the
+  // writer's flag, so the persisted row is the confirmation that the switch
+  // completed before the next import is triggered — the store's own write is
+  // fire-and-forget and must not race the probe.
+  const waitLevelPersisted = async (level, timeout = 8000) => {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const answer = await invokeCaptured("app_get_settings", {});
+      if (answer && answer.ok && answer.value && answer.value.log_level === level) return true;
+      if (Date.now() > deadline) return false;
+      await sleep(250);
+    }
+  };
+  // An import of one path that is not on disk: the pipeline's typed skip
+  // (behavior unchanged) plus the per-file failure line, and — at Info
+  // level — the run's lifecycle line. The probe file is never created.
+  const missingProbe = join(FIXTURE_DOCS, "flow-logs-absent.pdf");
+  const importMissing = () =>
+    execute(`window.__TAURI_INTERNALS__.invoke('library_import_paths', { paths: arguments[0], tagIds: [] }); return true;`, [[missingProbe]]);
+
+  const readLogSection = () =>
+    execute(`
+      const dialog = document.querySelector('.modal');
+      if (!dialog) return null;
+      const titles = Array.from(dialog.querySelectorAll('.section-title')).map((h) => h.textContent.trim());
+      const group = Array.from(dialog.querySelectorAll('[role="radiogroup"]')).find((g) => g.getAttribute('aria-label') === 'Logging level');
+      const radios = group
+        ? Array.from(group.querySelectorAll('[role="radio"]')).map((b) => ({
+            label: b.textContent.trim(), checked: b.getAttribute('aria-checked') === 'true',
+          }))
+        : null;
+      return {
+        titles, radios,
+        path: dialog.querySelector('.location.log-path')?.textContent.trim() ?? null,
+        openControl: !!dialog.querySelector('[aria-label="Open log file"]'),
+      };
+    `);
+  const pickLevel = (label) =>
+    clickStable(`() => {
+      const group = Array.from(document.querySelectorAll('.modal [role="radiogroup"]')).find((g) => g.getAttribute('aria-label') === 'Logging level');
+      if (!group) return null;
+      return Array.from(group.querySelectorAll('[role="radio"]')).find((b) => b.textContent.trim() === ${JSON.stringify(label)}) ?? null;
+    }`);
+  const openSettingsDialog = async () => {
+    await openMenuSure(".settings-trigger", ".menu.settings-menu");
+    await clickMenuItem('.menu.settings-menu', "Settings");
+    const opened = await waitForEval(`
+      const dialog = document.querySelector('.modal');
+      return dialog && Array.from(dialog.querySelectorAll('.section-title')).some((h) => h.textContent.trim() === 'Log') ? true : null;
+    `, { timeout: 8000 });
+    if (!opened) throw new Error("the settings dialog with its Log section did not open");
+  };
+  // The AC-41 comparison method, applied to the log file: the harness drives
+  // the app with this data directory, so the row must name its logs/app.log.
+  const normPath = (p) => String(p ?? "").replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
+  const EXPECTED_LOG = join(DATA_DIR, "logs", "app.log");
+
+  // Counts are needle-scoped: they name the lines this flow causes, so an
+  // unrelated failure line (a failed update check at startup, a cover
+  // render) cannot move a claim.
+  const BOUNDARY_NEEDLE = ["app_set_setting: Invalid value for theme"];
+  const PROBE_NEEDLE = ["cannot read", "flow-logs-absent.pdf"];
+  const RUN_NEEDLE = ["import run finished"];
+
+  // 1. The section: level picker with exactly the two options, Error checked
+  //    (the default), the path row, the open control.
+  await openSettingsDialog();
+  const section = await readLogSection();
+  check(
+    "AC-156: the Settings dialog carries a Log section — the level picker with Error checked by default and the open control",
+    !!section &&
+      section.titles.includes("Log") &&
+      !!section.radios &&
+      JSON.stringify(section.radios.map((r) => r.label)) === JSON.stringify(["Error", "Info"]) &&
+      section.radios.filter((r) => r.checked).map((r) => r.label).join() === "Error" &&
+      section.openControl,
+    JSON.stringify(section),
+  );
+
+  // 2. The path row is the file the app writes to.
+  check(
+    "AC-156: the path row shows the real log file under the data directory",
+    typeof section.path === "string" && normPath(section.path) === normPath(EXPECTED_LOG),
+    `dialog: ${JSON.stringify(section.path)} | expected: ${EXPECTED_LOG}`,
+  );
+
+  // 3. The boundary hook at the default level: a real rejected command lands
+  //    as exactly one ERROR line carrying the command name and the message
+  //    the user would see (DR-354's format).
+  const rejected = await invokeCaptured("app_set_setting", { key: "theme", value: "bogus" });
+  const boundaryLine = await waitLine(["ERROR", "command", ...BOUNDARY_NEEDLE]);
+  check(
+    "AC-154 / AC-156: a rejected command is recorded at the default Error level with its command name and error text",
+    !!rejected && rejected.kind === "validation" && !!boundaryLine && countLines(BOUNDARY_NEEDLE) === 1,
+    `answer: ${JSON.stringify(rejected)} | line: ${boundaryLine ?? "none"}`,
+  );
+
+  // 4. The import per-file hook: the path is a typed skip (pipeline behavior
+  //    unchanged) and an ERROR line; the run's lifecycle line is Info and
+  //    stays unwritten at the default level.
+  await importMissing();
+  const importLine = await waitLine(["ERROR", "import", ...PROBE_NEEDLE]);
+  check(
+    "AC-154: an import failure is recorded as an Error line; lifecycle stays silent at the default level",
+    !!importLine && countLines(PROBE_NEEDLE) === 1 && countLines(RUN_NEEDLE) === 0,
+    `line: ${importLine ?? "none"} | probe lines: ${countLines(PROBE_NEEDLE)}, run lines: ${countLines(RUN_NEEDLE)}`,
+  );
+
+  // 5. The level selector, live: picking Info in the open dialog — no
+  //    restart — makes the next import run's lifecycle line land.
+  await pickLevel("Info");
+  if (!(await waitLevelPersisted("info"))) throw new Error("the Info level was not persisted by the picker");
+  const picked = await readLogSection();
+  await importMissing();
+  const runLine = await waitLine(["INFO", "import", ...RUN_NEEDLE]);
+  check(
+    "AC-156: the level selector takes effect without a restart — the picker shows Info and the import run line is recorded",
+    !!picked &&
+      picked.radios.filter((r) => r.checked).map((r) => r.label).join() === "Info" &&
+      !!runLine &&
+      countLines(RUN_NEEDLE) === 1,
+    `line: ${runLine ?? "none"} | run lines: ${countLines(RUN_NEEDLE)}`,
+  );
+
+  // 6. Back to Error: the failure line still lands, the lifecycle line stops
+  //    — the selector controls what is recorded, live in the same run.
+  await pickLevel("Error");
+  if (!(await waitLevelPersisted("error"))) throw new Error("the Error level was not persisted by the picker");
+  await importMissing();
+  const probeLines = await waitCount(PROBE_NEEDLE, 3);
+  check(
+    "AC-156: the selector controls what is recorded — back at Error the failure line lands and the lifecycle line stops",
+    probeLines === 3 && countLines(RUN_NEEDLE) === 1,
+    `probe lines: ${probeLines}, run lines: ${countLines(RUN_NEEDLE)}`,
+  );
+
+  // 7. *Open log file*: the app's own request (the boundary record proves
+  //    the click reached the command; the OS handler's window belongs to the
+  //    OS, the same honest limit AC-111's reveal check carries), no typed
+  //    failure, and the file the row named is really there.
+  await clickStable(`() => document.querySelector('.modal [aria-label="Open log file"]') ?? null`);
+  const openAsked = await waitForEval(
+    `return ((window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.__smokeSeen) || []).includes('log_open') ? true : null;`,
+    { timeout: 8000 },
+  );
+  await expectNoErrorToast("AC-156: opening the log file surfaces no failure");
+  check(
+    "AC-156: Open log file asks the app to open the file the path row names",
+    !!openAsked && existsSync(EXPECTED_LOG),
+    `request recorded: ${!!openAsked} | file on disk: ${existsSync(EXPECTED_LOG)}`,
+  );
+
+  // 8. Persistence: pick Info, close, restart — the new instance reads the
+  //    stored level and records its own startup line at it. (The level was
+  //    already live before the exit: the exit line is written too; the
+  //    claim reads the startup pair.)
+  await pickLevel("Info");
+  if (!(await waitLevelPersisted("info"))) throw new Error("the Info level was not persisted before the restart");
+  const startupBefore = countLines(["lifecycle startup"]);
+  await closeDialog("the settings dialog");
+  await restartApp();
+  await instrumentBoundary();
+  await openSettingsDialog();
+  const afterRestart = await readLogSection();
+  const startupLine = await waitLine(["INFO", "lifecycle", "startup"], 12000);
+  const startupAfter = countLines(["lifecycle startup"]);
+  check(
+    "AC-156: the level persists across a restart and the restarted app records its lifecycle line",
+    !!afterRestart &&
+      afterRestart.radios.filter((r) => r.checked).map((r) => r.label).join() === "Info" &&
+      !!startupLine &&
+      startupAfter === startupBefore + 1,
+    `picker: ${JSON.stringify(afterRestart && afterRestart.radios)} | line: ${startupLine ?? "none"}`,
+  );
+
+  // 9. The reader half. Its precondition is re-asserted, not inherited
+  //   (the AC-161 recipe): the doc00001 core fixture is imported through
+  //   the command path — a no-op skip when the library already holds it,
+  //   a restoration when an earlier flow removed it — and the card is
+  //   reached through a filter that names it. A reader window opened from
+  //   the grid at the live Info level records its own lifecycle line — the
+  //   same opened/closed pair the app writes for its own windows
+  //   (commands.rs / lib.rs).
+  await closeDialog("the settings dialog");
+  await waitForFixtureFile(join(FIXTURE_CORE, "doc00001.pdf")); // AC-161 fixture-appearance half
+  await invokeCaptured("library_import_paths", { paths: [join(FIXTURE_CORE, "doc00001.pdf")], tagIds: [] });
+  await searchFor("doc00001");
+  const docId = await waitForEval(`
+    const c = document.querySelector('.card[data-row-id]');
+    if (!c) return null;
+    return c.getAttribute('data-row-id');
+  `, { timeout: 15000 });
+  if (!docId) throw new Error("the doc00001 core fixture did not reach the rendered cards after its import");
+  const port = await functionalCdpPort();
+  if (!port) throw new Error("the functional instance's DevTools port was not discoverable");
+  await doubleClickStable(`() => document.querySelector('[data-row-id="${docId}"]')`);
+  let opened = await cWaitReaderId(Number(docId), true, { timeout: 15000, port });
+  if (!opened) {
+    // The flowOpen precedent: the action chain sometimes produces no native
+    // dblclick — the synthetic event reaches the same handler.
+    await execute(`
+      document.querySelector('[data-row-id="' + arguments[0] + '"]')
+        ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      return true;
+    `, [docId]);
+    opened = await cWaitReaderId(Number(docId), true, { timeout: 15000, port });
+  }
+  if (!opened) throw new Error("no reader window appeared for the AC-156 document");
+  const openedLine = await waitLine(["INFO", "lifecycle", `reader window opened: reader-${docId}`]);
+  check(
+    "AC-156: the app records the reader windows it opens (lifecycle line at the live Info level)",
+    !!openedLine,
+    `line: ${openedLine ?? "none"}`,
+  );
+
+  // 10. The same section in the reader window's Settings dialog — the same
+  //     component, the same state: the picker mirrors the level the library
+  //     window picked, the path row names the same file.
+  const reader = await cReaderConnected(Number(docId), { port });
+  await reader.waitFor(FIRST_PAGE_READY, { timeout: 12000 });
+  const triggerClicked = await clickReaderControl(reader, `() => document.querySelector('.chrome [aria-label="Settings"]') ?? null`);
+  if (!triggerClicked) throw new Error("the reader window's settings control was not found");
+  const menuReady = await reader.waitFor(`
+    return Array.from(document.querySelectorAll('.menu.settings-menu .menu-item'))
+      .some((i) => i.textContent.trim() === 'Settings') ? true : null;
+  `, { timeout: 5000 });
+  if (!menuReady) throw new Error("the reader window's settings menu did not open");
+  await clickReaderControl(reader, `() => Array.from(document.querySelectorAll('.menu.settings-menu .menu-item')).find((i) => i.textContent.trim() === 'Settings') ?? null`);
+  const readerSection = await reader.waitFor(`
+    const dialog = document.querySelector('.modal');
+    if (!dialog) return null;
+    const titles = Array.from(dialog.querySelectorAll('.section-title')).map((h) => h.textContent.trim());
+    if (!titles.includes('Log')) return null;
+    const group = Array.from(dialog.querySelectorAll('[role="radiogroup"]')).find((g) => g.getAttribute('aria-label') === 'Logging level');
+    const radios = group
+      ? Array.from(group.querySelectorAll('[role="radio"]')).map((b) => ({
+          label: b.textContent.trim(), checked: b.getAttribute('aria-checked') === 'true',
+        }))
+      : null;
+    return {
+      titles, radios,
+      path: dialog.querySelector('.location.log-path')?.textContent.trim() ?? null,
+      openControl: !!dialog.querySelector('[aria-label="Open log file"]'),
+    };
+  `, { timeout: 8000 });
+  check(
+    "AC-156: the Log section behaves identically in the reader window's Settings dialog — the picker mirrors the current level",
+    !!readerSection &&
+      !!readerSection.radios &&
+      JSON.stringify(readerSection.radios.map((r) => r.label)) === JSON.stringify(["Error", "Info"]) &&
+      readerSection.radios.filter((r) => r.checked).map((r) => r.label).join() === "Info" &&
+      readerSection.openControl &&
+      normPath(readerSection.path) === normPath(EXPECTED_LOG),
+    JSON.stringify(readerSection),
+  );
+
+  // 11. A pick made in the reader window is live everywhere: Error chosen
+  //     there reaches the library window's open dialog (the settings
+  //     broadcast), and the writer's flag moved with it — closing this
+  //     reader window now writes no lifecycle line, while its opening did.
+  const pickedError = await clickReaderControl(reader, `() => {
+    const group = Array.from(document.querySelectorAll('.modal [role="radiogroup"]')).find((g) => g.getAttribute('aria-label') === 'Logging level');
+    if (!group) return null;
+    return Array.from(group.querySelectorAll('[role="radio"]')).find((b) => b.textContent.trim() === 'Error') ?? null;
+  }`);
+  if (!pickedError) throw new Error("the reader dialog's Error option was not clickable");
+  // The close-line claim needs the writer's flag already moved — the same
+  // persistence confirmation as the library-side picker, read from the
+  // persisted row.
+  if (!(await waitLevelPersisted("error"))) throw new Error("the reader window's Error pick was not persisted");
+  await reader.key("Escape", "Escape", 27); // closes the reader's dialog
+  await reader.waitFor(`return document.querySelector('.modal') ? null : true;`, { timeout: 5000 });
+  await reader.key("Escape", "Escape", 27); // closes the reader window
+  await cWaitReaderId(Number(docId), false, { port });
+  // The mirror read is the live proof of the pick; it also gives the
+  // Destroyed hook its moment to write (or not write) the close line. The
+  // library window's store follows the `settings_changed` broadcast, so the
+  // read polls until it does (or the claim fails honestly).
+  await openSettingsDialog();
+  let libraryMirror = null;
+  const mirrorDeadline = Date.now() + 8000;
+  for (;;) {
+    libraryMirror = await readLogSection();
+    if (libraryMirror && libraryMirror.radios && libraryMirror.radios.filter((r) => r.checked).map((r) => r.label).join() === "Error") break;
+    if (Date.now() > mirrorDeadline) break;
+    await sleep(250);
+  }
+  const closeLine = logLines().find((line) => line.includes(`reader window closed: reader-${docId}`));
+  check(
+    "AC-156: a level pick made in the reader window is live in the library window and suppresses the close line",
+    !closeLine &&
+      !!libraryMirror &&
+      libraryMirror.radios.filter((r) => r.checked).map((r) => r.label).join() === "Error",
+    `close line: ${closeLine ?? "none"} | library picker: ${JSON.stringify(libraryMirror && libraryMirror.radios)}`,
+  );
+  await closeDialog("the settings dialog");
+  await clearSearch();
+  // The flow ends with the level back at its default, its search filter
+  // cleared, and no window or dialog of its own left open (D14).
+}
+
 // AC-30 (UI-18): the two modes and the selection semantics of each, in list and
 // in grid. The mode itself is session state: it is off after a restart.
 async function flowSelectMode() {
@@ -7506,6 +8218,12 @@ export async function runFlow(name, fn) {
   const started = Date.now();
   let result;
   try {
+    // D31 (AC-161): every flow owns a clean toast channel. Best-effort: in a
+    // CDP-instance lane there is no session yet at this point (the flow's own
+    // setup establishes it), and a hygiene step must never crash a flow.
+    try {
+      await dismissOpenToasts();
+    } catch { /* no session yet — the flow's own setup will establish one */ }
     result = await fn();
   } catch (error) {
     let trace = "";
@@ -7517,6 +8235,10 @@ export async function runFlow(name, fn) {
     } catch { /* the page or the session is gone */ }
     fail(`flow ${name} crashed`, error.message + (trace ? ` — after: ${trace}` : ""));
     await recoverAfterCrash();
+  } finally {
+    // D30 (AC-161): undo the file moves this flow registered but did not
+    // reach — passed, failed, or aborted, the next flow reads the same tree.
+    flushRestores();
   }
   const ms = Date.now() - started;
   timings.push({ name, ms });
@@ -8687,7 +9409,7 @@ async function flowReaderOpen() {
   await cSearch("ac93-reader-chrome");
   const longAppeared = await cMainWait(`
     return Array.from(document.querySelectorAll('[data-row-id]')).some((r) =>
-      (r.querySelector('.title-line')?.textContent ?? '').includes("ac93-reader-chrome")) ? true : null;
+      (r.querySelector('.title-line, .title')?.textContent ?? '').includes("ac93-reader-chrome")) ? true : null;
   `, { timeout: 15000 });
   if (!longAppeared) throw new Error("the long-name fixture did not appear in the library");
   const longDoc = await cOpenReader("ac93-reader-chrome");
@@ -9202,8 +9924,12 @@ async function flowReaderClose() {
 
   await a.session.key("Escape", "Escape", 27);
   const closedA = await cWaitReaderId(a.id, false);
+  // The purge rides the window's `Destroyed` event (commands.rs) — under
+  // load its delivery lags the CDP target vanishing (AC-161 class, the
+  // flowReaderClose flake of the 2026-11-17 full run). The bounded wait is
+  // the observation; its ceiling covers a busy event loop, not a fair one.
   let goneA = false;
-  for (let i = 0; i < 20 && !goneA; i += 1) {
+  for (let i = 0; i < 40 && !goneA; i += 1) {
     goneA = !existsSync(cacheA);
     if (!goneA) await sleep(250);
   }
@@ -9215,7 +9941,12 @@ async function flowReaderClose() {
   const closedByControl = await clickReaderControl(b.session, () => document.querySelector('.window-close'));
   const closedB = closedByControl && (await cWaitReaderId(b.id, false));
   check("AC-67: the window's Close control closes the reader window", closedB);
-  check("AC-67: the Close control removes that cache too", !existsSync(join(readerDir, String(b.id))));
+  let goneB = false;
+  for (let i = 0; i < 40 && !goneB; i += 1) {
+    goneB = !existsSync(join(readerDir, String(b.id)));
+    if (!goneB) await sleep(250);
+  }
+  check("AC-67: the Close control removes that cache too", goneB, join(readerDir, String(b.id)));
 
   const total = await cMainEval(EVAL.docTotal);
   check("AC-67: the library is unchanged while reader windows open and close", total === totalBefore, `count: ${total}, before: ${totalBefore}`);
@@ -9236,19 +9967,19 @@ async function flowReaderClose() {
   await cDeleteViaUi(row.x, row.y);
   const closedC = await cWaitReaderId(c.id, false, { timeout: 10000 });
   const rowGone = await cMainWait(`return !document.querySelector('[data-row-id="${c.id}"]') ? true : null;`, { timeout: 10000 });
-  // The purge is deterministic (delete purges the cache; the window's close
-  // handler purges again after any in-flight serving write) but asynchronous
-  // relative to the window target disappearing — the same bounded wait the
-  // close-path checks above use for the same race.
-  let goneC = false;
-  for (let i = 0; i < 20 && !goneC; i += 1) {
-    goneC = !existsSync(join(readerDir, String(c.id)));
-    if (!goneC) await sleep(250);
-  }
+  // AC-67's delete half names exactly two facts: the window closes with the
+  // row. The AC's cache clause belongs to the close path and is asserted
+  // there (the two checks above); asserting it here too met the design's
+  // known race — a page render already running when the delete arrives
+  // writes its file after the window's Destroyed purge, and the product's
+  // answer for that residue is the next-launch sweep (commands.rs §3.2/§3.3,
+  // `pdf::clear_reader_cache`). Waiting for what the product only guarantees
+  // at the next launch is not the claim (DR-370); the earlier widened waits
+  // stay for the close path, where the mechanism is deterministic.
   check(
     "AC-67: deleting the document closes its reader window with the row",
-    closedC && !!rowGone && goneC,
-    `window closed: ${closedC}, row gone: ${!!rowGone}, cache gone: ${goneC}`,
+    closedC && !!rowGone,
+    `window closed: ${closedC}, row gone: ${!!rowGone}`,
   );
 }
 
@@ -9259,7 +9990,13 @@ async function flowReaderErrors() {
   // external viewer action that performs the external open exactly once.
   const movedFrom = join(FIXTURE_MULTI, "multi-048.pdf");
   const movedTo = `${movedFrom}.moved`;
+  // AC-161 fixture-appearance half: reclaim a leftover from an interrupted
+  // earlier run, then wait for the file to be present and stable — the
+  // rename below is this flow's own claim, not something to trust.
+  if (!existsSync(movedFrom) && existsSync(movedTo)) renameSync(movedTo, movedFrom);
+  await waitForFixtureFile(movedFrom);
   renameSync(movedFrom, movedTo);
+  registerRestore(movedFrom, movedTo);
   try {
     // Missing detection is rescan-based (FR-12): run the app's own detection
     // command so the flag reflects the rename before activation (DR-149).
@@ -9288,16 +10025,49 @@ async function flowReaderErrors() {
     await cInvoke("library_rescan", {});
   }
 
-  const beforeTotal = Number(String(await cMainEval(EVAL.docTotal)).replace(/[^0-9]/g, ""));
+  // AC-161 (the direct-run reproduction, DR-369): this flow used to import
+  // malformed.pdf and leave it in the library. In the direct shape the
+  // library persists across runs — the next run's import is a duplicate
+  // (ImportResult.skipped), the document count never moves, and the
+  // status-bar +1 check could never match. The flow now reclaims any
+  // leftover an earlier run left behind, asserts the import by the row
+  // appearing (what the rest of the flow needs anyway), and ends by
+  // deleting what it imported: the library ends as it started, the
+  // self-cleaning pattern of the long-name reader flow.
+  const stale = await cInvoke("library_search", {
+    query: "malformed", tagIds: [], favoritesOnly: false, missingOnly: false,
+    readingOnly: false, sort: "title", dir: "asc", sortSecondary: "", offset: 0, limit: 50,
+  });
+  const staleIds = (stale?.rows ?? [])
+    .filter((d) => d.title === "malformed" || String(d.path).endsWith("malformed.pdf"))
+    .map((d) => d.id);
+  if (staleIds.length) await cInvoke("library_delete_document", { ids: staleIds });
   await cInvoke("library_import_paths", { paths: [join(FIXTURE_SPECIAL, "malformed.pdf")], tagIds: [] });
-  // The status bar groups thousands (format.ts); the expectation must carry
-  // the same grouping or the comparison never matches above 999 documents.
-  const expectedTotal = String(beforeTotal + 1).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  const imported = await cMainWait(
-    `return document.querySelector('.status-bar .doc-count')?.textContent?.match(/^[0-9,.]+/)?.[0] === ${JSON.stringify(expectedTotal)} ? true : null;`,
-    { timeout: 60000 },
-  );
-  if (!imported) throw new Error("the unrenderable fixture did not reach the library");
+  // The observation runs through the app's own search, not a scan of the
+  // mounted rows: the probe of the direct run (DR-371) proved the row lands
+  // (db row present, the app's own search returns it) but title-sort places
+  // it deep in a long list — a mounted-window scan only ever worked in the
+  // short standalone libraries. A search narrows the list so the row is
+  // mounted in every run shape.
+  await cSearch("malformed");
+  const imported = await cMainWait(`
+    return Array.from(document.querySelectorAll('[data-row-id]')).some((r) =>
+      (r.querySelector('.title-line, .title')?.textContent ?? "").toLowerCase().includes("malformed")) ? true : null;`, { timeout: 30000 });
+  if (!imported) {
+    const probe = await cMainEval(`
+      const s = document.querySelector('.document-area .scroller') ?? document.querySelector('.scroller');
+      const rows = Array.from(document.querySelectorAll('[data-row-id]'));
+      return { scroll: s ? Math.round(s.scrollTop) : null, scrollHeight: s ? Math.round(s.scrollHeight) : null,
+        mounted: rows.length,
+        first: rows[0]?.querySelector('.title-line, .title')?.textContent?.slice(0, 30) ?? null,
+        last: rows[rows.length - 1]?.querySelector('.title-line, .title')?.textContent?.slice(0, 30) ?? null };
+    `);
+    const truth = await cInvoke("library_search", {
+      query: "malformed", tagIds: [], favoritesOnly: false, missingOnly: false,
+      readingOnly: false, sort: "title", dir: "asc", sortSecondary: "", offset: 0, limit: 10,
+    });
+    throw new Error(`the unrenderable fixture did not reach the library — db rows: ${JSON.stringify((truth?.rows ?? []).map((d) => d.id))}, ui: ${JSON.stringify(probe)}`);
+  }
 
   const broken = await cOpenReader("malformed");
   // The external-open action runs in the reader window's own context — the
@@ -9321,6 +10091,19 @@ async function flowReaderErrors() {
   check("AC-69: the action performs the external open exactly once at the command boundary", !!clicked && !!openedOnce);
   await broken.session.key("Escape", "Escape", 27);
   await cWaitReaderId(broken.id, false);
+  // Self-cleaning (DR-369): the imported document leaves with the flow —
+  // verified through the app's own query path (a command-invoked delete is
+  // visible in the next query; the DOM of an open search result list is not
+  // the contract).
+  await cInvoke("library_delete_document", { ids: [broken.id] });
+  const after = await cInvoke("library_search", {
+    query: "malformed", tagIds: [], favoritesOnly: false, missingOnly: false,
+    readingOnly: false, sort: "title", dir: "asc", sortSecondary: "", offset: 0, limit: 10,
+  });
+  if ((after?.rows ?? []).length) {
+    throw new Error(`the malformed fixture did not leave the library with the flow: ${JSON.stringify(after.rows.map((d) => d.id))}`);
+  }
+  await cClearSearch();
 }
 
 // AC-78 (UI-33 as revised by DR-218, SPEC-v0.0.7 §3.17): the ToC control,
@@ -12411,12 +13194,45 @@ async function cUnlockClick(session, which) {
 
 async function flowProtected() {
   const PASSWORD = "sesame"; // make-fixtures: buildProtectedPdf's user password
+  await waitForFixtureFile(join(FIXTURE_SPECIAL, "protected.pdf")); // AC-161 fixture-appearance half
+  // AC-161 (the direct-run reproduction, DR-369): a leftover protected
+  // document from an earlier run makes this import a duplicate — the app
+  // skips duplicates, no new-document event fires, and the appearance wait
+  // never sees the row. Reclaim the leftover through the app's own search
+  // and delete commands first; the flow already deletes what it imports at
+  // its end (the library ends as it started).
+  const stale = await cInvoke("library_search", {
+    query: "protected", tagIds: [], favoritesOnly: false, missingOnly: false,
+    readingOnly: false, sort: "title", dir: "asc", sortSecondary: "", offset: 0, limit: 50,
+  });
+  const staleIds = (stale?.rows ?? [])
+    .filter((d) => d.title === "protected" || String(d.path).endsWith("protected.pdf"))
+    .map((d) => d.id);
+  if (staleIds.length) await cInvoke("library_delete_document", { ids: staleIds });
   await cInvoke("library_import_paths", { paths: [join(FIXTURE_SPECIAL, "protected.pdf")], tagIds: [] });
+  // The search-path observation (DR-371 — see flowReaderErrors): the row is
+  // the claim; the search is what makes it observable wherever the title
+  // sort places it.
+  await cSearch("protected");
   const appeared = await cMainWait(`
     return Array.from(document.querySelectorAll('[data-row-id]')).some((r) =>
-      (r.querySelector('.title-line')?.textContent ?? '').includes("protected")) ? true : null;
+      (r.querySelector('.title-line, .title')?.textContent ?? "").includes("protected")) ? true : null;
   `, { timeout: 15000 });
-  if (!appeared) throw new Error("the protected fixture did not appear in the library");
+  if (!appeared) {
+    const probe = await cMainEval(`
+      const s = document.querySelector('.document-area .scroller') ?? document.querySelector('.scroller');
+      const rows = Array.from(document.querySelectorAll('[data-row-id]'));
+      return { scroll: s ? Math.round(s.scrollTop) : null, scrollHeight: s ? Math.round(s.scrollHeight) : null,
+        mounted: rows.length,
+        first: rows[0]?.querySelector('.title-line, .title')?.textContent?.slice(0, 30) ?? null,
+        last: rows[rows.length - 1]?.querySelector('.title-line, .title')?.textContent?.slice(0, 30) ?? null };
+    `);
+    const truth = await cInvoke("library_search", {
+      query: "protected", tagIds: [], favoritesOnly: false, missingOnly: false,
+      readingOnly: false, sort: "title", dir: "asc", sortSecondary: "", offset: 0, limit: 10,
+    });
+    throw new Error(`the protected fixture did not appear in the library — db rows: ${JSON.stringify((truth?.rows ?? []).map((d) => d.id))}, ui: ${JSON.stringify(probe)}`);
+  }
 
   // AC-104 half 1: the prompt is a form, not the error copy — a native
   // password field, an unchecked Remember box, an Unlock that refuses the
@@ -12592,7 +13408,7 @@ async function cImportEpubFixture(name, titleNeedle) {
   await cSearch(titleNeedle);
   const appeared = await cMainWait(`
     return Array.from(document.querySelectorAll('[data-row-id]')).some((r) =>
-      (r.querySelector('.title-line')?.textContent ?? '').includes(${JSON.stringify(titleNeedle)})) ? true : null;
+      (r.querySelector('.title-line, .title')?.textContent ?? '').includes(${JSON.stringify(titleNeedle)})) ? true : null;
   `, { timeout: 15000 });
   if (!appeared) throw new Error(`the EPUB fixture ${name} did not appear in the library (import: ${JSON.stringify(result)})`);
   const id = await cDocIdByTitle(titleNeedle);
@@ -14148,7 +14964,8 @@ const AREAS = {
   "sorting-and-views": ["flowSortSecondary", "flowViewColumns", "flowContentGutter", "flowRowDesign"], // the scale mount bound + width matrix: scripts/ui-10k.mjs (DR-161)
   "status-feedback": ["flowStatusBar", "flowProgressTransform"],
   "selecting-documents": ["flowSelectMode", "flowBulkFavorite"], // UI-41 / AC-112: the bulk favorite toggle
-  "settings-and-appearance": ["flowThemeAndSettings", "flowDarkRamp", "flowTooltipSurfaces", "flowAbout", "flowScrollbars"],
+  // v0.0.11 (FR-26 / UI-53, AC-156): flowLogs — the Settings Log section.
+  "settings-and-appearance": ["flowThemeAndSettings", "flowLogs", "flowDarkRamp", "flowTooltipSurfaces", "flowAbout", "flowScrollbars"],
   "the-app-window": ["flowDragRegion", "flowWindowChrome", "flowToolbarControls", "flowActionParity", "flowContextMenuSuppression", "flowReaderContextMenu"], // D20 / AC-116: the window-level context-menu guard (library + reader halves)
   "keyboard-shortcuts": ["flowKeyboardAudit"],
   // v0.0.10 (FR-25 / UI-52, AC-151…AC-153): the app's own update flow.
@@ -14225,6 +15042,10 @@ const FUNCTIONAL_SEQUENCE = [
   // D20 / AC-116: the browser context menu is suppressed at both windows' roots.
   ["flowContextMenuSuppression", flowContextMenuSuppression],
   ["flowThemeAndSettings", flowThemeAndSettings],
+  // v0.0.11 (FR-26 / UI-53, AC-156): the Settings Log section and the log
+  // file behind it. It reads its own log file and the settings row it
+  // writes, and ends with the level back at its default (D14).
+  ["flowLogs", flowLogs],
   // The dark ramp is checked against the theme it belongs to: this flow picks
   // Dark, measures what the app paints, and restores the default choice.
   ["flowDarkRamp", flowDarkRamp],

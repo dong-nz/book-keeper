@@ -34,7 +34,10 @@
 // barrier, not an early start, is what makes the machine quiet; running it
 // before the measured phase left its cover-queue disk flushing bleeding into
 // the first reader lane: AC-72 activation flaked at 917 ms against 800),
-// then the flood of the rest (cap SMOKE_VERIFY_LANES, default 10).
+// then the flood of the rest (cap SMOKE_VERIFY_LANES, default 6 — lowered
+// from 10 at DR-365: 10 concurrent WebView2 apps stall a renderer past the
+// driver's 600 s ceiling on the development machine (the flowSortSecondary
+// Phase C mechanism, recurring) and CI runners are smaller than this one).
 // The absolute thresholds are unchanged; the phases give the measured claims
 // isolation.
 //
@@ -61,6 +64,8 @@
 //                    never changes the exit code: the exit code is the
 //                    scheduler gate alone.
 // Exit code: 0 all lanes pass within the combined budget, 1 otherwise.
+// With SMOKE_VERIFY_WALL_GATE=0 (DR-357) the budget is measured and reported
+// but the verdict follows the lanes' check results only (the CI lane job).
 
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -71,8 +76,14 @@ import { fileURLToPath } from "node:url";
 import { FUNCTIONAL_FLOW_NAMES, READER_FLOW_NAMES } from "./ui-smoke.mjs";
 
 const NFR06_BUDGET_MS = 300_000; // the same budget the lanes assert (AC-58)
+// SMOKE_VERIFY_WALL_GATE=0 (SPEC-v0.0.11 DR-357): the wall budget is measured
+// and reported but does not gate the verdict — the lanes' check results do.
+// The CI lane job uses it (the AC-58 gate is a local verification contract,
+// §3.4; the measured wall is D29's data source, AC-158). Unset, the gate is
+// on and the local Phase-C behavior is unchanged.
+const WALL_GATE = process.env.SMOKE_VERIFY_WALL_GATE !== "0";
 const LANE_GUARD_MS = 900_000; // hard ceiling per lane process (a build is inside it)
-const MAX_LANES = Math.max(1, Math.min(16, Number(process.env.SMOKE_VERIFY_LANES ?? 10)));
+const MAX_LANES = Math.max(1, Math.min(16, Number(process.env.SMOKE_VERIFY_LANES ?? 6)));
 // Measured claims are defined against single-instance conditions, so the
 // measure phase runs its lanes one at a time (cap SMOKE_VERIFY_MEASURE_LANES,
 // default 1). Measured 2026-11-07: with cap 4 four concurrent CDP reader
@@ -355,9 +366,16 @@ async function main() {
     for (const name of r.failedNames) console.log(`[verify]   FAILED: ${name}`);
   }
   console.log(`[verify] checks: ${passed}/${judged} passed, ${skipped} skipped (harness-limited)`);
-  console.log(`[verify] combined wall time ${combinedMs} ms (budget ${NFR06_BUDGET_MS} ms)`);
-  const ok = failedLanes.length === 0 && neverStarted.length === 0 && combinedMs <= NFR06_BUDGET_MS;
-  console.log(ok ? "[verify] PASS — every lane green within the combined budget" : "[verify] FAIL");
+  console.log(`[verify] combined wall time ${combinedMs} ms (budget ${NFR06_BUDGET_MS} ms${WALL_GATE ? "" : ", gate off — measured only"})`);
+  const checksGreen = failedLanes.length === 0 && neverStarted.length === 0;
+  const ok = checksGreen && (!WALL_GATE || combinedMs <= NFR06_BUDGET_MS);
+  if (ok) {
+    console.log(WALL_GATE || combinedMs <= NFR06_BUDGET_MS
+      ? "[verify] PASS — every lane green within the combined budget"
+      : "[verify] PASS — every lane green; wall over budget (gate off, measured)");
+  } else {
+    console.log("[verify] FAIL");
+  }
   if (REPORT_PATH) {
     // A write failure never changes the exit code (DR-167): the exit code is
     // the scheduler gate alone.

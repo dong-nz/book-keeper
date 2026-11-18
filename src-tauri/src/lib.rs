@@ -2,6 +2,7 @@
 //! command router. All product logic lives in the service modules (RULES
 //! R1.1); this file only composes them.
 
+pub mod applog;
 pub mod commands;
 pub mod covers;
 pub mod data_dir;
@@ -81,11 +82,19 @@ pub struct Db {
 }
 
 impl Db {
+    /// Shared command-boundary entry (RULES R1.2): the same lock discipline
+    /// as `with_raw`, and the single choke point where every service error
+    /// is logged with its command name (FR-26 §3.2, M5, DR-354) before it
+    /// converts to the payload.
     pub fn with<T>(
         &self,
+        cmd: &'static str,
         work: impl FnOnce(&mut Connection) -> Result<T, crate::error::AppError>,
     ) -> Result<T, AppErrorPayload> {
-        self.with_raw(work).map_err(|error| error.payload())
+        self.with_raw(work).map_err(|error| {
+            crate::applog::command_error(cmd, &error);
+            error.payload()
+        })
     }
 
     /// The service-side entry (DR-233): the same lock discipline as `with`
@@ -196,6 +205,17 @@ fn startup(app: &AppHandle) {
     let db = app.state::<Db>();
     let covers = app.state::<Covers>();
     let sink = TauriSink::new(app.clone());
+    // FR-26 (M6): the log level is read from the settings store once here;
+    // after this the cached flag only moves on the settings-write path.
+    // The default (no row) is `error` — the released settings default
+    // pattern. The startup line is the first Info record of the session.
+    let _ = db.with_startup(|conn| {
+        if let Some(level) = db::get_setting(conn, "log_level")? {
+            crate::applog::set_level(&level)?;
+        }
+        Ok(())
+    });
+    crate::applog::info("lifecycle", "startup");
     db.ui_gate.wait(Duration::from_secs(10));
     let _ = db.with_startup(|conn| {
         let counts = library::service::get_counts(conn)?;
@@ -287,6 +307,13 @@ pub fn run() {
                 std::env::var(data_dir::ENV_VAR).ok().as_deref(),
             )?;
             app.manage(data_dir::DataDir(data_dir.clone()));
+            // FR-26: the log lives under the same decided directory
+            // (DR-162) — `<data_dir>/logs/app.log`, harness override
+            // included — and the updater bridge goes up before anything can
+            // fail (DR-352). A startup failure that happens after this is
+            // itself a logged line.
+            applog::init(&data_dir);
+            applog::install_log_bridge();
             std::fs::create_dir_all(&data_dir)?;
             let covers_dir = data_dir.join("covers");
             std::fs::create_dir_all(&covers_dir)?;
@@ -295,8 +322,15 @@ pub fn run() {
             let reader_dir = data_dir.join("reader");
             pdf::clear_reader_cache(&reader_dir);
 
+            let conn = match db::open(&data_dir) {
+                Ok(conn) => conn,
+                Err(error) => {
+                    applog::error("startup", &format!("database open failed: {error}"));
+                    return Err(error.into());
+                }
+            };
             app.manage(Db {
-                conn: Mutex::new(db::open(&data_dir)?),
+                conn: Mutex::new(conn),
                 ui_gate: UiGate::default(),
             });
             let sink: Arc<dyn EventSink> = Arc::new(TauriSink::new(app.handle().clone()));
@@ -349,10 +383,29 @@ pub fn run() {
             commands::app_open_containing_folder,
             commands::app_about,
             commands::app_data_dir,
-            commands::app_open_data_dir
+            commands::app_open_data_dir,
+            commands::log_level_set,
+            commands::log_path,
+            commands::log_open
         ])
-        .run(tauri::generate_context!())
-        .expect("PDF Keeper failed to start");
+        .on_window_event(|window, event| {
+            // FR-26 Info lifecycle (OQ-67 answer A): the reader windows the
+            // app itself opens and closes. The main window's lifecycle is
+            // the startup/exit pair, not per-window lines.
+            if let tauri::WindowEvent::Destroyed = event {
+                let label = window.label();
+                if label.starts_with("reader-") {
+                    applog::info("lifecycle", &format!("reader window closed: {label}"));
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("PDF Keeper failed to start")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                applog::info("lifecycle", "exit");
+            }
+        });
 }
 
 #[cfg(test)]
@@ -396,7 +449,7 @@ mod tests {
             !*db.ui_gate.reached.lock().expect("fresh gate"),
             "the startup path must not fake UI presence"
         );
-        let _ = db.with(|conn| {
+        let _ = db.with("test_command", |conn| {
             conn.execute("SELECT 1", [])?;
             Ok(())
         });

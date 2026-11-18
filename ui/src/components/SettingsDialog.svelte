@@ -21,6 +21,7 @@
   import { t, type MsgKey } from "$lib/i18n";
   import type { IconName } from "./icons";
   import type { Theme, ViewMode } from "$lib/types";
+  import type { LogLevel } from "$lib/state/settings.svelte";
   import * as api from "../api";
   import { asAppError } from "$lib/types";
 
@@ -30,6 +31,13 @@
     { value: "system", labelKey: "theme.auto", icon: "auto" },
     { value: "light", labelKey: "theme.light", icon: "sun" },
     { value: "dark", labelKey: "theme.dark", icon: "moon" },
+  ];
+
+  // UI-53 (AC-156): the level selector's two values — the exact §3.2
+  // grammar, no icons (the record-level distinction is words by design).
+  const LEVELS: { value: LogLevel; labelKey: MsgKey }[] = [
+    { value: "error", labelKey: "settings.logLevel.error" },
+    { value: "info", labelKey: "settings.logLevel.info" },
   ];
 
   const MODES: { value: ViewMode; labelKey: MsgKey; icon: IconName }[] = [
@@ -44,6 +52,10 @@
   // OS file-manager open through `app_open_data_dir` (UI-21 MODIFIED,
   // DR-191) — a Rust-side call, the frontend never opens OS paths itself.
   let dataDir = $state<string | null>(null);
+  // UI-53 (FR-26): the log file path, fetched the same way — the `log_path`
+  // command reads the same handle the writer owns, so the row and the open
+  // action can never disagree (R1.4).
+  let logPath = $state<string | null>(null);
 
   $effect(() => {
     void api
@@ -52,10 +64,22 @@
       .catch(() => {
         /* no answer: the row stays empty, the dialog is still readable */
       });
+    void api
+      .logPath()
+      .then((value) => (logPath = value))
+      .catch(() => {
+        /* same pattern: an unreachable path row does not break the dialog */
+      });
   });
 
   function openDataLocation(): void {
     void api.appOpenDataDir().catch((error: unknown) => {
+      feedback.reportError(asAppError(error));
+    });
+  }
+
+  function openLogFile(): void {
+    void api.logOpen().catch((error: unknown) => {
       feedback.reportError(asAppError(error));
     });
   }
@@ -181,6 +205,52 @@
       </Tooltip>
     </div>
   </section>
+
+  <section class="settings-section">
+    <h3 class="section-title">{t("settings.log")}</h3>
+
+    <div class="setting-row">
+      <span class="setting-label">{t("settings.logLevel")}</span>
+      <!-- UI-53 (FR-26): the level selector on the theme row's grammar;
+           the write goes through `log_level_set` and the effect is live in
+           every window through the settings broadcast (AC-156). -->
+      <div class="setting-control" role="radiogroup" aria-label={t("settings.logLevel")}>
+        {#each LEVELS as option (option.value)}
+          <button
+            class="control"
+            type="button"
+            role="radio"
+            aria-checked={settings.logLevel === option.value}
+            data-active={settings.logLevel === option.value || undefined}
+            onclick={() => settings.setLogLevel(option.value)}
+          >
+            <span>{t(option.labelKey)}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+
+    <div class="location-row">
+      <!-- The log file the app itself writes to (FR-26): read-only,
+           monospace, selectable like every other path the app shows. The
+           row's one action: open it through `log_open` — a Rust-side call,
+           the frontend never opens OS paths itself (DR-191 shape). -->
+      <span class="location log-path">{logPath ?? ""}</span>
+      <Tooltip text={t("settings.openLog")}>
+        {#snippet control({ props })}
+          <button
+            {...props}
+            class="control icon-button"
+            type="button"
+            aria-label={t("settings.openLog")}
+            onclick={openLogFile}
+          >
+            <Icon name="file" />
+          </button>
+        {/snippet}
+      </Tooltip>
+    </div>
+  </section>
 </Modal>
 
 <style>
@@ -258,5 +328,12 @@
     font-size: var(--text-13);
     color: var(--text-primary);
     overflow-wrap: anywhere;
+  }
+
+  /* UI-53 (FR-26): the log file path is the spec's monospace row — the
+     Details modal's path-row grammar (`--font-mono`), selectable like the
+     data-location row above. */
+  .log-path {
+    font-family: var(--font-mono);
   }
 </style>

@@ -65,6 +65,10 @@ const PHYSICAL_FILE: Record<string, string> = {
   "renameDialog.nameLabel": "File name",
   "renameDialog.errorInvalid": "This name can't be used as a file name",
   "renameDialog.errorConflict": "A file with this name already exists in that folder",
+  // FR-26 / UI-53 (v0.0.11): the Settings *Log* section's subject is the
+  // app's own log file — a physical file, never a library entry; it joins
+  // the physical set with the same reasoning as the rename rows.
+  "settings.openLog": "Open log file",
 };
 
 describe("document terminology (DR-211, AC-95)", () => {

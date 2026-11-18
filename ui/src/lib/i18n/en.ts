@@ -86,6 +86,13 @@ const en = {
   // section with an open action.
   "settings.dataLocation": "Data location",
   "settings.openLocation": "Open location",
+  // v0.0.11 (FR-26 / UI-53): the Settings *Log* section — level selector,
+  // the log file path, and the open action.
+  "settings.log": "Log",
+  "settings.logLevel": "Logging level",
+  "settings.logLevel.error": "Error",
+  "settings.logLevel.info": "Info",
+  "settings.openLog": "Open log file",
   "theme.auto": "Auto",
   "theme.light": "Light",
   "theme.dark": "Dark",

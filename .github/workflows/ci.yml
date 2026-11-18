@@ -1,0 +1,144 @@
+# NFR-10 (SPEC-v0.0.11 §3.4): the CI verification pipeline. Every push and
+# every pull request runs the verification layers on the three-OS matrix; any
+# red layer is a red pipeline (AC-157). The lane runner (scripts/ui-verify.mjs)
+# runs on the Windows job only (OQ-64 A — the harness is Windows-shaped).
+# Per-job and combined wall times are reported in the run summary (AC-158,
+# D29's data source); the CI lane job measures the wall against the 300 s
+# budget but does not gate on it — the gate is the local contract (DR-357).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false # every layer reports its own verdict; one red OS does not hide the others
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAURI_DRIVER_VERSION: "2.1.0" # toolchain for the lane runner (AGENTS §2), not a product dependency
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Wall clock — start (AC-158)
+        id: clock
+        run: echo "start=$(date +%s)" >>"$GITHUB_OUTPUT"
+
+      - name: Install Linux build dependencies (Tauri)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 12.4.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Set up Rust toolchain (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-${{ matrix.os }}
+
+      - name: Fetch the Pdfium library (DR-50c — src-tauri/binaries is generated, never committed)
+        run: node scripts/fetch-pdfium.mjs
+
+      # The lane runner starts `~/.cargo/bin/tauri-driver.exe` by path
+      # (ui-smoke.mjs `CARGO_BIN`); the toolchain prerequisite, Windows only.
+      - name: Install tauri-driver (lane runner prerequisite, not a product dependency)
+        if: matrix.os == 'windows-latest'
+        run: cargo install tauri-driver --version "${TAURI_DRIVER_VERSION}" --locked
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: pnpm install --frozen-lockfile
+
+      # The layers of AC-157, in the order RULES workflow 3 builds them.
+      - name: Rust tests — cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Rust lint — cargo clippy -D warnings
+        working-directory: src-tauri
+        run: cargo clippy -- -D warnings
+
+      - name: Frontend unit tests — vitest
+        working-directory: ui
+        run: pnpm test
+
+      - name: Frontend types — svelte-check
+        working-directory: ui
+        run: pnpm run check
+
+      # The lane runner (OQ-64 A: Windows only). SMOKE_VERIFY_WALL_GATE=0 per
+      # DR-357: the combined wall is measured and published (AC-158), the
+      # verdict follows the lanes' check results. The runner owns its build
+      # (D15) and its fixtures (R6.2) — nothing else to prepare.
+      - name: UI lane runner — scripts/ui-verify.mjs
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 45
+        env:
+          SMOKE_VERIFY_WALL_GATE: "0"
+        run: |
+          node scripts/ui-verify.mjs --report tmp/test-reports/ci-verify.md | tee tmp/test-reports/ci-verify.log
+          echo '## Lane runner summary (AC-158)' >>"$GITHUB_STEP_SUMMARY"
+          grep -E '^\[verify\]' tmp/test-reports/ci-verify.log >>"$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload the lane report
+        if: matrix.os == 'windows-latest' && always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verify-report-${{ matrix.os }}
+          path: tmp/test-reports/
+          if-no-files-found: ignore
+
+      - name: Wall clock — job summary (AC-158)
+        if: always()
+        run: |
+          wall=$(( $(date +%s) - ${{ steps.clock.outputs.start }} ))
+          echo "## Job wall time — ${{ matrix.os }}" >>"$GITHUB_STEP_SUMMARY"
+          echo "- Job: ${{ github.job }} (${{ matrix.os }})" >>"$GITHUB_STEP_SUMMARY"
+          echo "- Wall: ${wall} s" >>"$GITHUB_STEP_SUMMARY"
+          echo "- Commit: ${GITHUB_SHA}" >>"$GITHUB_STEP_SUMMARY"
+
+  # The combined view (AC-158): every job's wall time and the run's combined
+  # span, read from the run's own job records. Runs even when a job is red —
+  # the measurement is D29's data source regardless of the verdict.
+  summary:
+    needs: verify
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Combined wall-time report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate \
+            | python3 scripts/ci-summary.py >>"$GITHUB_STEP_SUMMARY"

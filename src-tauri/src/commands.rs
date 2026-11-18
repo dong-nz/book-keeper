@@ -4,6 +4,7 @@
 
 use tauri::{AppHandle, Manager, State};
 
+use crate::applog;
 use crate::error::{AppError, AppErrorPayload};
 use crate::epubsrv;
 use crate::library::query::{self, Query};
@@ -15,9 +16,29 @@ use crate::pdf;
 use crate::pdfmeta;
 use crate::{Covers, Db, Reader, TauriSink};
 
+/// The non-DB half of the command-boundary hook (FR-26 §3.2, M5, DR-354):
+/// service calls that do not run through `Db::with` (the import/rescan
+/// pipelines, opener calls, window plumbing) log their errors here with the
+/// command name before the payload conversion — the same single format as
+/// the DB path.
+fn boundary<T>(cmd: &'static str, result: Result<T, AppError>) -> Result<T, AppErrorPayload> {
+    result.map_err(|error| {
+        applog::command_error(cmd, &error);
+        error.payload()
+    })
+}
+
+/// A hand-built boundary error (validation or an internal fault) logged
+/// through the same format.
+fn fail<T>(cmd: &'static str, error: AppError) -> Result<T, AppErrorPayload> {
+    applog::command_error(cmd, &error);
+    Err(error.payload())
+}
+
 /// Run a service call on a blocking thread with the app's shared state.
 async fn background<T: Send + 'static>(
     app: AppHandle,
+    cmd: &'static str,
     work: impl FnOnce(&Db, &Covers, &TauriSink) -> Result<T, AppErrorPayload> + Send + 'static,
 ) -> Result<T, AppErrorPayload> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -28,7 +49,9 @@ async fn background<T: Send + 'static>(
     })
     .await
     .map_err(|join_error| {
-        AppError::Internal(format!("background job failed: {join_error}")).payload()
+        let error = AppError::Internal(format!("background job failed: {join_error}"));
+        applog::command_error(cmd, &error);
+        error.payload()
     })
     // The service call's own payload passes through unchanged.
     .and_then(std::convert::identity)
@@ -69,11 +92,13 @@ pub async fn library_import_paths(
     paths: Vec<String>,
     tag_ids: Vec<i64>,
 ) -> Result<ImportResult, AppErrorPayload> {
-    background(app, move |db, covers, sink| {
+    background(app, "library_import_paths", move |db, covers, sink| {
         // DR-233: no outer lock hold — the pipeline acquires the connection
         // itself, per short transaction.
-        service::import_paths(db, sink, &covers.0, &paths, &tag_ids)
-            .map_err(|error| error.payload())
+        boundary(
+            "library_import_paths",
+            service::import_paths(db, sink, &covers.0, &paths, &tag_ids),
+        )
     })
     .await
 }
@@ -84,9 +109,11 @@ pub async fn library_import_folder(
     dir: String,
     tag_ids: Vec<i64>,
 ) -> Result<ImportResult, AppErrorPayload> {
-    background(app, move |db, covers, sink| {
-        service::import_folder(db, sink, &covers.0, &dir, &tag_ids)
-            .map_err(|error| error.payload())
+    background(app, "library_import_folder", move |db, covers, sink| {
+        boundary(
+            "library_import_folder",
+            service::import_folder(db, sink, &covers.0, &dir, &tag_ids),
+        )
     })
     .await
 }
@@ -124,7 +151,9 @@ pub fn library_search(
         sort_secondary,
     );
     let covers_dir = app.state::<Covers>().0.dir.clone();
-    db.with(move |conn| service::search_document(conn, &covers_dir, &query, offset, limit))
+    db.with("library_search", move |conn| {
+        service::search_document(conn, &covers_dir, &query, offset, limit)
+    })
 }
 
 // Same wire-contract rationale as `library_search` above.
@@ -151,7 +180,7 @@ pub fn library_ids(
         dir,
         sort_secondary,
     );
-    db.with(move |conn| query::ids(conn, &query))
+    db.with("library_ids", move |conn| query::ids(conn, &query))
 }
 
 // --------------------------------------------------------------- documents
@@ -163,7 +192,9 @@ pub fn library_get_document(
     id: i64,
 ) -> Result<DocumentDto, AppErrorPayload> {
     let covers_dir = app.state::<Covers>().0.dir.clone();
-    db.with(move |conn| service::get_document(conn, &covers_dir, id))
+    db.with("library_get_document", move |conn| {
+        service::get_document(conn, &covers_dir, id)
+    })
 }
 
 // Same wire-contract rationale as `library_search`.
@@ -181,7 +212,7 @@ pub fn library_update_document(
 ) -> Result<DocumentDto, AppErrorPayload> {
     let covers_dir = app.state::<Covers>().0.dir.clone();
     let sink = TauriSink::new(app);
-    db.with(move |conn| {
+    db.with("library_update_document", move |conn| {
         service::update_document(
             conn,
             &sink,
@@ -205,7 +236,7 @@ pub fn library_set_document_tags(
     document_id: i64,
     tag_ids: Vec<i64>,
 ) -> Result<(), AppErrorPayload> {
-    db.with(|conn| {
+    db.with("library_set_document_tags", |conn| {
         service::set_document_tags(conn, &TauriSink::new(app.clone()), document_id, &tag_ids)
     })
 }
@@ -219,7 +250,9 @@ pub fn library_set_favorite(
 ) -> Result<DocumentDto, AppErrorPayload> {
     let covers_dir = app.state::<Covers>().0.dir.clone();
     let sink = TauriSink::new(app);
-    db.with(move |conn| service::set_favorite(conn, &sink, &covers_dir, id, value))
+    db.with("library_set_favorite", move |conn| {
+        service::set_favorite(conn, &sink, &covers_dir, id, value)
+    })
 }
 
 /// FR-19 (AC-121/AC-102): the Reading membership toggle, single ids and
@@ -234,7 +267,9 @@ pub fn library_set_reading(
 ) -> Result<Vec<DocumentDto>, AppErrorPayload> {
     let covers_dir = app.state::<Covers>().0.dir.clone();
     let sink = TauriSink::new(app);
-    db.with(move |conn| service::set_reading(conn, &sink, &covers_dir, &ids, on))
+    db.with("library_set_reading", move |conn| {
+        service::set_reading(conn, &sink, &covers_dir, &ids, on)
+    })
 }
 
 /// FR-20 (AC-105): store or clear a document's password — the reader's
@@ -248,7 +283,7 @@ pub fn library_set_password(
     password: String,
 ) -> Result<(), AppErrorPayload> {
     let covers = app.state::<Covers>();
-    db.with(|conn| {
+    db.with("library_set_password", |conn| {
         service::set_password(conn, &TauriSink::new(app.clone()), &covers.0, id, &password)
     })
 }
@@ -261,7 +296,7 @@ pub fn library_bulk_tags(
     add: Vec<i64>,
     remove: Vec<i64>,
 ) -> Result<(), AppErrorPayload> {
-    db.with(|conn| {
+    db.with("library_bulk_tags", |conn| {
         service::bulk_tags(
             conn,
             &TauriSink::new(app.clone()),
@@ -293,8 +328,10 @@ fn close_reader_windows(app: &AppHandle, ids: &[i64]) {
 pub async fn library_delete_document(app: AppHandle, ids: Vec<i64>) -> Result<(), AppErrorPayload> {
     let reader_dir = app.state::<Reader>().dir.clone();
     let (window_app, window_ids) = (app.clone(), ids.clone());
-    let result = background(app, move |db, covers, sink| {
-        db.with(|conn| service::delete_documents(conn, sink, &covers.0, &ids, false, &reader_dir))
+    let result = background(app, "library_delete_document", move |db, covers, sink| {
+        db.with("library_delete_document", |conn| {
+            service::delete_documents(conn, sink, &covers.0, &ids, false, &reader_dir)
+        })
     })
     .await;
     if result.is_ok() {
@@ -310,8 +347,10 @@ pub async fn library_delete_document_and_file(
 ) -> Result<(), AppErrorPayload> {
     let reader_dir = app.state::<Reader>().dir.clone();
     let (window_app, window_ids) = (app.clone(), ids.clone());
-    let result = background(app, move |db, covers, sink| {
-        db.with(|conn| service::delete_documents(conn, sink, &covers.0, &ids, true, &reader_dir))
+    let result = background(app, "library_delete_document_and_file", move |db, covers, sink| {
+        db.with("library_delete_document_and_file", |conn| {
+            service::delete_documents(conn, sink, &covers.0, &ids, true, &reader_dir)
+        })
     })
     .await;
     if result.is_ok() {
@@ -330,7 +369,7 @@ pub fn library_relink_document(
     new_path: String,
 ) -> Result<DocumentDto, AppErrorPayload> {
     let covers = app.state::<Covers>();
-    db.with(|conn| {
+    db.with("library_relink_document", |conn| {
         service::relink_document(conn, &TauriSink::new(app.clone()), &covers.0, id, &new_path)
     })
 }
@@ -349,7 +388,7 @@ pub fn app_rename_document(
     new_name: String,
 ) -> Result<DocumentDto, AppErrorPayload> {
     let covers = app.state::<Covers>();
-    db.with(|conn| {
+    db.with("app_rename_document", |conn| {
         service::rename_document(
             conn,
             &TauriSink::new(app.clone()),
@@ -364,8 +403,8 @@ pub fn app_rename_document(
 
 #[tauri::command]
 pub async fn library_rescan(app: AppHandle) -> Result<RescanResult, AppErrorPayload> {
-    background(app, |db, covers, sink| {
-        service::rescan(db, sink, &covers.0, false).map_err(|error| error.payload())
+    background(app, "library_rescan", |db, covers, sink| {
+        boundary("library_rescan", service::rescan(db, sink, &covers.0, false))
     })
     .await
 }
@@ -374,29 +413,29 @@ pub async fn library_rescan(app: AppHandle) -> Result<RescanResult, AppErrorPayl
 
 #[tauri::command]
 pub fn tags_list(db: State<'_, Db>) -> Result<Vec<TagDto>, AppErrorPayload> {
-    db.with(|conn| service::tags_list(conn))
+    db.with("tags_list", |conn| service::tags_list(conn))
 }
 
 #[tauri::command]
 pub fn tags_create(db: State<'_, Db>, name: String) -> Result<TagDto, AppErrorPayload> {
-    db.with(|conn| service::tags_create(conn, &name))
+    db.with("tags_create", move |conn| service::tags_create(conn, &name))
 }
 
 #[tauri::command]
 pub fn tags_rename(db: State<'_, Db>, id: i64, name: String) -> Result<TagDto, AppErrorPayload> {
-    db.with(|conn| service::tags_rename(conn, id, &name))
+    db.with("tags_rename", move |conn| service::tags_rename(conn, id, &name))
 }
 
 #[tauri::command]
 pub fn tags_delete(db: State<'_, Db>, id: i64) -> Result<(), AppErrorPayload> {
-    db.with(|conn| service::tags_delete(conn, id))
+    db.with("tags_delete", |conn| service::tags_delete(conn, id))
 }
 
 // -------------------------------------------------------------------- app
 
 #[tauri::command]
 pub fn app_get_settings(db: State<'_, Db>) -> Result<SettingsDto, AppErrorPayload> {
-    db.with(|conn| service::get_settings(conn))
+    db.with("app_get_settings", |conn| service::get_settings(conn))
 }
 
 #[tauri::command]
@@ -409,22 +448,30 @@ pub fn app_set_setting(
     // every window's settings store re-applies from that event.
     let db = app.state::<Db>();
     let sink = TauriSink::new(app.clone());
-    db.with(|conn| service::set_setting(conn, &sink, &key, &value))
+    let result = db.with("app_set_setting", |conn| {
+        service::set_setting(conn, &sink, &key, &value)
+    });
+    // FR-26 (M6): the log level is a settings key like any other, and the
+    // settings-write path is where the cached flag moves.
+    if result.is_ok() && key == "log_level" {
+        let _ = applog::set_level(&value);
+    }
+    result
 }
 
 #[tauri::command]
 pub fn app_open_document(app: AppHandle, id: i64) -> Result<(), AppErrorPayload> {
     let path = {
         let db = app.state::<Db>();
-        db.with(|conn| service::open_target(conn, id))?.path
+        db.with("app_open_document", |conn| service::open_target(conn, id))?.path
     };
-    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| {
-        AppError::Io {
+    boundary(
+        "app_open_document",
+        tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| AppError::Io {
             path,
             message: error.to_string(),
-        }
-        .payload()
-    })
+        }),
+    )
 }
 
 // -------------------------------------------------------------------- reader
@@ -456,14 +503,17 @@ pub async fn app_open_reader_window(
 ) -> Result<OpenedReaderDto, AppErrorPayload> {
     let target = {
         let db = app.state::<Db>();
-        db.with(|conn| service::open_target(conn, id))?
+        db.with("app_open_reader_window", |conn| service::open_target(conn, id))?
     };
     let label = format!("reader-{id}");
     if let Some(existing) = app.get_webview_window(&label) {
-        existing.set_focus().map_err(|error| {
-            AppError::Internal(format!("focus reader window: {error}")).payload()
-        })?;
-        return Ok(OpenedReaderDto { opened: "focused" });
+        return boundary(
+            "app_open_reader_window",
+            existing
+                .set_focus()
+                .map_err(|error| AppError::Internal(format!("focus reader window: {error}"))),
+        )
+        .map(|()| OpenedReaderDto { opened: "focused" });
     }
     let reader_dir = app.state::<Reader>().dir.clone();
     // DR-303 item 1 (SPEC-v0.0.9 §3.5): the type branch happens here, on the
@@ -499,8 +549,9 @@ pub async fn app_open_reader_window(
                     return Ok(OpenedReaderDto { opened: "focused" });
                 }
                 None => {
-                    return Err(
-                        AppError::Internal(format!("create reader window: {error}")).payload()
+                    return fail(
+                        "app_open_reader_window",
+                        AppError::Internal(format!("create reader window: {error}")),
                     );
                 }
             }
@@ -515,6 +566,9 @@ pub async fn app_open_reader_window(
             pdf::remove_document_cache(&reader_dir, id);
         }
     });
+    // FR-26 Info lifecycle (OQ-67 A): the open side; the close side is the
+    // `Destroyed` hook in `lib.rs`'s global window handler.
+    applog::info("lifecycle", &format!("reader window opened: {label}"));
     Ok(OpenedReaderDto { opened: "created" })
 }
 
@@ -525,12 +579,14 @@ pub async fn app_open_reader_window(
 #[tauri::command]
 pub async fn app_pdf_document(app: AppHandle, id: i64) -> Result<pdf::PdfDocDto, AppErrorPayload> {
     let render = app.state::<Reader>().render.clone();
-    background(app, move |db, _covers, _sink| {
-        let target = db.with(|conn| service::open_target(conn, id))?;
+    background(app, "app_pdf_document", move |db, _covers, _sink| {
+        let target = db.with("app_pdf_document", |conn| service::open_target(conn, id))?;
         // FR-20: the row's stored password rides into the load; a protected
         // document yields the typed `password-required` payload with it.
-        pdf::document_dto(&render, &target.path, target.password.as_deref())
-            .map_err(|error| error.payload())
+        boundary(
+            "app_pdf_document",
+            pdf::document_dto(&render, &target.path, target.password.as_deref()),
+        )
     })
     .await
 }
@@ -547,29 +603,35 @@ pub async fn app_pdf_page(
     target_width: u32,
 ) -> Result<String, AppErrorPayload> {
     if page == 0 {
-        return Err(AppError::Validation("page must be 1 or greater".into()).payload());
+        return fail(
+            "app_pdf_page",
+            AppError::Validation("page must be 1 or greater".into()),
+        );
     }
     if !(100..=4000).contains(&target_width) {
-        return Err(
-            AppError::Validation("target width must be between 100 and 4000 px".into()).payload(),
+        return fail(
+            "app_pdf_page",
+            AppError::Validation("target width must be between 100 and 4000 px".into()),
         );
     }
     let (render, reader_dir) = {
         let reader = app.state::<Reader>();
         (reader.render.clone(), reader.dir.clone())
     };
-    background(app, move |db, _covers, _sink| {
-        let target = db.with(|conn| service::open_target(conn, id))?;
-        pdf::serve_page(
-            &render,
-            &reader_dir,
-            id,
-            &target.path,
-            page,
-            target_width,
-            target.password.as_deref(),
+    background(app, "app_pdf_page", move |db, _covers, _sink| {
+        let target = db.with("app_pdf_page", |conn| service::open_target(conn, id))?;
+        boundary(
+            "app_pdf_page",
+            pdf::serve_page(
+                &render,
+                &reader_dir,
+                id,
+                &target.path,
+                page,
+                target_width,
+                target.password.as_deref(),
+            ),
         )
-        .map_err(|error| error.payload())
     })
     .await
 }
@@ -584,9 +646,9 @@ pub async fn app_pdf_outline(
     app: AppHandle,
     id: i64,
 ) -> Result<Vec<pdfmeta::OutlineEntry>, AppErrorPayload> {
-    background(app, move |db, _covers, _sink| {
-        let target = db.with(|conn| service::open_target(conn, id))?;
-        pdfmeta::outline(&target.path).map_err(|error| error.payload())
+    background(app, "app_pdf_outline", move |db, _covers, _sink| {
+        let target = db.with("app_pdf_outline", |conn| service::open_target(conn, id))?;
+        boundary("app_pdf_outline", pdfmeta::outline(&target.path))
     })
     .await
 }
@@ -603,12 +665,15 @@ pub async fn app_epub_manifest(
     app: AppHandle,
     id: i64,
 ) -> Result<epubsrv::ManifestDto, AppErrorPayload> {
-    background(app, move |db, _covers, _sink| {
-        let target = db.with(|conn| service::open_target(conn, id))?;
+    background(app, "app_epub_manifest", move |db, _covers, _sink| {
+        let target = db.with("app_epub_manifest", |conn| service::open_target(conn, id))?;
         if !epubsrv::is_epub_path(&target.path) {
-            return Err(AppError::UnsupportedType { path: target.path }.payload());
+            return fail("app_epub_manifest", AppError::UnsupportedType { path: target.path });
         }
-        epubsrv::manifest(id, &target.path).map_err(|error| error.payload())
+        boundary(
+            "app_epub_manifest",
+            epubsrv::manifest(id, &target.path),
+        )
     })
     .await
 }
@@ -648,13 +713,13 @@ pub fn app_data_dir(data: State<'_, crate::data_dir::DataDir>) -> Result<String,
 /// change — a Rust-side call does not route through the JS ACL.
 #[tauri::command]
 pub fn app_open_data_dir(data: State<'_, crate::data_dir::DataDir>) -> Result<(), AppErrorPayload> {
-    tauri_plugin_opener::open_path(&data.0, None::<&str>).map_err(|error| {
-        AppError::Io {
+    boundary(
+        "app_open_data_dir",
+        tauri_plugin_opener::open_path(&data.0, None::<&str>).map_err(|error| AppError::Io {
             path: data.0.to_string_lossy().into_owned(),
             message: error.to_string(),
-        }
-        .payload()
-    })
+        }),
+    )
 }
 
 /// UI-40 (AC-111): open the document's folder in the system file manager
@@ -667,13 +732,68 @@ pub fn app_open_data_dir(data: State<'_, crate::data_dir::DataDir>) -> Result<()
 pub fn app_open_containing_folder(app: AppHandle, id: i64) -> Result<(), AppErrorPayload> {
     let path = {
         let db = app.state::<Db>();
-        db.with(|conn| service::open_target(conn, id))?.path
+        db.with("app_open_containing_folder", |conn| service::open_target(conn, id))?.path
     };
-    tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|error| {
-        AppError::Io {
+    boundary(
+        "app_open_containing_folder",
+        tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|error| AppError::Io {
             path,
             message: error.to_string(),
-        }
-        .payload()
-    })
+        }),
+    )
+}
+
+// ---------------------------------------------------------------------- logs
+
+/// FR-26 (§3.2): persist the log level through the settings store —
+/// `log_level` joins `SETTINGS_KEYS`, so validation is the settings
+/// grammar and the `settings_changed` event keeps every window's mirror in
+/// step (DR-230) — and refresh the cached flag on the same path. Thin
+/// wrapper; the service owns the storage semantics.
+#[tauri::command]
+pub fn log_level_set(
+    app: AppHandle,
+    db: State<'_, Db>,
+    level: String,
+) -> Result<(), AppErrorPayload> {
+    let sink = TauriSink::new(app);
+    let result = db.with("log_level_set", |conn| {
+        service::set_setting(conn, &sink, "log_level", &level)
+    });
+    if result.is_ok() {
+        // The value was validated by the settings grammar; `set_level`
+        // re-validates (its own grammar) and moves the cached flag.
+        let _ = applog::set_level(&level);
+    }
+    result
+}
+
+/// FR-26: the log file path for the Settings *Log* section's read-only row.
+/// Reads the same handle the writer owns — the path display and the open
+/// action can never disagree (R1.4).
+#[tauri::command]
+pub fn log_path() -> Result<String, AppErrorPayload> {
+    match applog::file_path() {
+        Some(path) => Ok(path.to_string_lossy().into_owned()),
+        None => fail("log_path", AppError::Internal("logging not initialized".into())),
+    }
+}
+
+/// FR-26: open the log file in the OS handler — the released
+/// `app_open_data_dir` shape: a Rust-side opener call (no capability
+/// change, M7 audit), creating the empty file first so the action never
+/// fails on a clean install (§3.2).
+#[tauri::command]
+pub fn log_open() -> Result<(), AppErrorPayload> {
+    let path = match applog::ensure_file() {
+        Ok(path) => path,
+        Err(error) => return fail("log_open", error),
+    };
+    boundary(
+        "log_open",
+        tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| AppError::Io {
+            path: path.to_string_lossy().into_owned(),
+            message: error.to_string(),
+        }),
+    )
 }

@@ -23,6 +23,7 @@ use std::sync::{Arc, mpsc};
 use image::GenericImageView;
 use rusqlite::Connection;
 
+use crate::applog;
 use crate::epubmeta;
 use crate::error::AppError;
 use crate::library::EventSink;
@@ -199,15 +200,25 @@ fn start_pool_with_workers(
                 // the render. Every failure (no declared cover, SVG or other
                 // non-raster declaration, undecodable entry, malformed
                 // package) lands on the same glyph fallback as a failed
-                // render (R5.3).
+                // render (R5.3). Deliberately not a log line: "no declared
+                // cover" is the designed case for a plain EPUB, and this
+                // API cannot tell it apart from a decode failure — logging
+                // would record designed fallbacks as failures.
                 epubmeta::cover_image(&job.path).map(compose_epub_cover)
             } else {
-                service.render_cover(
+                let image = service.render_cover(
                     &job.path,
                     RENDER_TARGET_WIDTH,
                     RENDER_TARGET_HEIGHT,
                     job.password.as_deref(),
-                )
+                );
+                if image.is_none() {
+                    // FR-26 (§3.2, cover queue render failures): the glyph
+                    // fallback is the designed recovery (R5.3); the failure
+                    // behind it is now visible in the log.
+                    applog::error("covers", &format!("cover render failed: {}", job.path));
+                }
+                image
             };
             match rendered {
                 Some(image) => {

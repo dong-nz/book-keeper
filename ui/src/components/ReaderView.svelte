@@ -277,12 +277,17 @@
         data-loaded={undefined}
         style="width: {width}px; height: {height}px"
         onload={(e) => {
+          // Svelte types the generic `load` event at `EventTarget & Element`
+          // (`EventHandler` in svelte/elements omits the element type), so
+          // the image is read through the same cast the other components use
+          // for their element-specific fields.
+          const imageEl = e.currentTarget as HTMLImageElement;
           // Only the full stage's own load drives the fade and the release
           // (DR-316/DR-323). The placeholder (and a stale load event that
           // lands after the src patch) must not set `data-loaded` — an
           // early fade would re-create the flash the seam exists to hide.
-          if (image.full === null || e.currentTarget.currentSrc !== image.full) return;
-          e.currentTarget.setAttribute("data-loaded", "");
+          if (image.full === null || imageEl.currentSrc !== image.full) return;
+          imageEl.setAttribute("data-loaded", "");
           store.previewShown(page, width);
         }}
       />
