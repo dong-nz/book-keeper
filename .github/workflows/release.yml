@@ -2,7 +2,8 @@
 # builds the per-platform bundles on the CI matrix (not on a developer
 # machine), produces the signed update artifacts (DR-356 A mechanism,
 # DR-358: `createUpdaterArtifacts` injected per build, signing key from the
-# repository secrets; macOS builds `--target universal`, DR-358 a), and
+# repository secrets; macOS builds `--target universal-apple-darwin`, DR-358 a,
+# the CLI's target name verified per DR-383), and
 # publishes the GitHub Release carrying every artifact plus the `latest.json`
 # manifest the released updater endpoint already reads (M3). Pre-release tags
 # (a `-` in the tag, e.g. `v0.0.0-preflight`) publish as a draft release —
@@ -108,7 +109,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           target_arg=""
-          if [ "${{ matrix.os }}" = "macos-latest" ]; then target_arg="--target universal"; fi
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then target_arg="--target universal-apple-darwin"; fi # the CLI's universal target name; both arch targets installed above (DR-383)
           node ui/node_modules/@tauri-apps/cli/tauri.js build \
             --config '{"bundle":{"createUpdaterArtifacts":true}}' $target_arg
 

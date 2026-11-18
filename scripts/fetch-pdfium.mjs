@@ -78,7 +78,10 @@ async function fetchAsset(assetName, libName, work) {
   mkdirSync(work, { recursive: true });
   const archive = join(work, "pdfium.tgz");
   writeFileSync(archive, bytes);
-  execFileSync("tar", ["-xzf", archive, "-C", work]); // bsdtar / GNU tar handle .tgz
+  // cwd + relative names: an absolute Windows path carries a drive colon,
+  // which Git-Bash's GNU tar reads as host:path ("Cannot connect to D:" —
+  // the CI Windows run, DR-383). Both GNU tar and bsdtar extract this form.
+  execFileSync("tar", ["-xzf", "pdfium.tgz"], { cwd: work });
   const found = findFile(work, libName);
   if (!found) {
     console.error(`${libName} not found inside the extracted archive`);
