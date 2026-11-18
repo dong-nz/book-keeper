@@ -68,6 +68,8 @@ jobs:
           key: ci-${{ matrix.os }}
 
       - name: Fetch the Pdfium library (DR-50c — src-tauri/binaries is generated, never committed)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # authenticated API lookup (DR-394: the same shared-IP rate-limit class DR-384 fixed in the release workflow — the macOS CI job hit it on a re-run)
         run: node scripts/fetch-pdfium.mjs
 
       - name: Install UI dependencies
