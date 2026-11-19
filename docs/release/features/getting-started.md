@@ -22,6 +22,23 @@ Import → organize into [tags](tags.md) → find with [search](searching.md) �
 ## Data location
 The index is stored per user in the OS user-data directory. Removing a document from the app never touches your file unless you choose "Delete file".
 
+## Uninstalling *(added 2026-11-19)*
+Removing Book Keeper from your computer is easy, and your own files are never at risk: the app only keeps an index, so uninstalling never touches your PDFs or books.
+
+- **Windows** — the app has a real uninstaller: **Settings → Apps → Book Keeper → Uninstall**. It removes the program and its shortcuts.
+- **macOS** — there is no installer to uninstall: open **Applications** in Finder and drag **Book Keeper** to the Trash (and delete the `.dmg` you installed from, if you still have it).
+- **Linux** — for the `.deb` installation, remove the **book-keeper** package with your package manager (for example `sudo apt remove book-keeper`); for an AppImage, just delete the file.
+
+Uninstalling does **not** remove your library data — the index, cover thumbnails, settings and logs all stay where they are, in case you reinstall later. If you want everything gone, also delete the data folder — you can see and open it in **Settings ▸ Settings**, under **Data location**:
+
+| | Your data folder |
+|---|---|
+| Windows | `AppData\Roaming\com.bookkeeper.app` inside your user folder |
+| macOS | `Library/Application Support/com.bookkeeper.app` inside your home folder |
+| Linux | `.local/share/com.bookkeeper.app` inside your home folder |
+
+Nothing else is left behind: the app keeps no accounts and stores nothing outside your user folder.
+
 > **Amendment (2026-11-04, v0.0.2):** the window layout above has changed. There is **no sidebar**: browsing and category filtering moved into the **Browse** menu at the left end of the toolbar, with your active filters shown as chips next to it ([browsing-and-filtering.md](browsing-and-filtering.md)). The toolbar row is now: **Browse · search · Import · Sort · View · your filter chips · app menu · window buttons** — the app has no system title bar any more, and its own top bar carries the minimize / maximize / close controls ([the-app-window.md](the-app-window.md)). The document area and the status bar with its counts are unchanged.
 
 > **Amendment (2026-11-04, v0.0.3):** the toolbar is quieter. It is now **Browse · search (the import button sits inside the search box, at its right end) · Select · View · Settings · window buttons** — the separate Import button, the Sort control, the filter chips and the app menu are gone, and every control is an icon with no text: hovering it or tabbing to it shows a small label with its name ([the-app-window.md](the-app-window.md), [importing-files.md](importing-files.md), [sorting-and-views.md](sorting-and-views.md), [settings-and-appearance.md](settings-and-appearance.md)). The bottom bar no longer shows three numbers: it shows a quiet document count and only tells you about a job, a filter or missing files when there is something to say, and *Rescan* lives in the Browse menu ([status-feedback.md](status-feedback.md)). What the window looks like and how you import, search and organize is otherwise the same.

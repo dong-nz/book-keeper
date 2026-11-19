@@ -7,7 +7,7 @@
   "scripts": {
     "vite": "vite",
     "build:vite": "vite build",
-    "tauri:dev": "cd .. && tauri dev",
+    "tauri:dev": "node ../scripts/dev-app.mjs",
     "tauri:build": "cd .. && tauri build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run"
