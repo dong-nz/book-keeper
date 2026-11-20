@@ -49,6 +49,19 @@ function parseLogLevel(value: string): LogLevel {
   return value === "info" ? "info" : "error";
 }
 
+/** The reader view mode (FR-29, SPEC-v0.0.12 §3.2): the four names as the
+ *  Rust validator accepts them (`service::set_setting` is the authority);
+ *  anything else reads as the released default (continuous, M2). Structurally
+ *  the same union `reader.svelte.ts` defines as `ReaderViewMode` — the
+ *  stores assign it directly, no import cycle. */
+export type StoredReaderViewMode = "single" | "continuous" | "facing" | "horizontal";
+
+function parseReaderViewMode(value: string): StoredReaderViewMode {
+  return value === "single" || value === "facing" || value === "horizontal"
+    ? value
+    : "continuous";
+}
+
 class SettingsStore {
   view = $state<ViewMode>("list");
   gridColumns = $state<GridOverride>("auto");
@@ -59,6 +72,10 @@ class SettingsStore {
   /** The application log level (UI-53): mirrored from the settings store;
    *  only the Settings *Log* section writes it. */
   logLevel = $state<LogLevel>("error");
+  /** The reader view mode (FR-29): the mode new reader windows open in.
+   *  Live reader windows are unaffected by later changes (per-window choice
+   *  stands, UI-34 unchanged) — only a new window's store reads this. */
+  readerViewMode = $state<StoredReaderViewMode>("continuous");
   loaded = $state(false);
 
   // Settings writes are debounced (R4.3) as one batch: a 300 ms window collects
@@ -105,6 +122,12 @@ class SettingsStore {
         break;
       case "log_level":
         this.logLevel = parseLogLevel(value);
+        break;
+      case "view_mode":
+        // FR-29: re-applied like every owned key — it decides the next
+        // window's start, never a live window's mode (the store's `viewMode`
+        // is its own state, not a derivation of this).
+        this.readerViewMode = parseReaderViewMode(value);
         break;
       default:
         break;
@@ -153,6 +176,7 @@ class SettingsStore {
         settings.theme === "light" || settings.theme === "dark" ? settings.theme : "system";
       this.epubTextSize = parseTextSize(settings.epub_text_size);
       this.logLevel = parseLogLevel(settings.log_level);
+      this.readerViewMode = parseReaderViewMode(settings.view_mode);
       this.loaded = true;
       return {
         sort: settings.sort,
@@ -192,6 +216,16 @@ class SettingsStore {
     const size = TEXT_SIZE_STEPS.includes(value) ? value : DEFAULT_TEXT_SIZE;
     this.epubTextSize = size;
     this.#persist("epub_text_size", String(size));
+  }
+
+  /** The reader strip's mode control (FR-29): the only writer of this key.
+   *  The value is persisted through the released debounced batch exactly as
+   *  `view`/`theme` are; the `settings_changed` broadcast re-applies it in
+   *  every window, where it only decides the NEXT reader window's start. */
+  setReaderViewMode(value: StoredReaderViewMode): void {
+    const mode = parseReaderViewMode(value);
+    this.readerViewMode = mode;
+    this.#persist("view_mode", mode);
   }
 
   /** The Log section's level selector (UI-53, AC-156): written through the

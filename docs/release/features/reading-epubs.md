@@ -1,6 +1,6 @@
 # Reading books (EPUBs)
 
-> **Status: ✅ Shipped in v0.0.9, updated in v0.0.10** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.9, updated in v0.0.10 and v0.0.12** — verified by running the app.
 
 Book Keeper now reads **EPUB books inside itself**, in their own window, the way it reads PDFs ([reading-pdfs.md](reading-pdfs.md)). A book is one continuous, flowing text — it adapts to the window's width and to the text size you choose, and you read it by scrolling, the way you'd read it on any e-reader.
 
@@ -42,3 +42,11 @@ Books open quickly. Measured on the test machine: a book with a 1 MB chapter sho
 > - **The book window has a settings control.** A settings button sits at the right end of the window's top bar, just left of the window buttons — the same menu as in a PDF reading window and in the library: appearance (Light / Dark / Auto), **Settings**, **Check for updates**.
 >
 > Everything else about reading books — the text, its size, position, links, selection — is unchanged.
+
+> **Amendment (2026-11-19, v0.0.12): the book window remembers where you stopped, and you can choose the book's cover** (verified by running the app).
+>
+> - **The book window remembers where you stopped.** Open a book again and it comes back to the chapter you were last in and the exact place within it — no re-finding your position, and the first thing loaded is the chapter you left off in. The memory is per book and survives restarts; deleting a book forgets its place; relinking or renaming keeps it. If the book has been replaced by a shorter one, the app opens at the nearest place that exists. While you read, the place is saved quietly in the background; if the app is closed abruptly, at most the last second of reading is lost. (This replaces the "does not remember where you stopped" item in the note above — it no longer applies. Still not included: bookmarks, highlights, notes, and searching inside a book's text.)
+> - **Choose which image is the book's cover.** The book window's top bar carries the same **cover** control the PDF reader has: **"Choose cover…"** opens a grid of the images inside the book — pick one and it becomes the book's cover in the library; **"Automatic cover"** reverts to the book's own declared cover (or the generic mark, if it declares none). You can also choose from the library itself via **"Update cover…"** — see [covers.md](covers.md). A book with no pictures inside keeps the old behavior: the picker simply offers no images to pick.
+> - **On macOS**, the book window's own window controls now sit at the **left** end of its top bar (close first), like a Mac window; everything else in the bar keeps its position. Windows is unchanged (see [the-app-window.md](the-app-window.md)).
+>
+> Everything else about reading books — the text, its size, position, contents, links, selection — is unchanged.

@@ -20,7 +20,7 @@
 //                                          last (long lead time, no throughput
 //                                          claims)
 // Every lane runs against its own data directory under
-// …\com.bookkeeper.app\parallel\lanes\<flow>, its own tauri-driver ports, and
+// …\com.bookkeeper\parallel\lanes\<flow>, its own tauri-driver ports, and
 // scoped cleanup (it touches only its own process tree). Every lane also
 // carries `BOOKKEEPER_UPDATE_FIXTURE=1` (DR-332 item 7): the full mode's flow
 // set contains flowAppUpdate, so the build owner builds the binary with the
@@ -105,7 +105,7 @@ const REPORT_PATH = (() => {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15) + "Z";
   return resolve(join(import.meta.dirname, "..", "tmp", "test-reports", `verify-${stamp}.md`));
 })();
-const PARALLEL = join(process.env.APPDATA, "com.bookkeeper.app", "parallel");
+const PARALLEL = join(process.env.APPDATA, "com.bookkeeper", "parallel");
 const SCALE_FLOW_NAMES = ["flowVirtualization", "flowWidthMatrix", "flowEmptyAndSkeleton"];
 
 // The lane table. In full mode the lanes carry their DR-164 group:

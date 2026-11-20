@@ -7,11 +7,14 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppErrorPayload,
   AboutDto,
+  CoverCandidateDto,
+  CoverChoiceValue,
   DocumentDto,
   EpubManifestDto,
   ImportResult,
   OpenedReaderDto,
   OutlineEntry,
+  PageTextDto,
   PdfDocDto,
   RescanResult,
   SearchPage,
@@ -33,6 +36,9 @@ export const COMMANDS = [
   "library_set_favorite",
   "library_set_reading",
   "library_set_password",
+  "app_cover_choice",
+  "app_cover_clear",
+  "app_cover_candidates",
   "library_bulk_tags",
   "library_delete_document",
   "library_delete_document_and_file",
@@ -43,12 +49,17 @@ export const COMMANDS = [
   "tags_create",
   "tags_rename",
   "tags_delete",
+  "tags_delete_all",
   "app_get_settings",
   "app_set_setting",
   "app_open_document",
   "app_open_reader_window",
   "app_pdf_document",
   "app_pdf_page",
+  "app_pdf_text",
+  "app_pdf_thumbs",
+  "app_reader_position_get",
+  "app_reader_position_set",
   "app_pdf_outline",
   "app_epub_manifest",
   "app_open_containing_folder",
@@ -127,6 +138,25 @@ export function librarySetPassword(id: number, password: string): Promise<void> 
   return invoke("library_set_password", { id, password });
 }
 
+/** FR-31 (§3.8): set the manual cover choice — the value is validated
+ *  (grammar + document-type match) at the service boundary; the render is
+ *  background work and the card updates through the released cover-refresh
+ *  mechanism. Resolves to the updated row. */
+export function appCoverChoice(id: number, choice: CoverChoiceValue): Promise<DocumentDto> {
+  return invoke("app_cover_choice", { id, choice: JSON.stringify(choice) });
+}
+
+/** FR-31 (AC-177): clear the choice — the automatic cover returns. */
+export function appCoverClear(id: number): Promise<DocumentDto> {
+  return invoke("app_cover_clear", { id });
+}
+
+/** FR-31 (AC-178): the EPUB's decodable manifest images for the picker grid;
+ *  a PDF is refused — its picker is the thumbnail strip (`appPdfThumbs`). */
+export function appCoverCandidates(id: number): Promise<CoverCandidateDto[]> {
+  return invoke("app_cover_candidates", { id });
+}
+
 export function libraryBulkTags(documentIds: number[], add: number[], remove: number[]): Promise<void> {
   return invoke("library_bulk_tags", { documentIds, add, remove });
 }
@@ -169,6 +199,10 @@ export function tagsDelete(id: number): Promise<void> {
   return invoke("tags_delete", { id });
 }
 
+export function tagsDeleteAll(): Promise<number> {
+  return invoke("tags_delete_all", {});
+}
+
 export function appGetSettings(): Promise<SettingsDto> {
   return invoke("app_get_settings", {});
 }
@@ -197,6 +231,32 @@ export function appPdfDocument(id: number): Promise<PdfDocDto> {
  *  cache path, to be shown through the asset protocol (§3.2). */
 export function appPdfPage(id: number, page: number, targetWidth: number): Promise<string> {
   return invoke("app_pdf_page", { id, page, targetWidth });
+}
+
+/** FR-30 (§3.3): one page's selectable text — runs in top-origin page-point
+ *  coordinates plus the page size; an empty run list is a page without text
+ *  (no layer, no message). Served from the reader text cache. */
+export function appPdfText(id: number, page: number): Promise<PageTextDto> {
+  return invoke("app_pdf_text", { id, page });
+}
+
+/** §3.8 (AC-181): a window of cover-picker page thumbnails at the picker's
+ *  fixed server-side width — cache paths in page order, shown through the
+ *  asset protocol like reader pages. */
+export function appPdfThumbs(id: number, from: number, to: number): Promise<string[]> {
+  return invoke("app_pdf_thumbs", { id, from, to });
+}
+
+/** FR-28 (§3.2): the stored reading position of a document, or null. No
+ *  `settings_changed` event by design — per-document state, not a setting. */
+export function appReaderPositionGet(id: number): Promise<string | null> {
+  return invoke("app_reader_position_get", { id });
+}
+
+/** FR-28: write a position value; the grammar is validated at the Rust
+ *  storage boundary, the id must exist. */
+export function appReaderPositionSet(id: number, value: string): Promise<void> {
+  return invoke("app_reader_position_set", { id, value });
 }
 
 /** Outline tree for the reader table of contents (FR-18, SPEC-v0.0.7 §3.5):

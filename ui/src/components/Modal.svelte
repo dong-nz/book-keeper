@@ -12,13 +12,19 @@
     width = 560,
     open = $bindable(false),
     onEscapeKeydown,
+    actions,
     children,
   }: {
     title: string;
-    width?: number;
+    /** Dialog width in px. `"fit-content"` (DR-410) leaves the box to its
+        `fit-content` sizing — the dialog is as wide as its content needs. */
+    width?: number | "fit-content";
     open?: boolean;
     /** Override to intercept Esc (e.g. the unsaved-changes confirm). */
     onEscapeKeydown?: (event: KeyboardEvent) => void;
+    /** Toolbar dialog (DR-408): when present, the title and these render on
+        the dialog's toolbar band; when absent, the chrome is unchanged. */
+    actions?: Snippet;
     children: Snippet;
   } = $props();
 
@@ -116,13 +122,33 @@
 <Dialog.Root bind:open>
   <Dialog.Portal>
     <Dialog.Overlay class="modal-overlay" />
-    <Dialog.Content class="modal" style="width: {width}px" bind:ref={content}>
+    <Dialog.Content
+      class={"modal" + (actions ? " modal-with-toolbar" : "")}
+      style={typeof width === "number" ? `width: ${width}px` : undefined}
+      bind:ref={content}
+    >
       <OverlayAnchor />
-      <Dialog.Title class="modal-title">{title}</Dialog.Title>
-      <Dialog.Close class="modal-close" type="button" aria-label={t("a11y.dismiss")}>
-        <Icon name="close" />
-      </Dialog.Close>
-      {@render children()}
+      {#if actions}
+        <!-- Toolbar dialog (DR-408, pinned per DR-410): the band is the
+             dialog's fixed head; the content lives in a scroll area that owns
+             all scrolling, and the close control sits on the bar (an
+             absolutely-placed control would scroll away with the content). -->
+        <div class="modal-toolbar">
+          <Dialog.Title class="modal-title modal-toolbar-title">{title}</Dialog.Title>
+          <div class="modal-toolbar-spacer"></div>
+          <div class="modal-toolbar-actions">{@render actions()}</div>
+          <Dialog.Close class="modal-close" type="button" aria-label={t("a11y.dismiss")}>
+            <Icon name="close" />
+          </Dialog.Close>
+        </div>
+        <div class="modal-scroll">{@render children()}</div>
+      {:else}
+        <Dialog.Title class="modal-title">{title}</Dialog.Title>
+        <Dialog.Close class="modal-close" type="button" aria-label={t("a11y.dismiss")}>
+          <Icon name="close" />
+        </Dialog.Close>
+        {@render children()}
+      {/if}
     </Dialog.Content>
   </Dialog.Portal>
 </Dialog.Root>

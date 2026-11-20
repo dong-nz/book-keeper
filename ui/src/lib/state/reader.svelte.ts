@@ -6,8 +6,10 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as api from "../../api";
 import { asAppError } from "../types";
-import type { AppErrorPayload, OutlineEntry, PdfDocDto } from "../types";
+import type { AppErrorPayload, OutlineEntry, PageTextDto, PdfDocDto } from "../types";
 import { indexAt, stackOffsets } from "$lib/virtual";
+import { debounce } from "../debounce";
+import { settings } from "$lib/state/settings.svelte";
 
 /** UI-30 fixed zoom steps (the ladder unchanged by DR-221): percentages
  *  relative to the page's actual size - 100 % is Actual size, the page's
@@ -82,6 +84,97 @@ export const PREVIEW_WIDTH_MAX = 1400;
 const PREVIEW_RELEASE_MS = 600;
 
 export type ReaderStatus = "loading" | "ready" | "error";
+
+// ------------------------------------------------- position memory (FR-28)
+
+/** A decoded reading position: 1-based page + 0–1 fraction within it
+ *  (SPEC-v0.0.12 §3.2 value grammar, OQ-72 A). */
+export interface ReaderPosition {
+  page: number;
+  fraction: number;
+}
+
+/** The 0–1 clamp every position computation shares. */
+export function clampFraction(value: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+}
+
+/** The position anchor key per reader kind (FR-28, §3.2): a PDF stores `p`
+ *  (1-based page), an EPUB stores `c` (1-based spine index). */
+export type ReaderPositionKey = "p" | "c";
+
+/** Read a stored position value (both kinds' grammars — `{p,o}` for a PDF,
+ *  `{c,o}` for an EPUB; exactly one anchor, the same grammar the Rust
+ *  validator `positions::validate` enforces). A malformed value, two
+ *  anchors, a non-integer page below 1 or an offset outside 0–1 reads as no
+ *  position at all - the released default takes over. A page beyond the
+ *  document's current extent is CLAMPED, not rejected (FR-28: a relink to
+ *  a shorter file resumes at the last page). Pure - the unit tests named in
+ *  §3.10 drive it directly. */
+export function parseReaderPosition(raw: string | null, extent: number): ReaderPosition | null {
+  if (raw === null || extent < 1) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const page = record.p;
+  const chapter = record.c;
+  if ((page !== undefined) === (chapter !== undefined)) return null; // exactly one anchor
+  const anchor = page ?? chapter;
+  const offset = record.o;
+  if (typeof anchor !== "number" || !Number.isInteger(anchor) || anchor < 1) return null;
+  if (typeof offset !== "number" || offset < 0 || offset > 1) return null;
+  return { page: Math.min(anchor, extent), fraction: offset };
+}
+
+/** Encode the current position for `app_reader_position_set` (§3.2): the
+ *  exact grammar with the kind's anchor key, offsets rounded to three
+ *  decimals - a fraction beyond sub-pixel precision carries no reading
+ *  meaning. */
+export function encodeReaderPosition(
+  page: number,
+  fraction: number,
+  key: ReaderPositionKey,
+): string {
+  return JSON.stringify({ [key]: page, o: Math.round(clampFraction(fraction) * 1000) / 1000 });
+}
+
+/** FR-28 write cadence: the debounced window (§3.2 "debounced, 1 s"),
+ *  exported so the units can name it. */
+export const POSITION_WRITE_MS = 1000;
+
+// ------------------------------------------------ text layer mapping (FR-30)
+
+/** One positioned run in CSS px (UI-54). */
+export interface PositionedTextRun {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+}
+
+/** FR-30 (UI-54, §3.3): the page-pt → CSS-px mapping. The scale is the
+ *  same ratio the page box itself is sized at (`pageWidth` is
+ *  `width_pt × scale`), so the layer sits on the raster pixel for pixel;
+ *  top-origin coordinates need no flip here (the Rust side already
+ *  delivers them top-origin). Pure arithmetic on the store's exact
+ *  geometry — re-derived on zoom and mode change, never measured. The
+ *  §3.10 frontend units drive it directly. */
+export function textPositions(dto: PageTextDto, displayWidth: number): PositionedTextRun[] {
+  const scale = dto.page_width_pt > 0 ? displayWidth / dto.page_width_pt : 0;
+  return dto.runs.map((run) => ({
+    x: run.x * scale,
+    y: run.y * scale,
+    w: run.w * scale,
+    h: run.h * scale,
+    text: run.text,
+  }));
+}
 
 /** View modes (UI-34, DR-180; UI-34 MODIFIED in v0.0.10 by DR-290 adds
  *  `horizontal` — pages in one left-to-right row, the continuous model on
@@ -275,6 +368,12 @@ export class ReaderStore {
   /** Fetched page images, keyed by 1-based page. Only viewport-near pages
    *  are ever requested (UI-30's mount rule, enforced by the view). */
   images = $state(new Map<number, PageImage>());
+  /** FR-30 (UI-54, §3.3): each page's extracted text runs, keyed by 1-based
+   *  page — extracted once per page per window session, coordinates stay
+   *  page points; the display scaling is `TextLayer`'s arithmetic. An entry
+   *  with an empty `runs` list is the no-layer case (a scan), cached like
+   *  any other so the request never repeats. */
+  texts = $state(new Map<number, PageTextDto>());
 
   readonly docId: number;
   /** Set by ReaderView: jump the scroll to an absolute stack offset. */
@@ -328,6 +427,19 @@ export class ReaderStore {
    *  scrolling back and forth over a page must not fire the same request
    *  twice before the first one lands. */
   #pending = new Map<number, number>();
+  #pendingText = new Set<number>();
+
+  /** FR-28 (DR-406 1): the position read at load, applied once the view
+   *  has real geometry (`applyRestoredPosition`). While it is pending the
+   *  view requests and paints no page — the restored page is the first
+   *  page painted, so the "no visible stop at page 1" rule holds by
+   *  construction. Reactive so the view's request effect re-runs the
+   *  moment the restore lands, even when the restore is a no-op scroll. */
+  #restore: ReaderPosition | null = null;
+  restorePending = $state(false);
+  /** FR-28 (AC-168): the debounced position write (1 s, §3.2) — one write
+   *  per settle, last value wins; `flushPosition` cancels it on close. */
+  #writePosition = debounce(() => this.#writePositionNow(), POSITION_WRITE_MS);
 
   constructor(docId: number) {
     this.docId = docId;
@@ -439,6 +551,10 @@ export class ReaderStore {
     if (mode === this.viewMode) return;
     const page = this.currentPage;
     this.viewMode = mode;
+    // FR-29 (AC-169): the choice stays per-window (the released handoff
+    // below is untouched); the remembered value is written through the
+    // settings store's debounced batch, exactly as `view`/`theme` are.
+    settings.setReaderViewMode(mode);
     if (mode === "single") {
       this.singleIndex = page;
       return;
@@ -465,11 +581,166 @@ export class ReaderStore {
       // to match (DR-223).
       this.tocCollapsed = new Set(this.tocParents());
       this.tocExpandMode = true;
+      // FR-29 (§3.2): the store is constructed from the remembered mode —
+      // `settings.load()` completed before this call (ReaderApp's startup
+      // order); the released default stands until the user first chooses.
+      this.viewMode = settings.readerViewMode;
+      // FR-28 (AC-167): the position is read before `ready` so the view
+      // applies it on its first real geometry — no page is requested or
+      // painted at page 1 first (DR-406 1). A failed read is the released
+      // default; a stale page is clamped inside `parseReaderPosition`.
+      try {
+        const stored = await api.appReaderPositionGet(this.docId);
+        this.#restore = parseReaderPosition(stored, this.doc.page_count);
+      } catch {
+        this.#restore = null;
+      }
+      this.restorePending = this.#restore !== null;
       this.status = "ready";
     } catch (error) {
       this.error = asAppError(error);
       this.status = "error";
     }
+  }
+
+  // ------------------------------------------------- position memory (FR-28)
+
+  /** Apply the restored position (DR-406 1): the view calls this ONCE, in
+   *  its first step that carries real geometry — the scroll target is the
+   *  anchor table plus `o ×` the unit's computed display height (§3.2);
+   *  facing applies the fraction within the pair row (DR-406 2), single
+   *  mounts the page directly (index-driven, no scroll). A no-op restore
+   *  (page 1, offset 0) still clears the flag — the view's request effect
+   *  re-runs on the flip and the first page paints. */
+  applyRestoredPosition(): void {
+    if (this.status !== "ready" || !this.doc) return; // geometry-free step: nothing to apply against
+    const restore = this.#restore;
+    this.#restore = null;
+    if (restore) {
+      if (this.viewMode === "single") {
+        this.singleIndex = restore.page;
+      } else {
+        const facing = this.viewMode === "facing";
+        const horizontal = this.viewMode === "horizontal";
+        const offsets = facing
+          ? this.rowOffsets()
+          : horizontal
+            ? this.rowXOffsets()
+            : this.pageOffsets();
+        const index = facing ? Math.floor((restore.page - 1) / 2) : restore.page - 1;
+        const unit = facing
+          ? (this.rowHeights()[index] ?? 0)
+          : horizontal
+            ? this.pageWidth(restore.page)
+            : (this.pageHeights()[restore.page - 1] ?? 0);
+        const target = offsets[index] + 1 + restore.fraction * unit;
+        // The store's own scroll source moves with the requested position
+        // (DR-155): until the scroll event confirms it, the page label and
+        // the mount window already name the RESTORED page — the first
+        // requests belong to it, never to page 1.
+        if (horizontal) this.scrollLeft = target;
+        else this.scrollTop = target;
+        this.onScrollTo?.(target);
+      }
+    }
+    this.restorePending = false;
+  }
+
+  /** Schedule the debounced position write (DR-406 3): the view's `measure`
+   *  and the store's own navigation calls reach it — the trailing debounce
+   *  is the write discipline (AC-168: one write per settle, last value
+   *  wins). A pending restore is not a reading position yet: writing it
+   *  would re-store what was just read. */
+  schedulePositionRecord(): void {
+    if (this.status !== "ready" || this.restorePending) return;
+    this.#writePosition();
+  }
+
+  /** The current position value in the §3.2 grammar, or null when there is
+   *  nothing to record. The fractions come from the store's own sources —
+   *  the scroll position over the computed offset tables (DR-155's single
+   *  source), single mode from the container scroll against the mounted
+   *  page's computed height (DR-406 5). No measurement, no new state. */
+  positionValue(): string | null {
+    const doc = this.doc;
+    if (!doc || doc.page_count === 0 || this.status !== "ready") return null;
+    const page = this.currentPage;
+    let fraction = 0;
+    if (this.viewMode === "single") {
+      const height = this.pageHeights()[page - 1] ?? 0;
+      const max = height - this.viewportHeight;
+      fraction = max > 0 ? clampFraction(this.scrollTop / max) : 0;
+    } else if (this.viewMode === "facing") {
+      const row = Math.floor((page - 1) / 2);
+      const height = this.rowHeights()[row] ?? 0;
+      fraction = height > 0 ? clampFraction((this.scrollTop - (this.rowOffsets()[row] ?? 0)) / height) : 0;
+    } else if (this.viewMode === "horizontal") {
+      const width = this.pageWidth(page);
+      fraction = width > 0 ? clampFraction((this.scrollLeft - (this.rowXOffsets()[page - 1] ?? 0)) / width) : 0;
+    } else {
+      const height = this.pageHeights()[page - 1] ?? 0;
+      fraction = height > 0 ? clampFraction((this.scrollTop - (this.pageOffsets()[page - 1] ?? 0)) / height) : 0;
+    }
+    return encodeReaderPosition(page, fraction, "p");
+  }
+
+  #writePositionNow(): void {
+    const value = this.positionValue();
+    if (value === null) return;
+    void api.appReaderPositionSet(this.docId, value).catch(() => {
+      /* a lost position is not a user-facing error (the settings pattern);
+         the next settle re-tries */
+    });
+  }
+
+  /** Flush on window close (FR-28/AC-168): cancel the debounce and write
+   *  the last value; the caller awaits it before the window closes. */
+  flushPosition(): Promise<void> {
+    this.#writePosition.cancel();
+    const value = this.positionValue();
+    if (value === null) return Promise.resolve();
+    return api
+      .appReaderPositionSet(this.docId, value)
+      .then(() => undefined)
+      .catch(() => {
+        /* the last settle's value stands instead — stated in §3.2 */
+      });
+  }
+
+  // ------------------------------------------------------ text layer (FR-30)
+
+  /** Request one page's text (§3.3): lazily, only for pages entering the
+   *  render window, once per page per window session — the same request
+   *  discipline as page images. A page without embedded text answers an
+   *  empty run list and is cached like any other; a failed extraction is
+   *  the no-layer case silently (a scan behaves exactly like today; the
+   *  window's error state belongs to the page-image path). */
+  requestText(page: number): void {
+    if (this.status !== "ready") return;
+    if (this.texts.has(page) || this.#pendingText.has(page)) return;
+    this.#pendingText.add(page);
+    api
+      .appPdfText(this.docId, page)
+      .then((text) => {
+        const next = new Map(this.texts);
+        next.set(page, text);
+        this.texts = next;
+      })
+      .catch(() => {
+        // No layer for this page (see above) - and the empty answer is
+        // CACHED: extraction runs once per page per window session (§3.3),
+        // a failure included, so the mount effect never re-asks.
+        const pagePt = this.doc?.pages[page - 1];
+        const next = new Map(this.texts);
+        next.set(page, {
+          runs: [],
+          truncated: false,
+          page_width_pt: pagePt?.width_pt ?? 0,
+          page_height_pt: pagePt?.height_pt ?? 0,
+        });
+        this.texts = next;
+      })
+      .finally(() => this.#pendingText.delete(page));
   }
 
   /** A page's CSS width at the current zoom (UI-30 as re-anchored by
@@ -568,6 +839,9 @@ export class ReaderStore {
     if (direction !== 0) this.lastNavDirection = direction;
     if (this.viewMode === "single") {
       this.singleIndex = clamped;
+      // FR-28 (DR-406 3): in single mode a navigation may produce no scroll
+      // event at all — the index change IS the position change.
+      this.schedulePositionRecord();
       return;
     }
     const facing = this.viewMode === "facing";
@@ -579,6 +853,7 @@ export class ReaderStore {
     // the previous page. One pixel inside the target page makes the jump
     // exact for any snap and is invisible to the user.
     this.onScrollTo?.(offsets[index] + 1);
+    this.schedulePositionRecord();
   }
 
   /** D23 (v0.0.8 / AC-119): a zoom change is a layout change, and the

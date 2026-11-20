@@ -13,6 +13,7 @@ pub mod error;
 pub mod library;
 pub mod pdf;
 pub mod pdfmeta;
+pub mod positions;
 #[cfg(test)]
 pub mod testutil;
 
@@ -336,7 +337,20 @@ pub fn run() {
             let sink: Arc<dyn EventSink> = Arc::new(TauriSink::new(app.handle().clone()));
             // The single pdfium owner (§3.1): started here, once; the cover
             // pipeline's render stage and the reader commands are its clients.
-            let render = pdf::RenderService::shared();
+            // D34 (§3.6): the managed resource directory is the extra bind
+            // search location — where the bundlers place the bundled library
+            // (`Contents/Resources/binaries` in the .app, the deb's lib dir).
+            let extra_bind_dirs = match app.path().resource_dir() {
+                Ok(resource_dir) => vec![resource_dir.join("binaries")],
+                Err(error) => {
+                    applog::error(
+                        "startup",
+                        &format!("resource directory unresolved, bind search reduced: {error}"),
+                    );
+                    Vec::new()
+                }
+            };
+            let render = pdf::start_service(extra_bind_dirs);
             app.manage(Reader {
                 dir: reader_dir,
                 render: render.clone(),
@@ -362,6 +376,9 @@ pub fn run() {
             commands::library_set_favorite,
             commands::library_set_reading,
             commands::library_set_password,
+            commands::app_cover_choice,
+            commands::app_cover_clear,
+            commands::app_cover_candidates,
             commands::library_bulk_tags,
             commands::library_delete_document,
             commands::library_delete_document_and_file,
@@ -372,12 +389,17 @@ pub fn run() {
             commands::tags_create,
             commands::tags_rename,
             commands::tags_delete,
+            commands::tags_delete_all,
             commands::app_get_settings,
             commands::app_set_setting,
             commands::app_open_document,
             commands::app_open_reader_window,
             commands::app_pdf_document,
             commands::app_pdf_page,
+            commands::app_pdf_text,
+            commands::app_pdf_thumbs,
+            commands::app_reader_position_get,
+            commands::app_reader_position_set,
             commands::app_pdf_outline,
             commands::app_epub_manifest,
             commands::app_open_containing_folder,

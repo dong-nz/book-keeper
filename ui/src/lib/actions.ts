@@ -33,6 +33,7 @@ export interface DocumentUiHost {
   openDelete: (ids: number[]) => void;
   openRelink: (id: number) => void;
   openRename: (doc: DocumentDto) => void;
+  openCoverPicker: (doc: DocumentDto) => void;
 }
 
 export function documentActions(host: DocumentUiHost): UiAction<DocumentDto>[] {
@@ -93,6 +94,16 @@ export function documentActions(host: DocumentUiHost): UiAction<DocumentDto>[] {
       icon: "bookmark",
       toggle: (doc) => (doc.reading ? { labelKey: "row.unreading", icon: "bookmark-fill" } : { labelKey: "row.reading", icon: "bookmark" }),
       run: (doc) => library.setReading([doc.id], !doc.reading),
+    },
+    {
+      // FR-31 (UI-55, §3.8): "Update cover" — the cover picker (PDF page
+      // strip / EPUB image grid). Context menu only; it does not join the
+      // row/card compact set. A missing file has nothing to render.
+      id: "cover",
+      labelKey: "row.updateCover",
+      icon: "image",
+      applies: (doc) => !doc.missing,
+      run: (doc) => host.openCoverPicker(doc),
     },
     {
       id: "relink",

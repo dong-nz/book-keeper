@@ -7,6 +7,9 @@ export const ICONS = {
   import: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"],
   folder: ["M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"],
   file: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6"],
+  // v0.0.12 (FR-31/UI-55): the cover action glyph (a framed picture — the
+  // same stroke family; the picker's "automatic" item reuses `relink`).
+  image: ["M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2z", "M10 8.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0", "m21 15-5-5L5 21"],
   star: ["M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 21 12 17.77 5.82 21 7 14.14l-5-4.87 6.91-1.01z"],
   "star-fill": ["M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 21 12 17.77 5.82 21 7 14.14l-5-4.87 6.91-1.01z"],
   // v0.0.8 (FR-19 / UI-43): the Reading collection glyph — outline marks

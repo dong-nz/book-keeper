@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::ImageEncoder;
@@ -55,6 +55,7 @@ pub struct DocumentInfo {
 
 type ImageReply = mpsc::Sender<Result<image::DynamicImage, LoadFailure>>;
 type InfoReply = mpsc::Sender<Result<DocumentInfo, LoadFailure>>;
+type TextReply = mpsc::Sender<Result<PageText, LoadFailure>>;
 
 /// Why a load failed (FR-20, AC-104): a missing or wrong password is a
 /// distinct state from an unreadable file — the reader prompts for a
@@ -86,14 +87,24 @@ enum Request {
         password: Option<String>,
         reply: InfoReply,
     },
-    /// Cover image: page 1 at the cover pipeline's fixed target — the
-    /// released rendering math, unchanged (AC-63).
+    /// Cover image: a page at the cover pipeline's fixed target — the
+    /// released rendering math, unchanged (AC-63). `page` is 0-based; 0 is
+    /// the automatic cover (FR-31 extends it to a chosen page, §3.8).
     Cover {
         path: String,
+        page: u32,
         width: u32,
         max_height: u32,
         password: Option<String>,
         reply: ImageReply,
+    },
+    /// One page's embedded text (FR-30, §3.3): the selectable runs plus the
+    /// page size in points. Interactive tier — a reader request.
+    Text {
+        path: String,
+        page: u32,
+        password: Option<String>,
+        reply: TextReply,
     },
 }
 
@@ -118,13 +129,25 @@ pub struct RenderService {
     wake: Arc<Condvar>,
 }
 
-static SERVICE: LazyLock<Arc<RenderService>> = LazyLock::new(RenderService::start);
+static SERVICE: OnceLock<Arc<RenderService>> = OnceLock::new();
+/// The extra bind search directories the app injects at setup (D34, §3.6);
+/// plain data — the `pdf` module imports no Tauri type (R1.1).
+static EXTRA_BIND_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+/// Starting the service with the extra bind search directories
+/// (`lib.rs` passes the managed resource directory's `binaries`). The
+/// first call wins; every later call — like `shared()` — returns the
+/// same service.
+pub fn start_service(extra_bind_dirs: Vec<PathBuf>) -> Arc<RenderService> {
+    let _ = EXTRA_BIND_DIRS.set(extra_bind_dirs);
+    RenderService::shared()
+}
 
 impl RenderService {
     /// The one service this process may have (the bind is process-global).
-    /// `lib.rs` initializes it at setup; tests and services use the same one.
+    /// `lib.rs` starts it at setup; tests and services use the same one.
     pub fn shared() -> Arc<RenderService> {
-        SERVICE.clone()
+        SERVICE.get_or_init(RenderService::start).clone()
     }
 
     fn start() -> Arc<RenderService> {
@@ -197,6 +220,29 @@ impl RenderService {
         result.recv().unwrap_or(Err(LoadFailure::Unreadable))
     }
 
+    /// One page's embedded text (1-based), top-origin page-point runs
+    /// (§3.3). Interactive tier like page rendering; the same load failure
+    /// classification, so a protected document answers `PasswordRequired`
+    /// and the reader's released unlock path applies to text too.
+    pub fn page_text(
+        &self,
+        path: &str,
+        page: u32,
+        password: Option<&str>,
+    ) -> Result<PageText, LoadFailure> {
+        let (reply, result) = mpsc::channel();
+        self.submit(
+            Request::Text {
+                path: path.to_string(),
+                page,
+                password: password.map(str::to_string),
+                reply,
+            },
+            true,
+        );
+        result.recv().unwrap_or(Err(LoadFailure::Unreadable))
+    }
+
     /// The cover pipeline's request: page 1 at the pipeline's fixed render
     /// target. Queued behind interactive work — the background path. A
     /// protected document without a usable password yields `None` — no
@@ -204,6 +250,7 @@ impl RenderService {
     pub fn render_cover(
         &self,
         path: &str,
+        page: u32,
         width: u32,
         max_height: u32,
         password: Option<&str>,
@@ -212,6 +259,7 @@ impl RenderService {
         self.submit(
             Request::Cover {
                 path: path.to_string(),
+                page,
                 width,
                 max_height,
                 password: password.map(str::to_string),
@@ -268,13 +316,25 @@ fn serve(queue: &Arc<Mutex<Queue>>, wake: &Arc<Condvar>) {
             }
             Request::Cover {
                 path,
+                page,
                 width,
                 max_height,
                 password,
                 reply,
             } => {
                 let result = pdfium.as_ref().map_or(Err(LoadFailure::Unreadable), |pdfium| {
-                    render_cover_image(pdfium, &path, width, max_height, password.as_deref())
+                    render_cover_image(pdfium, &path, page, width, max_height, password.as_deref())
+                });
+                let _ = reply.send(result);
+            }
+            Request::Text {
+                path,
+                page,
+                password,
+                reply,
+            } => {
+                let result = pdfium.as_ref().map_or(Err(LoadFailure::Unreadable), |pdfium| {
+                    extract_page_text(pdfium, &path, page, password.as_deref())
                 });
                 let _ = reply.send(result);
             }
@@ -346,6 +406,7 @@ fn render_page_image(
 fn render_cover_image(
     pdfium: &Pdfium,
     path: &str,
+    page: u32,
     width: u32,
     max_height: u32,
     password: Option<&str>,
@@ -354,7 +415,19 @@ fn render_cover_image(
         .set_target_width(width as i32)
         .set_maximum_height(max_height as i32);
     let document = load_pdf(pdfium, path, password)?;
-    let page = document.pages().iter().next().ok_or(LoadFailure::Unreadable)?;
+    // FR-31 (§3.8): the requested 0-based page; a page number past the
+    // document's extent renders page 1 — the automatic cover — so the
+    // choice-tagged file still lands and the choice stands (DR-404).
+    let page_count = usize::try_from(document.pages().len()).unwrap_or(0);
+    let index = usize::try_from(page)
+        .ok()
+        .filter(|index| *index < page_count)
+        .unwrap_or(0);
+    let page = document
+        .pages()
+        .iter()
+        .nth(index)
+        .ok_or(LoadFailure::Unreadable)?;
     page.render_with_config(&config)
         .map_err(|_| LoadFailure::Unreadable)?
         .as_image()
@@ -383,23 +456,122 @@ fn read_document_info(
     })
 }
 
+// ------------------------------------------------------------- text layer
+
+/// §3.3 cap: at most 4 000 runs per page; anything beyond that is dropped
+/// with the flag set, and the frontend renders no layer past the cap.
+const MAX_TEXT_RUNS: usize = 4_000;
+
+/// One selectable run in **top-origin page-point coordinates** (§3.3): `x`/`y`
+/// is the run rect's top-left — the coordinate space the reader's exact
+/// geometry math already uses (M4), so the frontend maps runs to spans
+/// arithmetically at any zoom, never measuring.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TextRun {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// One page's extraction: the runs, the cap flag, and the page size in
+/// points — the `app_pdf_text` DTO shape (§3.3) and the reader cache file's
+/// shape, one structure for both.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PageText {
+    pub runs: Vec<TextRun>,
+    pub truncated: bool,
+    pub page_width_pt: f32,
+    pub page_height_pt: f32,
+}
+
+/// Extracts one page's embedded text (1-based) through the pdfium text SDK
+/// (M7): the page's text segments, each run's string and bounds, with the
+/// bottom-origin PDF rects flipped to top-origin page points (§3.3) —
+/// `y = page_height − rect.top`. Whitespace-only segments are skipped (they
+/// carry nothing to select). A page without embedded text — a scan — yields
+/// an empty vec, not an error: the reader simply shows no layer.
+fn extract_page_text(
+    pdfium: &Pdfium,
+    path: &str,
+    page: u32,
+    password: Option<&str>,
+) -> Result<PageText, LoadFailure> {
+    let document = load_pdf(pdfium, path, password)?;
+    let pages = document.pages();
+    let index = i32::try_from(page.checked_sub(1).ok_or(LoadFailure::Unreadable)?).map_err(
+        |_| LoadFailure::Unreadable,
+    )?;
+    let page = pages.get(index).map_err(|_| LoadFailure::Unreadable)?;
+    let size = page.page_size();
+    let page_width_pt = size.width().value;
+    let page_height_pt = size.height().value;
+    if page_width_pt <= 0.0 || page_height_pt <= 0.0 {
+        return Err(LoadFailure::Unreadable);
+    }
+    let text = page.text().map_err(|_| LoadFailure::Unreadable)?;
+    let mut runs: Vec<TextRun> = Vec::new();
+    let mut truncated = false;
+    for segment in text.segments().iter() {
+        let string = segment.text();
+        if string.trim().is_empty() {
+            continue;
+        }
+        if runs.len() >= MAX_TEXT_RUNS {
+            truncated = true;
+            break;
+        }
+        let bounds = segment.bounds();
+        runs.push(TextRun {
+            text: string,
+            x: bounds.left().value,
+            y: page_height_pt - bounds.top().value,
+            w: bounds.width().value,
+            h: bounds.height().value,
+        });
+    }
+    Ok(PageText {
+        runs,
+        truncated,
+        page_width_pt,
+        page_height_pt,
+    })
+}
+
 // ------------------------------------------------------------ pdfium bind
 
-fn bind_candidates() -> Vec<PathBuf> {
-    // DR-50c bind order: exe directory → binaries/ beside the exe (packaged)
-    // → binaries/ in the working directory (dev). Moved from `covers/`
-    // unchanged (SPEC-v0.0.6 §3.1).
+/// The bind candidate list as a pure function of the process paths and
+/// injected extra directories (D34, §3.6): the packaged macOS `.app` and
+/// `.deb` layouts become provable with synthetic paths, and the real call
+/// sites stay thin wrappers supplying the process values. Order is the
+/// released DR-50c order — exe directory → `binaries/` beside the exe →
+/// the injected directories (the app's resource directory) → `binaries/`
+/// in the working directory (dev); an unknown path contributes nothing,
+/// mirroring today's `current_exe`/`current_dir` failure behavior.
+pub fn bind_candidates(
+    exe_path: Option<&Path>,
+    cwd: Option<&Path>,
+    extra_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(exe_dir) = exe.parent()
-    {
+    if let Some(exe_dir) = exe_path.and_then(Path::parent) {
         candidates.push(exe_dir.to_path_buf());
         candidates.push(exe_dir.join("binaries"));
     }
-    if let Ok(cwd) = std::env::current_dir() {
+    candidates.extend(extra_dirs.iter().cloned());
+    if let Some(cwd) = cwd {
         candidates.push(cwd.join("binaries"));
     }
     candidates
+}
+
+fn process_bind_candidates() -> Vec<PathBuf> {
+    bind_candidates(
+        std::env::current_exe().ok().as_deref(),
+        std::env::current_dir().ok().as_deref(),
+        EXTRA_BIND_DIRS.get().map(Vec::as_slice).unwrap_or_default(),
+    )
 }
 
 fn bind_pdfium() -> Option<Pdfium> {
@@ -407,7 +579,7 @@ fn bind_pdfium() -> Option<Pdfium> {
     // and every later attempt returns AlreadyInitialized. The service thread
     // binds exactly once — it is the only thread that ever calls pdfium
     // (R5.1, DR-134).
-    for dir in bind_candidates() {
+    for dir in process_bind_candidates() {
         let name = Pdfium::pdfium_platform_library_name_at_path(&dir);
         if let Ok(library) = Pdfium::bind_to_library(&name) {
             return Some(Pdfium::new(library));
@@ -420,7 +592,7 @@ fn bind_pdfium() -> Option<Pdfium> {
 /// this instead of `bind_pdfium` because probing would consume the
 /// process-global bind the service thread needs.
 pub fn pdfium_binary_present() -> bool {
-    bind_candidates()
+    process_bind_candidates()
         .iter()
         .any(|dir| Pdfium::pdfium_platform_library_name_at_path(dir).is_file())
 }
@@ -436,6 +608,16 @@ pub fn reader_page_path(reader_dir: &Path, doc_id: i64, page: u32, width: u32) -
     reader_dir
         .join(doc_id.to_string())
         .join(format!("{page}-{width}.png"))
+}
+
+/// The reader text cache file (§3.3): `<reader_dir>/<doc-key>/text-<page>.json`
+/// — the same document directory as the page images, so the released
+/// session-scope cleanup (window close, document delete, startup sweep)
+/// clears text caches with the identical code path.
+pub fn reader_text_path(reader_dir: &Path, doc_id: i64, page: u32) -> PathBuf {
+    reader_dir
+        .join(doc_id.to_string())
+        .join(format!("text-{page}.json"))
 }
 
 /// Removing one document's reader cache never fails a flow (AC-62/AC-67):
@@ -567,10 +749,177 @@ pub fn serve_page(
     Ok(cache.to_string_lossy().into_owned())
 }
 
+/// Serve one page's text (§3.3), mirroring `serve_page`'s two-stage
+/// serving: a cache hit is returned without extraction; a miss extracts
+/// through the single owner and writes the file. A cache file that no
+/// longer parses counts as a miss. Callers run this on a blocking thread,
+/// never the UI thread (R3.5).
+pub fn serve_text(
+    render: &RenderService,
+    reader_dir: &Path,
+    doc_id: i64,
+    document_path: &str,
+    page: u32,
+    password: Option<&str>,
+) -> Result<PageText, AppError> {
+    let cache = reader_text_path(reader_dir, doc_id, page);
+    if let Ok(contents) = std::fs::read_to_string(&cache)
+        && let Ok(text) = serde_json::from_str::<PageText>(&contents)
+    {
+        return Ok(text);
+    }
+    let text = render
+        .page_text(document_path, page, password)
+        .map_err(|error| password_required_or_unopenable(error, document_path, password))?;
+    if let Some(parent) = cache.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| AppError::Io {
+            path: parent.to_string_lossy().into_owned(),
+            message: error.to_string(),
+        })?;
+    }
+    let body = serde_json::to_string(&text).map_err(|error| AppError::Io {
+        path: cache.to_string_lossy().into_owned(),
+        message: error.to_string(),
+    })?;
+    std::fs::write(&cache, body).map_err(|error| AppError::Io {
+        path: cache.to_string_lossy().into_owned(),
+        message: error.to_string(),
+    })?;
+    Ok(text)
+}
+
+// ------------------------------------------------------------ cover picker
+
+/// §3.8: the cover picker's fixed render width in CSS px — strip tiles are
+/// small; the service's scale bounds apply unchanged. The width is a
+/// server-side constant: the command takes only a page window.
+const PICKER_WIDTH: u32 = 240;
+
+/// §3.8: the largest page window one request may render — the picker fills
+/// lazily in small windows, and a request past this bound is malformed.
+const MAX_THUMB_BATCH: u32 = 32;
+
+/// Batched cover-picker thumbnails (§3.8): pages `from..=to` (1-based,
+/// inclusive) at the picker width, each served exactly like `serve_page`
+/// — a cached file is served as-is, a miss renders through the service's
+/// interactive tier and writes. The files live under a `picker/`
+/// subdirectory of the existing reader directory (DR-404): already inside
+/// the asset-protocol scope, no new protocol or top-level path, ephemeral
+/// under the released reader-directory teardown. A malformed window
+/// (`from < 1`, `from > to`, or past `MAX_THUMB_BATCH`) is rejected
+/// before any rendering; a page the document cannot answer fails the
+/// window with the released error kinds. The response is the file paths
+/// in page order — the released page-image transport, batched.
+pub fn serve_thumbs(
+    render: &RenderService,
+    reader_dir: &Path,
+    doc_id: i64,
+    document_path: &str,
+    from: u32,
+    to: u32,
+    password: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    if from < 1 || from > to || to - from + 1 > MAX_THUMB_BATCH {
+        return Err(AppError::Validation(format!(
+            "thumbnail window must start at page 1 and span at most {MAX_THUMB_BATCH} pages"
+        )));
+    }
+    let picker_dir = reader_dir.join("picker");
+    let span = usize::try_from(to - from + 1).unwrap_or(0);
+    let mut paths: Vec<String> = Vec::with_capacity(span);
+    for page in from..=to {
+        paths.push(serve_page(
+            render,
+            &picker_dir,
+            doc_id,
+            document_path,
+            page,
+            PICKER_WIDTH,
+            password,
+        )?);
+    }
+    Ok(paths)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::{TempDir, fixture, fixture_multi};
+
+    // D34 (§3.6, AC-175): synthetic packaged layouts. No test layer has
+    // ever run a packaged-app layout (the CI and these tests run the
+    // source tree); these units close that class mechanically.
+    #[test]
+    fn bind_candidates_reach_the_packaged_macos_and_deb_layouts() {
+        let temp = TempDir::new("bind-layouts");
+
+        // The published macOS `.app` layout: the binary at
+        // Contents/MacOS/bookkeeper, the library at Contents/Resources/binaries.
+        let app = temp.path().join("Book Keeper.app");
+        let macos_dir = app.join("Contents/MacOS");
+        let resources = app.join("Contents/Resources/binaries");
+        std::fs::create_dir_all(&macos_dir).unwrap();
+        std::fs::create_dir_all(&resources).unwrap();
+        let app_exe = macos_dir.join("bookkeeper");
+        std::fs::write(&app_exe, "app binary").unwrap();
+        std::fs::write(
+            Pdfium::pdfium_platform_library_name_at_path(&resources),
+            "libpdfium",
+        )
+        .unwrap();
+
+        // The published `.deb` layout: /usr/bin/bookkeeper with the library
+        // under the package lib dir's binaries.
+        let deb_root = temp.path().join("debroot");
+        let deb_bin = deb_root.join("usr/bin");
+        let deb_libs = deb_root.join("usr/lib/Book Keeper/binaries");
+        std::fs::create_dir_all(&deb_bin).unwrap();
+        std::fs::create_dir_all(&deb_libs).unwrap();
+        let deb_exe = deb_bin.join("bookkeeper");
+        std::fs::write(&deb_exe, "deb binary").unwrap();
+        std::fs::write(
+            Pdfium::pdfium_platform_library_name_at_path(&deb_libs),
+            "libpdfium",
+        )
+        .unwrap();
+
+        // The search, run exactly as `bind_pdfium` runs it (the file check
+        // only — probing would consume the process-global bind).
+        for (exe, extra) in [
+            (&app_exe, vec![resources.clone()]),
+            (&deb_exe, vec![deb_libs.clone()]),
+        ] {
+            let candidates = bind_candidates(Some(exe), Some(temp.path()), &extra);
+            assert!(
+                candidates.iter().any(|dir| Pdfium::pdfium_platform_library_name_at_path(dir).is_file()),
+                "the bind search must reach the packaged library for {exe:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bind_candidates_keep_the_released_dev_and_next_to_binary_paths() {
+        // The source-tree and Windows/AppImage behavior is untouched:
+        // exe directory → binaries/ beside the exe → injected directories →
+        // binaries/ in the working directory; unknown process paths
+        // contribute nothing, as today's current_exe/current_dir failures.
+        let exe = Path::new("C:/Program Files/Book Keeper/bookkeeper.exe");
+        let cwd = Path::new("D:/projects/pdf-keeper/src-tauri");
+        assert_eq!(
+            bind_candidates(
+                Some(exe),
+                Some(cwd),
+                &[PathBuf::from("/usr/lib/Book Keeper/binaries")],
+            ),
+            vec![
+                PathBuf::from("C:/Program Files/Book Keeper"),
+                PathBuf::from("C:/Program Files/Book Keeper/binaries"),
+                PathBuf::from("/usr/lib/Book Keeper/binaries"),
+                PathBuf::from("D:/projects/pdf-keeper/src-tauri/binaries"),
+            ]
+        );
+        assert_eq!(bind_candidates(None, None, &[]), Vec::<PathBuf>::new());
+    }
 
     #[test]
     fn the_queue_takes_interactive_requests_ahead_of_cover_jobs() {
@@ -582,6 +931,7 @@ mod tests {
         let mut queue = Queue::default();
         queue.covers.push_back(Request::Cover {
             path: "C:/a.pdf".into(),
+            page: 0,
             width: 640,
             max_height: 905,
             password: None,
@@ -589,6 +939,7 @@ mod tests {
         });
         queue.covers.push_back(Request::Cover {
             path: "C:/b.pdf".into(),
+            page: 0,
             width: 640,
             max_height: 905,
             password: None,
@@ -631,6 +982,18 @@ mod tests {
             reader_page_path(dir, 7, 3, 1600),
             reader_page_path(dir, 8, 3, 1600),
             "different documents never share a cache file"
+        );
+        // §3.3: text caches sit in the same per-document directory, so the
+        // released cleanup (window close, delete, startup sweep) clears them
+        // with the identical code path.
+        assert_eq!(
+            reader_text_path(dir, 7, 3),
+            PathBuf::from("C:/appdata/reader/7/text-3.json")
+        );
+        assert_eq!(
+            reader_text_path(dir, 7, 3).parent(),
+            reader_page_path(dir, 7, 3, 1600).parent(),
+            "one directory per document covers both caches"
         );
     }
 
@@ -761,9 +1124,9 @@ mod tests {
 
         // AC-106 (render half): the cover path degrades to no-image — the
         // glyph fallback — without a usable password, and renders with one.
-        assert!(service.render_cover(&path, 320, 456, None).is_none());
-        assert!(service.render_cover(&path, 320, 456, Some("wrong")).is_none());
-        assert!(service.render_cover(&path, 320, 456, Some("sesame")).is_some());
+        assert!(service.render_cover(&path, 0, 320, 456, None).is_none());
+        assert!(service.render_cover(&path, 0, 320, 456, Some("wrong")).is_none());
+        assert!(service.render_cover(&path, 0, 320, 456, Some("sesame")).is_some());
     }
 
     #[test]
@@ -870,6 +1233,279 @@ mod tests {
             service.render_page(&path, 1000, 800, None).is_ok(),
             "the last page of a 1 000-page document renders"
         );
+    }
+
+    // FR-30 (§3.3): text extraction — the selection probe, the scan case,
+    // the run cap, the released password path, and the reader text cache.
+    fn joined_text(text: &PageText) -> String {
+        text.runs
+            .iter()
+            .map(|run| run.text.as_str())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn page_text_returns_top_origin_runs_for_a_text_bearing_page() {
+        // The probe fixture draws its known sentence per page at (72, 700)
+        // bottom-origin on a 612 × 792 page. The runs the reader consumes
+        // are top-origin: this line's y sits near the page top (page height
+        // minus the rect's top), not near 700 — the coordinate flip is the
+        // whole point of the proof (AC-169's geometry half).
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping text proof");
+            return;
+        }
+        let path = fixture("text-probe.pdf").to_string_lossy().into_owned();
+        let service = service();
+        let text = service
+            .page_text(&path, 7, None)
+            .expect("the probe's page 7 carries text");
+        assert_eq!((text.page_width_pt, text.page_height_pt), (612.0, 792.0));
+        assert!(!text.truncated, "one sentence per page is far below the cap");
+        assert!(
+            joined_text(&text).contains("Page 7 of the selection probe document"),
+            "the document's own text: {:?}",
+            text.runs
+        );
+        let run = &text.runs[0];
+        assert!((68.0..=76.0).contains(&run.x), "the line starts at x = 72 pt: {run:?}");
+        assert!(
+            (0.0..200.0).contains(&run.y),
+            "top-origin coordinates — a bottom-origin y would sit near 700: {run:?}"
+        );
+        assert!(run.w > 100.0 && run.h > 8.0, "the run's own rectangle: {run:?}");
+        // A page past the extent behaves exactly like page rendering.
+        assert!(matches!(
+            service.page_text(&path, 9, None),
+            Err(LoadFailure::Unreadable)
+        ));
+    }
+
+    #[test]
+    fn a_page_without_text_extracts_nothing_and_is_not_an_error() {
+        // The image-only fixture: a real image XObject, no text operators
+        // anywhere. A scan yields no layer — an empty vec, not a failure
+        // (§3.3: "a page without embedded text gets no layer and no message").
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping scan proof");
+            return;
+        }
+        let path = fixture("image-only.pdf").to_string_lossy().into_owned();
+        let text = service()
+            .page_text(&path, 1, None)
+            .expect("an image-only page loads normally");
+        assert!(text.runs.is_empty(), "no embedded text: {:?}", text.runs);
+        assert!(!text.truncated);
+    }
+
+    #[test]
+    fn a_dense_page_is_capped_at_four_thousand_runs_with_the_flag_set() {
+        // The dense fixture carries 4 010 separate runs on one page; the
+        // extraction serves 4 000 and flags the rest (§3.3 cap).
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping cap proof");
+            return;
+        }
+        let path = fixture("dense-text.pdf").to_string_lossy().into_owned();
+        let text = service()
+            .page_text(&path, 1, None)
+            .expect("the dense fixture loads");
+        assert_eq!(text.runs.len(), MAX_TEXT_RUNS, "the cap bounds the run list");
+        assert!(text.truncated, "runs beyond the cap are flagged");
+    }
+
+    #[test]
+    fn page_text_follows_the_released_password_path() {
+        // §3.3: "text extraction reuses it, no new prompt" — the protected
+        // fixture answers `PasswordRequired` without a password (the reader's
+        // existing unlock form applies) and extracts with the right one.
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping password proof");
+            return;
+        }
+        let path = fixture("protected.pdf").to_string_lossy().into_owned();
+        let service = service();
+        assert!(matches!(
+            service.page_text(&path, 1, None),
+            Err(LoadFailure::PasswordRequired)
+        ));
+        let text = service
+            .page_text(&path, 1, Some("sesame"))
+            .expect("the stored password opens it");
+        assert!(
+            joined_text(&text).contains("Protected fixture page"),
+            "{:?}",
+            text.runs
+        );
+    }
+
+    #[test]
+    fn serve_text_caches_the_extraction_and_serves_the_cached_page_after() {
+        // §3.3 mirrors the page cache's serving rule: a miss extracts and
+        // writes; a hit is served from the file with no re-extraction —
+        // proven by replacing the cache with a sentinel JSON and requesting
+        // again. A file that no longer parses counts as a miss.
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping text cache proof");
+            return;
+        }
+        let temp = TempDir::new("serve-text");
+        let reader_dir = temp.path().join("reader");
+        let path = fixture("text-probe.pdf").to_string_lossy().into_owned();
+        let first = serve_text(&service(), &reader_dir, 42, &path, 7, None)
+            .expect("a valid document serves its text");
+        assert!(!first.runs.is_empty());
+        let cache = reader_text_path(&reader_dir, 42, 7);
+        assert!(cache.exists(), "the extraction was written to the reader cache");
+        std::fs::write(
+            &cache,
+            r#"{"runs":[{"text":"cached run","x":1.0,"y":2.0,"w":3.0,"h":4.0}],"truncated":false,"page_width_pt":612.0,"page_height_pt":792.0}"#,
+        )
+        .unwrap();
+        let again = serve_text(&service(), &reader_dir, 42, &path, 7, None).unwrap();
+        assert_eq!(again.runs.len(), 1);
+        assert_eq!(
+            again.runs[0].text, "cached run",
+            "the cache hit is served untouched — no re-extraction overwrote it"
+        );
+        std::fs::write(&cache, "not json").unwrap();
+        let reextracted = serve_text(&service(), &reader_dir, 42, &path, 7, None).unwrap();
+        assert!(
+            joined_text(&reextracted).contains("Page 7 of the selection probe document"),
+            "a cache file that no longer parses is a miss: {:?}",
+            reextracted.runs
+        );
+    }
+
+    #[test]
+    fn serve_text_maps_the_password_state_to_the_released_typed_error() {
+        // The command-side classification is the released one (AC-104's
+        // mapping): serve_text hands the password state through unchanged.
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping typed-error proof");
+            return;
+        }
+        let temp = TempDir::new("serve-text-password");
+        let reader_dir = temp.path().join("reader");
+        let path = fixture("protected.pdf").to_string_lossy().into_owned();
+        let result = serve_text(&service(), &reader_dir, 42, &path, 1, None);
+        assert!(
+            matches!(result, Err(AppError::PasswordRequired { .. })),
+            "expected the typed password error, got {result:?}"
+        );
+    }
+
+    // §3.8, AC-181's Rust half: batched picker thumbnails.
+    #[test]
+    fn serve_thumbs_renders_the_window_at_picker_width_and_caches_it() {
+        // A window of pages comes back as file paths in page order, under
+        // the reader directory's `picker/` subdirectory (DR-404) at the
+        // picker width; a second request is served from the cache — proven
+        // with the same sentinel method as the page cache.
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping thumbs proof");
+            return;
+        }
+        let temp = TempDir::new("serve-thumbs");
+        let reader_dir = temp.path().join("reader");
+        let path = fixture_multi("multi-012.pdf")
+            .to_string_lossy()
+            .into_owned();
+        let first = serve_thumbs(&service(), &reader_dir, 42, &path, 3, 5, None)
+            .expect("a valid document serves its thumbnail window");
+        assert_eq!(first.len(), 3, "one path per page in the window, in order");
+        for (offset, page) in (3..=5).enumerate() {
+            let expected = reader_page_path(&reader_dir.join("picker"), 42, page, PICKER_WIDTH);
+            assert_eq!(first[offset], expected.to_string_lossy());
+            assert!(expected.is_file(), "the window was rendered to the cache");
+        }
+        std::fs::write(reader_page_path(
+            &reader_dir.join("picker"),
+            42,
+            4,
+            PICKER_WIDTH,
+        ), "sentinel")
+        .unwrap();
+        let again = serve_thumbs(&service(), &reader_dir, 42, &path, 3, 5, None).unwrap();
+        assert_eq!(again, first, "the same window resolves to the same keys");
+        assert_eq!(
+            std::fs::read_to_string(reader_page_path(
+                &reader_dir.join("picker"),
+                42,
+                4,
+                PICKER_WIDTH
+            ))
+            .unwrap(),
+            "sentinel",
+            "the cached pages are served untouched — no re-render"
+        );
+    }
+
+    #[test]
+    fn serve_thumbs_rejects_malformed_windows_before_rendering_anything() {
+        // The existing validation kind (the `app_pdf_page` bounds pattern):
+        // a bad window is refused with no rendering work done.
+        let temp = TempDir::new("serve-thumbs-malformed");
+        let reader_dir = temp.path().join("reader");
+        let path = fixture_multi("multi-012.pdf")
+            .to_string_lossy()
+            .into_owned();
+        for (from, to) in [(0, 3), (5, 4), (1, MAX_THUMB_BATCH + 1)] {
+            let result = serve_thumbs(&service(), &reader_dir, 42, &path, from, to, None);
+            assert!(
+                matches!(result, Err(AppError::Validation(_))),
+                "window {from}..={to} must be a Validation error, got {result:?}"
+            );
+        }
+        assert!(
+            !reader_dir.join("picker").exists(),
+            "a refused request renders nothing"
+        );
+    }
+
+    #[test]
+    fn serve_thumbs_fails_a_window_past_the_document_with_the_released_error() {
+        // A page the document cannot answer fails the window with the
+        // released typed error (the picker asks only within the manifest it
+        // already has; the guard is the same classification as page serving).
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping range proof");
+            return;
+        }
+        let temp = TempDir::new("serve-thumbs-range");
+        let reader_dir = temp.path().join("reader");
+        let path = fixture_multi("multi-012.pdf")
+            .to_string_lossy()
+            .into_owned();
+        let result = serve_thumbs(&service(), &reader_dir, 42, &path, 11, 13, None);
+        assert!(
+            matches!(result, Err(AppError::PdfUnopenable { .. })),
+            "expected the typed unopenable error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn serve_thumbs_honours_the_released_password_path() {
+        // The batch carries the stored password like every other request:
+        // no password is the typed prompt state, the right password renders.
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping thumbs password proof");
+            return;
+        }
+        let temp = TempDir::new("serve-thumbs-password");
+        let reader_dir = temp.path().join("reader");
+        let path = fixture("protected.pdf").to_string_lossy().into_owned();
+        let service = service();
+        let without = serve_thumbs(&service, &reader_dir, 42, &path, 1, 2, None);
+        assert!(
+            matches!(without, Err(AppError::PasswordRequired { .. })),
+            "expected the typed password error, got {without:?}"
+        );
+        let with = serve_thumbs(&service, &reader_dir, 42, &path, 1, 1, Some("sesame"))
+            .expect("the stored password renders the window");
+        assert_eq!(with.len(), 1);
+        assert!(std::fs::File::open(&with[0]).is_ok());
     }
 
     #[test]

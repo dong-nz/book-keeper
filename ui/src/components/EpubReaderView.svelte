@@ -24,8 +24,28 @@
   let { store }: { store: EpubReaderStore } = $props();
 
   let scroller = $state<HTMLDivElement>();
-  const range = $derived(store.mountRange());
   const spine = $derived(store.manifest?.spine ?? []);
+  const range = $derived.by(() => {
+    const r = store.mountRange();
+    if (!store.restorePending) return r;
+    // FR-28 (AC-167): while a remembered position is waiting to land only
+    // the landing chapter mounts — no other chapter is fetched or built,
+    // and no edge label names a chapter before the landing. The pads carry
+    // the model heights above and below it; the landing chapter's own span
+    // is its real content (its text was fetched at load, the action builds
+    // it before this window scrolls), because a stack whose only content
+    // is a byte estimate cannot hold a scroll position the estimate is
+    // larger than — the landing would clamp short of its own target.
+    const target = store.restoreTarget;
+    const offsets = store.chapterOffsets();
+    return {
+      start: target,
+      end: target + 1,
+      padTop: offsets[target] ?? 0,
+      padBottom: Math.max(0, r.totalHeight - (offsets[target + 1] ?? r.totalHeight)),
+      totalHeight: r.totalHeight,
+    };
+  });
   const mounted = $derived.by(() => {
     const indexes: number[] = [];
     for (let i = range.start; i < Math.min(range.end, spine.length); i++) indexes.push(i);
@@ -72,6 +92,13 @@
   // the theme ramp reach the content.
   const CHAPTER_BASE_CSS = `
     :host, .flow-root { color: inherit; }
+    /* FR-30 (UI-54, §3.3): the reading column's text is selectable — the
+       app's global no-selection rule (base.css) reaches shadow content by
+       inheritance, so the override is scoped here, on the formatting root
+       (the M5 scoped-override pattern; user-select is inherited, so every
+       node in the chapter follows). Copy is the webview's own path; links,
+       scrolling and navigation are untouched. */
+    :host, .flow-root { user-select: text; -webkit-user-select: text; }
     /* A formatting root: the book content's own margins stay inside the
        measured box, so the stack's gaps are exactly the model's PAGE_GAP
        and the DOM geometry and the position model agree on every edge. */
@@ -283,12 +310,12 @@
   function measureChapter(index0: number): void {
     const host = hosts.get(index0);
     if (!host || !scroller) return;
-    const delta = store.recordHeight(index0, host.section.offsetHeight);
-    if (delta !== 0 && index0 < store.currentChapter - 1) {
+    const change = store.recordHeight(index0, host.section.offsetHeight);
+    if (change.delta !== 0 && change.aboveReader) {
       programmaticScroll = true;
-      scroller.scrollTop += delta;
+      scroller.scrollTop += change.delta;
     }
-    if (delta !== 0 && stickToEnd) {
+    if (change.delta !== 0 && stickToEnd) {
       // The stack grew while `End` owns the position: re-apply the landing.
       programmaticScroll = true;
       scroller.scrollTo({ top: scroller.scrollHeight });
@@ -314,6 +341,10 @@
     store.scrollTop = scroller.scrollTop - STACK_TOP_PAD;
     store.viewportHeight = scroller.clientHeight;
     if (stickToEnd) scroller.scrollTo({ top: scroller.scrollHeight });
+    // FR-28 (DR-406 3): the scroll settle is the reading-position signal —
+    // the store debounces the write itself (1 s, AC-168); this call only
+    // re-arms the timer.
+    store.schedulePositionRecord();
   }
 
   function onScroll(): void {
@@ -391,6 +422,17 @@
       store.onScrollTo = null;
       store.onScrollBy = null;
     };
+  });
+
+  // FR-28 (DR-406 1): the remembered position lands through the registered
+  // scroller callback — declared after it on purpose, so the callback exists
+  // when the landing runs. The view only mounts once the store is `ready`
+  // (ReaderApp's gate), the measurement effect has already set the viewport,
+  // and the pending window shape (above) keeps chapter 1 unmounted and
+  // unnamed until the landing — the first paint shows the landed position.
+  $effect(() => {
+    if (!scroller || !store.restorePending) return;
+    store.applyRestoredPosition();
   });
 
   // Internal links and the ToC's fragment jumps (§3.13): the target chapter
@@ -475,7 +517,18 @@
       </div>
     {/if}
     {#each mounted as index0 (index0)}
-      <section class="chapter" use:chapterSection={index0}>
+      <!-- A mounted chapter without its text yet (the overscan sibling of a
+           restored landing) carries the model's height as its floor: the
+           stack the landing scrolled against must survive the mount
+           restructure, or the browser clamps the scroll below its target
+           and the re-anchor reads as a reader who left the landing. A
+           chapter with text builds in the action — its real height stands
+           instead. -->
+      <section
+        class="chapter"
+        style={store.chapterText.has(index0 + 1) ? undefined : `min-height: ${store.chapterHeight(index0)}px`}
+        use:chapterSection={index0}
+      >
         {#if labelFor(index0)}
           <p class="chapter-label">{labelFor(index0)}</p>
         {/if}

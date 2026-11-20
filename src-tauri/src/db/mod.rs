@@ -26,7 +26,8 @@ CREATE TABLE documents (
     missing      INTEGER NOT NULL DEFAULT 0,
     title_source TEXT NOT NULL DEFAULT 'auto' CHECK (title_source IN ('auto', 'user')),
     reading      INTEGER NOT NULL DEFAULT 0,
-    pdf_password TEXT NOT NULL DEFAULT ''
+    pdf_password TEXT NOT NULL DEFAULT '',
+    cover_choice TEXT NULL
 );
 
 CREATE TABLE tags (
@@ -96,6 +97,12 @@ DROP TABLE document_categories;
 DROP TABLE categories;
 "#;
 
+/// Upgrade from version 2 (the v0.0.8–v0.0.11 shape) to version 3
+/// (SPEC-v0.0.12 §3.8, FR-31): the manual cover choice column, additive only.
+const UPGRADE_V2_TO_V3: &str = r#"
+ALTER TABLE documents ADD COLUMN cover_choice TEXT NULL;
+"#;
+
 /// Open the library database in the per-user data directory (RULES R8.4) and
 /// bring the schema up to date. `foreign_keys` is always ON (RULES R2.4).
 pub fn open(app_data_dir: &Path) -> Result<Connection, AppError> {
@@ -119,18 +126,24 @@ pub fn open_in_memory() -> Result<Connection, AppError> {
 
 fn migrate(conn: &Connection) -> Result<(), AppError> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version >= 2 {
+    if version >= 3 {
         return Ok(());
     }
-    if version == 1 {
-        // A v0.0.1–v0.0.7 database: rebuild onto the tag tables, rows copied (DR-273).
-        conn.execute_batch(UPGRADE_V1_TO_V2)?;
-    } else {
-        // Fresh database: the clean baseline, tag vocabulary from the first statement.
+    if version == 0 {
+        // Fresh database: the current clean baseline, everything inline (DR-273).
         conn.execute_batch(SCHEMA_BASELINE)?;
+    } else {
+        if version < 2 {
+            // A v0.0.1–v0.0.7 database: rebuild onto the tag tables, rows copied (DR-273).
+            conn.execute_batch(UPGRADE_V1_TO_V2)?;
+        }
+        if version < 3 {
+            // A v0.0.8–v0.0.11 database: the cover choice column (FR-31).
+            conn.execute_batch(UPGRADE_V2_TO_V3)?;
+        }
     }
-    conn.pragma_update(None, "user_version", 2)?;
-    // Future releases append `if version < 3 { … }` blocks here — additive
+    conn.pragma_update(None, "user_version", 3)?;
+    // Future releases append `if version < 4 { … }` blocks here — additive
     // only, never rewriting earlier migrations (RULES R2.1; the baseline
     // re-baselining was a one-time decision, DR-273).
     Ok(())
@@ -165,7 +178,7 @@ mod tests {
     #[test]
     fn fresh_database_migrates_to_current_version() {
         let conn = open_in_memory().unwrap();
-        assert_eq!(user_version(&conn).unwrap(), 2);
+        assert_eq!(user_version(&conn).unwrap(), 3);
         // AC-113 (fresh half): a fresh database carries the tag vocabulary from
         // the first statement — the baseline never creates a category-named object.
         let names: Vec<String> = conn
@@ -195,7 +208,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
-        assert_eq!(user_version(&conn).unwrap(), 2);
+        assert_eq!(user_version(&conn).unwrap(), 3);
     }
 
     #[test]
@@ -280,9 +293,9 @@ END;
         conn.execute("INSERT INTO categories (name) VALUES ('Read'),('Archive')", []).unwrap();
         conn.execute("INSERT INTO document_categories (document_id, category_id) VALUES (1, 1), (1, 2)", []).unwrap();
 
-        migrate(&conn).unwrap(); // the rebuild upgrade runs
+        migrate(&conn).unwrap(); // the rebuild upgrade runs (and continues to the current version)
 
-        assert_eq!(user_version(&conn).unwrap(), 2);
+        assert_eq!(user_version(&conn).unwrap(), 3);
         let groups: i64 = conn
             .query_row("SELECT COUNT(*) FROM tags JOIN document_tags ON tags.id = document_tags.tag_id WHERE document_tags.document_id = 1", [], |r| r.get(0))
             .unwrap();
@@ -318,6 +331,68 @@ END;
             .collect();
         assert_eq!(defaults.len(), 2);
         assert!(defaults.iter().all(|(_, d)| d == "0" || d == "''"));
+    }
+
+    /// The v0.0.8–v0.0.11 schema shape (the version-2 baseline, without the
+    /// cover choice column) — fixture for the FR-31 migration (§3.8).
+    const LEGACY_SCHEMA_V2: &str = r#"
+CREATE TABLE documents (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    path         TEXT NOT NULL UNIQUE,
+    filename     TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    author       TEXT NOT NULL DEFAULT '',
+    notes        TEXT NOT NULL DEFAULT '',
+    favorite     INTEGER NOT NULL DEFAULT 0,
+    size         INTEGER NOT NULL,
+    mtime        INTEGER NOT NULL,
+    added_at     INTEGER NOT NULL,
+    missing      INTEGER NOT NULL DEFAULT 0,
+    title_source TEXT NOT NULL DEFAULT 'auto' CHECK (title_source IN ('auto', 'user')),
+    reading      INTEGER NOT NULL DEFAULT 0,
+    pdf_password TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"#;
+
+    #[test]
+    fn v3_migration_adds_cover_choice_to_an_existing_database() {
+        // SPEC-v0.0.12 §3.10 (cover choice, migration half): the additive
+        // column lands on an existing version-2 database with rows kept and
+        // every existing choice NULL (automatic — the released behavior).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(LEGACY_SCHEMA_V2).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute(
+            "INSERT INTO documents (path, filename, title, size, mtime, added_at) VALUES ('/a.pdf', 'a.pdf', 'A', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        assert_eq!(user_version(&conn).unwrap(), 3);
+        let cols: Vec<(String, String)> = conn
+            .prepare("SELECT name, dflt_value FROM pragma_table_info('documents') WHERE name = 'cover_choice'")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default())))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(cols, vec![("cover_choice".to_string(), String::new())], "the column exists, no default — NULL means automatic");
+        let stored: Option<String> = conn
+            .query_row("SELECT cover_choice FROM documents WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored, None, "existing documents keep the automatic cover");
+        let title: String = conn
+            .query_row("SELECT title FROM documents WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(title, "A", "rows survive the migration");
     }
 
     #[test]

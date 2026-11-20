@@ -480,6 +480,27 @@ class LibraryStore {
     }
   }
 
+  /** FR-32: the bulk delete. Empties the tags, drops every filter reference
+   *  (the `deleteTag` rule applied to the whole set — a filter left pointing
+   *  at deleted tags would filter to nothing), and reports the deleted count
+   *  through the normal completion toast. */
+  async deleteAllTags(): Promise<void> {
+    try {
+      const deleted = await api.tagsDeleteAll();
+      this.tags = [];
+      if (this.filter.tag_ids.length > 0) {
+        this.setFilter({ tag_ids: [] });
+      } else {
+        await this.refresh();
+      }
+      if (deleted > 0) {
+        feedback.notify("toast.tagsDeleted", deleted);
+      }
+    } catch (error) {
+      feedback.reportError(asAppError(error));
+    }
+  }
+
   /** Import entry points; the active tag set is the auto-assignment
    *  target (FR-10 as modified, DR-82): every active tag receives the
    *  imported documents, an empty set assigns nothing. */

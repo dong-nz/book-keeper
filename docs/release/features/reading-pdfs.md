@@ -1,6 +1,6 @@
 # Reading PDFs
 
-> **Status: ✅ Shipped in v0.0.6, updated in v0.0.7, v0.0.8, v0.0.9 and v0.0.10** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.6, updated in v0.0.7, v0.0.8, v0.0.9, v0.0.10 and v0.0.12** — verified by running the app.
 
 Book Keeper now opens documents **inside itself**. Double-click a document (or press `Enter` on a focused row, or choose **Open** in its right-click menu) and the document opens in its own reading window — no other application needs to start.
 
@@ -64,3 +64,13 @@ Opening a document with your system's PDF application is still there — it just
 > - **A small drawing fix while pages arrive.** Pages fade in as before (v0.0.9); during the fade no placeholder icon ever shows — earlier a small "broken image" icon could flash.
 >
 > Everything else about reading — the other modes, navigation, zoom, page speed, opening with another application — is unchanged.
+
+> **Amendment (2026-11-19, v0.0.12): the reader remembers you, text becomes selectable, and you can choose the document's cover** (verified by running the app).
+>
+> - **The reader remembers where you stopped.** Open a document again and it comes back to the page you were last on — including how far down that page you had scrolled, in whichever view mode you were using, for every mode. The memory is per document and survives app restarts. Deleting a document forgets its place; relinking or renaming a file keeps it. If the file has since been replaced by a shorter one, the reader opens at the nearest page that exists — no error, no blank window. While you read, the place is saved quietly in the background; if the app is closed abruptly, at most the last second of reading is lost. There is no "continue reading" prompt or list — it just opens where you left off.
+> - **Your view mode is remembered too.** The mode you last chose (Continuous, Single page, Facing, Continuous horizontal) is the mode new reading windows open in — across documents and across restarts. Choosing a mode per window works exactly as before; only the starting point changed. Until you choose a mode for the first time, the default is still Continuous. (This replaces the v0.0.10 note that modes are never remembered.)
+> - **Select and copy text.** Drag across a page and its text highlights, like anywhere else — the selectable text sits invisibly over the rendered page at the real text positions. Copy with `Ctrl+C` (or `Ctrl+Insert`); the selection is shown in the app's own selection color. It works in every view mode and after zooming. Pages that are just scanned images have no text to select — they look and behave exactly as before. Selecting does not interfere with scrolling, navigation, or the controls.
+> - **Choose which page is the document's cover.** The top bar now carries a **cover** control (at the right end, left of the settings button). In a PDF it offers **"Set this page as cover"** — the page you're currently looking at becomes the document's cover in the library — and **"Automatic cover"**, which reverts to the first page. The choice is kept; it survives restarts. You can also choose from the library itself — see [covers.md](covers.md).
+> - **On macOS**, the reading window's own window controls now sit at the **left** end of the top bar (close first), like a Mac window; the cover, settings and page controls keep their positions at the right end. Windows is unchanged. (Design verified by automated checks; the look on real Mac hardware is confirmed with the published release — see [the-app-window.md](the-app-window.md).)
+>
+> The "What reading does not include yet" note above no longer applies to two of its items: text selection and remembering where you stopped are now in. Still not included: searching inside a document, selecting whole pages at once, saved selections or highlights, and tabs inside one window.

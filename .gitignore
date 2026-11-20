@@ -18,5 +18,7 @@ Thumbs.db
 .DS_Store
 /unslop/
 /tmp/
+# inventory-extraction scratch (agent working files)
+.tmp-inv/
 
 *.secret

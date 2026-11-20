@@ -9,14 +9,23 @@
 // are the numbers AC-132/AC-135 measure in the real app's reader lanes; the
 // math itself is proven here.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 
-const { appEpubManifest, appSetSetting, appGetSettings, libraryGetDocument } = vi.hoisted(() => ({
+const {
+  appEpubManifest,
+  appSetSetting,
+  appGetSettings,
+  libraryGetDocument,
+  appReaderPositionGet,
+  appReaderPositionSet,
+} = vi.hoisted(() => ({
   appEpubManifest: vi.fn<(id: number) => Promise<unknown>>(),
   appSetSetting: vi.fn(() => Promise.resolve()),
   appGetSettings: vi.fn(() => Promise.resolve({})),
   libraryGetDocument: vi.fn<(id: number) => Promise<unknown>>(),
+  appReaderPositionGet: vi.fn<(id: number) => Promise<string | null>>(() => Promise.resolve(null)),
+  appReaderPositionSet: vi.fn<(id: number, value: string) => Promise<void>>(() => Promise.resolve()),
 }));
 
 vi.mock("../../api", () => ({
@@ -24,6 +33,8 @@ vi.mock("../../api", () => ({
   appSetSetting,
   appGetSettings,
   libraryGetDocument,
+  appReaderPositionGet,
+  appReaderPositionSet,
   appOpenDocument: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -120,14 +131,33 @@ describe("chapter heights: estimate until measured, then kept (DR-303 item 3)", 
     // not against zero — the compensation the view applies must match the
     // offset change it follows.
     const estimate = store.chapterHeight(0);
-    expect(store.recordHeight(0, 800)).toBe(800 - estimate);
+    expect(store.recordHeight(0, 800).delta).toBe(800 - estimate);
     expect(store.chapterHeight(0)).toBe(800);
     // A later change (lazy image) reports only its own delta.
-    expect(store.recordHeight(0, 900)).toBe(100);
+    expect(store.recordHeight(0, 900).delta).toBe(100);
     // Sub-pixel churn and zero-height reads change nothing.
-    expect(store.recordHeight(0, 900.5)).toBe(0);
-    expect(store.recordHeight(0, 0)).toBe(0);
+    expect(store.recordHeight(0, 900.5).delta).toBe(0);
+    expect(store.recordHeight(0, 0).delta).toBe(0);
     expect(store.chapterHeight(0)).toBe(900);
+  });
+
+  it("judges aboveReader against the model BEFORE the height enters it", () => {
+    // The AC-167-defect regression (the flowReaderMemory trace): a reader
+    // sitting in chapter 2 while chapter 1 is measured at its real (much
+    // larger) height. Judged after the update, the moved boundary places
+    // the reader in chapter 1 and the compensation — the mechanism that
+    // exists exactly for this shift — silences itself; the reader is left
+    // behind the content that grew above them. Judged before it, the
+    // change is what it truly is: above the reader.
+    const store = storeWith(manifest());
+    store.scrollTop = 150; // inside chapter 2 of the estimate model [0,104,208,…]
+    const change = store.recordHeight(0, 900);
+    expect(change.delta).toBe(900 - estimateHeight(SPINE[0].size));
+    expect(change.aboveReader).toBe(true);
+    // A change at or below the reader's own chapter is not above them.
+    store.scrollTop = 1000; // inside chapter 1 of the updated model
+    expect(store.recordHeight(1, 1600).aboveReader).toBe(false);
+    expect(store.recordHeight(2, 1600).aboveReader).toBe(false);
   });
 
   it("names the chunking threshold the mount rule uses", () => {
@@ -463,5 +493,144 @@ describe("text size flows through the settings store (§3.9 consequence 6)", () 
     expect(settings.epubTextSize).toBe(28); // the ladder top
     store.changeTextSize(-1);
     expect(settings.epubTextSize).toBe(24);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Position memory (FR-28, SPEC-v0.0.12 §3.2, DR-406 1/3/4): the {c,o}
+// grammar, the load-time read with the restored chapter first, the landing
+// at the estimate plus the exact re-anchor at first measurement, and the
+// debounced write discipline (AC-167/AC-168).
+// ---------------------------------------------------------------------------
+
+describe("position memory (FR-28, §3.2)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    appReaderPositionGet.mockReset();
+    appReaderPositionGet.mockResolvedValue(null);
+    appReaderPositionSet.mockClear();
+    libraryGetDocument.mockResolvedValue({ id: 42, filename: "b.epub" });
+    appEpubManifest.mockResolvedValue(manifest());
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve({ ok: true, text: () => Promise.resolve("<html></html>") })),
+    );
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function loadedBook(position: string | null): Promise<EpubReaderStore> {
+    appReaderPositionGet.mockResolvedValue(position);
+    const store = new EpubReaderStore(42);
+    await store.load();
+    store.viewportHeight = 600; // the view's first measure, in the real flow
+    return store;
+  }
+
+  it("reads the stored position before `ready` and holds the mount until the landing", async () => {
+    const store = await loadedBook('{"c":3,"o":0.5}');
+    expect(store.status).toBe("ready");
+    expect(store.restorePending).toBe(true);
+    store.schedulePositionRecord(); // gated while the landing is pending
+    vi.advanceTimersByTime(1000);
+    expect(appReaderPositionSet).not.toHaveBeenCalled();
+  });
+
+  it("the restored chapter is the current page, so it is the first chapter fetched (DR-150)", async () => {
+    const store = await loadedBook('{"c":3,"o":0.5}');
+    const fetchMock = fetch as unknown as Mock;
+    expect(fetchMock).toHaveBeenCalledTimes(1); // chapter 1 was NOT fetched first
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}OEBPS/ch3.xhtml`);
+    expect(store.status).toBe("ready"); // `ready` still means the current chapter is in hand
+  });
+
+  it("without a stored position the released flow is byte-for-byte unchanged", async () => {
+    const store = await loadedBook(null);
+    expect(store.restorePending).toBe(false);
+    const fetchMock = fetch as unknown as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}OEBPS/ch1.xhtml`);
+  });
+
+  it("lands at the chapter start plus o × the current height, then re-anchors exactly at measurement (DR-406 4)", async () => {
+    const store = await loadedBook('{"c":3,"o":0.5}');
+    const lands: number[] = [];
+    store.onScrollTo = (px) => lands.push(px);
+    store.applyRestoredPosition();
+    expect(lands).toHaveLength(1);
+    expect(lands[0]).toBeCloseTo(
+      store.chapterOffsets()[2] + 1 + 0.5 * store.chapterHeight(2),
+      6,
+    );
+    expect(store.restorePending).toBe(false);
+    expect(store.currentChapter).toBe(3);
+    // The view mounts the landed chapter and measures it: the landing becomes exact.
+    expect(store.recordHeight(2, 2000).delta).toBe(0); // the absolute landing replaces the delta
+    expect(lands).toHaveLength(2);
+    expect(lands[1]).toBeCloseTo(store.chapterOffsets()[2] + 1 + 0.5 * 2000, 6);
+    // Exactly once: later measurements of the same chapter never move the reader.
+    store.recordHeight(2, 2100);
+    expect(lands).toHaveLength(2);
+  });
+
+  it("a landing the reader already left is not re-anchored", async () => {
+    const store = await loadedBook('{"c":3,"o":0.5}');
+    const lands: number[] = [];
+    store.onScrollTo = (px) => lands.push(px);
+    store.applyRestoredPosition();
+    store.scrollTop = store.chapterOffsets()[0]; // the user jumped back to chapter 1
+    expect(store.recordHeight(2, 2000).delta).toBeGreaterThan(0); // the released delta path
+    expect(lands).toHaveLength(1); // no surprise jump back to the old landing
+  });
+
+  it("records the {c,o} grammar from the store's own scroll source (DR-155)", () => {
+    const store = storeWith(manifest());
+    store.status = "ready";
+    store.viewportHeight = 600;
+    store.scrollTop = store.chapterOffsets()[1] + 0.5 * store.chapterHeight(1);
+    const written = JSON.parse(store.positionValue()!);
+    expect(written.c).toBe(2);
+    expect(written.o).toBeCloseTo(0.5, 3);
+  });
+
+  it("writes once per settle, last value wins; flush writes the last value once (AC-168)", async () => {
+    const store = await loadedBook(null);
+    const offsets = store.chapterOffsets();
+    store.scrollTop = offsets[2] + 50;
+    store.schedulePositionRecord();
+    store.scrollTop = offsets[2] + 80;
+    store.schedulePositionRecord();
+    expect(appReaderPositionSet).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1000); // the FR-28 write window
+    expect(appReaderPositionSet).toHaveBeenCalledTimes(1);
+    expect(appReaderPositionSet.mock.calls[0][0]).toBe(42);
+    const written = JSON.parse(appReaderPositionSet.mock.calls[0][1]);
+    expect(written.c).toBe(3);
+    expect(written.o).toBeCloseTo(80 / store.chapterHeight(2), 3); // the LAST value
+    // Flush: cancel the debounce, write the last value, never a second write.
+    store.scrollTop = offsets[2] + 90;
+    store.schedulePositionRecord();
+    await store.flushPosition();
+    expect(appReaderPositionSet).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(appReaderPositionSet.mock.calls[1][1]).o).toBeCloseTo(
+      90 / store.chapterHeight(2),
+      3,
+    );
+    vi.advanceTimersByTime(1000);
+    expect(appReaderPositionSet).toHaveBeenCalledTimes(2);
+  });
+
+  it("a failed position write is silent — the next settle re-tries", async () => {
+    const store = await loadedBook(null);
+    appReaderPositionSet.mockRejectedValueOnce(new Error("window closing"));
+    store.scrollTop = store.chapterOffsets()[1] + 50;
+    store.schedulePositionRecord();
+    vi.advanceTimersByTime(1000);
+    expect(store.status).toBe("ready");
+    expect(store.error).toBeNull();
+    store.schedulePositionRecord();
+    vi.advanceTimersByTime(1000);
+    expect(appReaderPositionSet).toHaveBeenCalledTimes(2);
   });
 });

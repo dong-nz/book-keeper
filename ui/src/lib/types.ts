@@ -72,6 +72,9 @@ export interface SettingsDto {
   epub_text_size: string;
   /** Application log level, `"error" | "info"` (FR-26, SPEC-v0.0.11 §3.2). */
   log_level: string;
+  /** Reader view mode, one of the four mode names (FR-29, SPEC-v0.0.12
+   *  §3.2): the mode new reader windows open in. */
+  view_mode: string;
 }
 
 export interface AboutDto {
@@ -130,6 +133,48 @@ export interface EpubManifestDto {
   direction: string | null;
 }
 
+/** FR-30 (SPEC-v0.0.12 §3.3): one selectable text run in **top-origin
+ *  page-point coordinates** — x/y is the run rect's top-left; the TextLayer
+ *  scales them with the page's exact display geometry, never measuring. */
+export interface TextRunDto {
+  text: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** `app_pdf_text` payload (SPEC-v0.0.12 §3.3): the runs, the 4 000-run cap
+ *  flag, and the page size in points. An empty `runs` list means the page
+ *  carries no text — the reader shows no layer. */
+export interface PageTextDto {
+  runs: TextRunDto[];
+  truncated: boolean;
+  page_width_pt: number;
+  page_height_pt: number;
+}
+
+/** `app_cover_candidates` payload item (FR-31, AC-178): one EPUB manifest
+ *  image the cover pipeline can decode — the pair is sent back verbatim as
+ *  the `epub-image` choice. */
+export interface CoverCandidateDto {
+  entry: string;
+  media_type: string;
+}
+
+/** The cover-choice value grammar (SPEC-v0.0.12 §3.8): a 0-based PDF page,
+ *  or an EPUB manifest entry with its declared media type. Serialized to a
+ *  string for `app_cover_choice`. */
+export type CoverChoiceValue =
+  | { kind: "page"; page: number }
+  | { kind: "epub-image"; entry: string; media: string };
+
+/** The reader-position value grammar (SPEC-v0.0.12 §3.2, OQ-69/OQ-72 A):
+ *  a PDF carries a 1-based page plus a 0–1 offset within it; an EPUB a
+ *  1-based spine index plus a 0–1 offset within the chapter. Written by the
+ *  reader store, validated at the Rust storage boundary. */
+export type ReaderPositionValue = { p: number; o: number } | { c: number; o: number };
+
 export interface AppErrorPayload {
   kind: string;
   message: string;
@@ -177,4 +222,15 @@ export function asAppError(e: unknown): AppErrorPayload {
     return e as AppErrorPayload;
   }
   return { kind: "internal", message: String(e), document_id: null };
+}
+
+/** The two document kinds the app opens. The dispatch is the file's
+ *  extension — the same rule the backend uses (import accepts only
+ *  `.pdf`/`.epub`; the cover worker dispatches on the extension,
+ *  `library/service.rs:404`). The reader window learns its kind from the
+ *  route; the main window derives it from the row's filename (FR-31, §3.8). */
+export type DocumentKind = "pdf" | "epub";
+
+export function documentKind(filename: string): DocumentKind {
+  return filename.toLowerCase().endsWith(".epub") ? "epub" : "pdf";
 }

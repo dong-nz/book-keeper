@@ -8,7 +8,7 @@
   import { settings } from "$lib/state/settings.svelte";
   import { layout } from "$lib/state/layout.svelte";
   import { feedback } from "$lib/state/feedback.svelte";
-  import { hasActiveFilter } from "$lib/types";
+  import { hasActiveFilter, documentKind } from "$lib/types";
   import { pickFilesAndImport, pickFolderAndImport } from "$lib/importFlow";
   import { documentActions, type DocumentUiHost, type BulkUiHost } from "$lib/actions";
   import { t } from "$lib/i18n";
@@ -22,6 +22,7 @@
   import TagPickerModal from "./TagPickerModal.svelte";
   import DeleteDialog from "./DeleteDialog.svelte";
   import RenameDocumentDialog from "./RenameDocumentDialog.svelte";
+  import CoverPickerDialog from "./CoverPickerDialog.svelte";
   import RelinkDialog from "./RelinkDialog.svelte";
 
   // Item sizes are the design-system constants exported by virtual.ts, so the
@@ -34,6 +35,8 @@
   let detailsTarget = $state<DocumentDto | null>(null);
   let deleteIds = $state<number[] | null>(null);
   let renameTarget = $state<DocumentDto | null>(null);
+  // FR-31 (UI-55): the cover picker opened from the document context menu.
+  let coverTarget = $state<DocumentDto | null>(null);
   let pickerOpen = $state(false);
 
   // Grid geometry (UI-08, DR-83): Auto is width-computed; a manual count from
@@ -53,6 +56,7 @@
     openDelete: (ids) => (deleteIds = ids),
     openRelink: (id) => feedback.openRelink(id),
     openRename: (doc) => (renameTarget = doc),
+    openCoverPicker: (doc) => (coverTarget = doc),
   };
   const docActions = documentActions(docHost);
 
@@ -221,6 +225,13 @@
         renameTarget = null;
         if (renamed) followRenamed(id);
       }}
+    />
+  {/if}
+  {#if coverTarget}
+    <CoverPickerDialog
+      docId={coverTarget.id}
+      kind={documentKind(coverTarget.filename)}
+      ondone={() => (coverTarget = null)}
     />
   {/if}
   <RelinkDialog />

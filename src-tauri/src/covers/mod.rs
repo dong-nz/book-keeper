@@ -47,6 +47,9 @@ pub struct CoverJob {
     /// glyph fallback (AC-106). The cache key is unchanged — the password
     /// enables the render, it is not part of the image's identity.
     pub password: Option<String>,
+    /// FR-31 (§3.8): the row's stored manual cover choice. `None` is the
+    /// automatic cover — the released path, unchanged keys.
+    pub cover_choice: Option<CoverChoice>,
 }
 
 /// Cloneable handle to the cover pipeline (D17, DR-134).
@@ -190,7 +193,7 @@ fn start_pool_with_workers(
     std::thread::spawn(move || {
         let mut next = 0usize;
         while let Ok(job) = receiver.recv() {
-            let target = cache_path(&worker_dir, &job.path, job.size, job.mtime);
+            let target = cache_path(&worker_dir, &job.path, job.size, job.mtime, job.cover_choice.as_ref());
             // A cache hit completes the job without asking the service; a
             // miss is a cover request on the single pdfium owner (§3.1).
             let rendered = if target.exists() {
@@ -204,10 +207,27 @@ fn start_pool_with_workers(
                 // cover" is the designed case for a plain EPUB, and this
                 // API cannot tell it apart from a decode failure — logging
                 // would record designed fallbacks as failures.
-                epubmeta::cover_image(&job.path).map(compose_epub_cover)
+                // FR-31 (§3.8): a chosen manifest entry renders through
+                // `cover_image_at` on the same composition and fallback.
+                match &job.cover_choice {
+                    Some(CoverChoice::EpubImage { entry, .. }) => {
+                        epubmeta::cover_image_at(&job.path, entry).map(compose_epub_cover)
+                    }
+                    _ => epubmeta::cover_image(&job.path).map(compose_epub_cover),
+                }
             } else {
+                // FR-31 (§3.8): the chosen page renders under the choice-
+                // tagged key; a page number past the document's extent
+                // renders the first page — the automatic cover — under the
+                // same tagged key: the choice stands, a file lands, and the
+                // sweep counts it as expected. No re-enqueue loop (DR-404).
+                let page = match job.cover_choice {
+                    Some(CoverChoice::Page(page)) => page,
+                    _ => 0,
+                };
                 let image = service.render_cover(
                     &job.path,
+                    page,
                     RENDER_TARGET_WIDTH,
                     RENDER_TARGET_HEIGHT,
                     job.password.as_deref(),
@@ -284,31 +304,130 @@ fn compose_epub_cover(source: image::DynamicImage) -> image::DynamicImage {
     image::DynamicImage::ImageRgba8(canvas)
 }
 
+/// FR-31 (§3.8): a stored manual cover choice. The value grammar is
+/// validated at the command boundary ([`validate_choice`]); the read sides
+/// (enqueue, sweep, the library query) parse leniently ([`parse_choice`]) —
+/// a value that cannot be parsed behaves like no choice at all, the same
+/// designed fallback as any cover failure (R5.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoverChoice {
+    /// A 0-based PDF page index.
+    Page(u32),
+    /// A manifest entry of the EPUB plus its declared media type.
+    EpubImage { entry: String, media: String },
+}
+
+/// The stored JSON shape, shared by both sides: `{"kind":"page","page":<u32
+/// 0-based>}` or `{"kind":"epub-image","entry":"<manifest entry>","media":
+/// "<media type>"}`; nothing else. An out-of-range page number is *not* a
+/// grammar error here — the value is grammatical and the render falls back
+/// to the automatic cover under the tagged key (DR-404).
+fn read_choice(value: &serde_json::Value) -> Result<CoverChoice, String> {
+    let object = value.as_object().ok_or("cover choice must be an object")?;
+    match object.get("kind").and_then(|kind| kind.as_str()) {
+        Some("page") => {
+            if object.len() != 2 {
+                return Err("a page choice carries kind and page only".into());
+            }
+            let page = object
+                .get("page")
+                .and_then(|page| page.as_u64())
+                .ok_or("page must be a 0-based integer")?;
+            let page = u32::try_from(page).map_err(|_| "page is out of the storable range".to_string())?;
+            Ok(CoverChoice::Page(page))
+        }
+        Some("epub-image") => {
+            if object.len() != 3 {
+                return Err("an epub-image choice carries kind, entry and media".into());
+            }
+            let entry = object
+                .get("entry")
+                .and_then(|entry| entry.as_str())
+                .filter(|entry| !entry.is_empty())
+                .ok_or("entry must be a non-empty manifest path")?;
+            let media = object
+                .get("media")
+                .and_then(|media| media.as_str())
+                .filter(|media| !media.is_empty())
+                .ok_or("media must be the declared media type")?;
+            Ok(CoverChoice::EpubImage {
+                entry: entry.to_string(),
+                media: media.to_string(),
+            })
+        }
+        Some(_) => Err("unknown cover choice kind".into()),
+        None => Err("a cover choice carries a kind".into()),
+    }
+}
+
+/// Command-boundary validation (R1.2 thin wrapper's service side): malformed
+/// JSON, a bad grammar, or a kind that does not match the row's file type
+/// (§3.8) is the typed rejection.
+pub fn validate_choice(value: &str, path: &str) -> Result<CoverChoice, AppError> {
+    let parsed: serde_json::Value = serde_json::from_str(value)
+        .map_err(|_| AppError::Validation("cover choice is not valid JSON".into()))?;
+    let choice = read_choice(&parsed).map_err(AppError::Validation)?;
+    match (&choice, is_epub_path(path)) {
+        (CoverChoice::Page(_), false) | (CoverChoice::EpubImage { .. }, true) => Ok(choice),
+        _ => Err(AppError::Validation(
+            "cover choice kind does not match the document type".into(),
+        )),
+    }
+}
+
+/// Read-side parse (enqueue, sweep, query): the column only ever carries
+/// validated values, so a value that fails to parse is treated as no choice.
+pub fn parse_choice(raw: &str) -> Option<CoverChoice> {
+    let value = serde_json::from_str(raw).ok()?;
+    read_choice(&value).ok()
+}
+
+/// The choice part of the cache key (§3.8): `p<page>` for a page choice,
+/// `e<entry-hash>` for an EPUB entry choice (the entry path hashed with the
+/// same deterministic hasher as the key itself).
+pub fn choice_tag(choice: &CoverChoice) -> String {
+    match choice {
+        CoverChoice::Page(page) => format!("p{page}"),
+        CoverChoice::EpubImage { entry, .. } => {
+            let mut hasher = std::hash::DefaultHasher::new();
+            entry.hash(&mut hasher);
+            format!("e{:016x}", hasher.finish())
+        }
+    }
+}
+
 /// The cache key IS the staleness check (FR-16 as modified by DR-113):
 /// path + size + mtime + the renderer's current target width. The width is
 /// part of the identity so a changed render target can never leave a smaller
-/// stored image authoritative.
-pub fn cache_key(path: &str, size: i64, mtime: i64, width: u32) -> String {
+/// stored image authoritative. FR-31 (§3.8) adds the choice tag — and only
+/// when there is a choice: with `None` nothing is hashed and the key is
+/// byte-identical to the released function (AC-180: the migration re-keys
+/// nothing).
+pub fn cache_key(path: &str, size: i64, mtime: i64, width: u32, choice_tag: Option<&str>) -> String {
     let mut hasher = std::hash::DefaultHasher::new();
     path.hash(&mut hasher);
     size.hash(&mut hasher);
     mtime.hash(&mut hasher);
     width.hash(&mut hasher);
+    if let Some(tag) = choice_tag {
+        tag.hash(&mut hasher);
+    }
     format!("{:016x}", hasher.finish())
 }
 
-pub fn cache_path(dir: &Path, path: &str, size: i64, mtime: i64) -> PathBuf {
+pub fn cache_path(dir: &Path, path: &str, size: i64, mtime: i64, choice: Option<&CoverChoice>) -> PathBuf {
+    let tag = choice.map(choice_tag);
     dir.join(format!(
         "{}.png",
-        cache_key(path, size, mtime, RENDER_TARGET_WIDTH)
+        cache_key(path, size, mtime, RENDER_TARGET_WIDTH, tag.as_deref())
     ))
 }
 
 /// Queue survives app restart: re-enqueue every document whose cached cover
 /// is absent or stale (covers.md).
 pub fn enqueue_missing_covers(conn: &Connection, queue: &CoverQueue) -> Result<(), AppError> {
-    let mut stmt =
-        conn.prepare("SELECT id, path, size, mtime, pdf_password FROM documents ORDER BY id")?;
+    let mut stmt = conn
+        .prepare("SELECT id, path, size, mtime, pdf_password, cover_choice FROM documents ORDER BY id")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
@@ -316,17 +435,22 @@ pub fn enqueue_missing_covers(conn: &Connection, queue: &CoverQueue) -> Result<(
             row.get::<_, i64>(2)?,
             row.get::<_, i64>(3)?,
             row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
         ))
     })?;
     for row in rows {
-        let (doc_id, path, size, mtime, password) = row?;
-        if !cache_path(&queue.dir, &path, size, mtime).exists() {
+        let (doc_id, path, size, mtime, password, choice_raw) = row?;
+        // FR-31: the expected key is the choice-tagged one — a chosen cover
+        // is as much "the cover" as the automatic one (§3.8).
+        let cover_choice = choice_raw.as_deref().and_then(parse_choice);
+        if !cache_path(&queue.dir, &path, size, mtime, cover_choice.as_ref()).exists() {
             queue.enqueue(CoverJob {
                 doc_id,
                 path,
                 size,
                 mtime,
                 password: (!password.is_empty()).then_some(password),
+                cover_choice,
             });
         }
     }
@@ -337,17 +461,30 @@ pub fn enqueue_missing_covers(conn: &Connection, queue: &CoverQueue) -> Result<(
 pub fn sweep_orphans(conn: &Connection, dir: &Path) -> Result<(), AppError> {
     let mut expected: HashSet<String> = HashSet::new();
     {
-        let mut stmt = conn.prepare("SELECT path, size, mtime FROM documents")?;
+        let mut stmt = conn.prepare("SELECT path, size, mtime, cover_choice FROM documents")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         })?;
         for row in rows {
-            let (path, size, mtime) = row?;
-            expected.insert(cache_key(&path, size, mtime, RENDER_TARGET_WIDTH));
+            let (path, size, mtime, choice_raw) = row?;
+            // FR-31: a row's expected key is its choice-tagged one — the
+            // superseded automatic file is an orphan and goes, and a chosen
+            // cover (including an out-of-range fallback render, DR-404)
+            // survives the sweep (AC-180's no-loop fact).
+            let choice = choice_raw.as_deref().and_then(parse_choice);
+            let tag = choice.as_ref().map(choice_tag);
+            expected.insert(cache_key(
+                &path,
+                size,
+                mtime,
+                RENDER_TARGET_WIDTH,
+                tag.as_deref(),
+            ));
         }
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -371,7 +508,7 @@ mod tests {
     use crate::db::open_in_memory;
     use crate::library::EventSink;
     use crate::pdf::{RenderService, pdfium_binary_present};
-    use crate::testutil::{RecordingSink, TempDir, fixture_doc};
+    use crate::testutil::{RecordingSink, TempDir, fixture_doc, fixture_multi};
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
@@ -390,26 +527,26 @@ mod tests {
     fn cache_key_changes_with_any_part_of_the_document_identity() {
         // FR-16 as modified by DR-113 (AC-36): the key IS path + size +
         // mtime + render width; unchanged documents keep their key.
-        let base = cache_key("C:/a.pdf", 10, 20, RENDER_TARGET_WIDTH);
+        let base = cache_key("C:/a.pdf", 10, 20, RENDER_TARGET_WIDTH, None);
         assert_eq!(
             base,
-            cache_key("C:/a.pdf", 10, 20, RENDER_TARGET_WIDTH),
+            cache_key("C:/a.pdf", 10, 20, RENDER_TARGET_WIDTH, None),
             "same identity, same key"
         );
-        assert_ne!(base, cache_key("C:/b.pdf", 10, 20, RENDER_TARGET_WIDTH));
+        assert_ne!(base, cache_key("C:/b.pdf", 10, 20, RENDER_TARGET_WIDTH, None));
         assert_ne!(
             base,
-            cache_key("C:/a.pdf", 11, 20, RENDER_TARGET_WIDTH),
+            cache_key("C:/a.pdf", 11, 20, RENDER_TARGET_WIDTH, None),
             "changed size re-keys"
         );
         assert_ne!(
             base,
-            cache_key("C:/a.pdf", 10, 21, RENDER_TARGET_WIDTH),
+            cache_key("C:/a.pdf", 10, 21, RENDER_TARGET_WIDTH, None),
             "changed mtime re-keys"
         );
         assert_ne!(
-            cache_key("C:/a.pdf", 10, 20, 220),
-            cache_key("C:/a.pdf", 10, 20, 640),
+            cache_key("C:/a.pdf", 10, 20, 220, None),
+            cache_key("C:/a.pdf", 10, 20, 640, None),
             "AC-36: a changed render width re-keys"
         );
     }
@@ -430,7 +567,7 @@ mod tests {
             [],
         )
         .unwrap();
-        std::fs::write(cache_path(temp.path(), "C:/one.pdf", 10, 20), "png").unwrap();
+        std::fs::write(cache_path(temp.path(), "C:/one.pdf", 10, 20, None), "png").unwrap();
 
         let (queue, receiver) = test_queue(temp.path().to_path_buf());
         enqueue_missing_covers(&conn, &queue).unwrap();
@@ -452,13 +589,13 @@ mod tests {
             [],
         )
         .unwrap();
-        std::fs::write(cache_path(temp.path(), "C:/kept.pdf", 10, 20), "png").unwrap();
+        std::fs::write(cache_path(temp.path(), "C:/kept.pdf", 10, 20, None), "png").unwrap();
         std::fs::write(temp.path().join("stale.png"), "png").unwrap();
         std::fs::write(temp.path().join("keep.txt"), "not a cover").unwrap();
 
         sweep_orphans(&conn, temp.path()).unwrap();
 
-        assert!(cache_path(temp.path(), "C:/kept.pdf", 10, 20).exists());
+        assert!(cache_path(temp.path(), "C:/kept.pdf", 10, 20, None).exists());
         assert!(
             !temp.path().join("stale.png").exists(),
             "unowned PNG is swept"
@@ -502,6 +639,7 @@ mod tests {
             size: valid_key.1,
             mtime: valid_key.2,
             password: None,
+            cover_choice: None,
         });
         queue.enqueue(CoverJob {
             doc_id: 2,
@@ -509,6 +647,7 @@ mod tests {
             size: broken_key.1,
             mtime: broken_key.2,
             password: None,
+            cover_choice: None,
         });
 
         // D22 (v0.0.8, M9): 90 s, not 30. The Rust and frontend layers must
@@ -526,7 +665,7 @@ mod tests {
             "worker drains the queue"
         );
 
-        let cover_file = cache_path(temp.path(), &valid_key.0, valid_key.1, valid_key.2);
+        let cover_file = cache_path(temp.path(), &valid_key.0, valid_key.1, valid_key.2, None);
         assert!(
             cover_file.exists(),
             "AC-06: a valid fixture produces a PNG cover"
@@ -541,7 +680,7 @@ mod tests {
             "AC-36: cached covers are at least 560 px wide, got {cover_width}"
         );
         assert!(
-            !cache_path(temp.path(), &broken_key.0, broken_key.1, broken_key.2).exists(),
+            !cache_path(temp.path(), &broken_key.0, broken_key.1, broken_key.2, None).exists(),
             "R5.3: an unrenderable file produces no cover (the UI shows the glyph) and never fails the batch"
         );
     }
@@ -583,10 +722,11 @@ mod tests {
             size: key.1,
             mtime: key.2,
             password: None,
+            cover_choice: None,
         });
         drain(&queue, 90);
 
-        let cover_file = cache_path(temp.path(), &key.0, key.1, key.2);
+        let cover_file = cache_path(temp.path(), &key.0, key.1, key.2, None);
         let cover = image::open(&cover_file)
             .expect("AC-127: the declared cover produces a cached cover")
             .to_rgba8();
@@ -646,13 +786,14 @@ mod tests {
                 size: key.1,
                 mtime: key.2,
                 password: None,
+                cover_choice: None,
             });
             keys.push((name, key));
         }
         drain(&queue, 90);
         for (name, key) in &keys {
             assert!(
-                !cache_path(temp.path(), &key.0, key.1, key.2).exists(),
+                !cache_path(temp.path(), &key.0, key.1, key.2, None).exists(),
                 "{name}: no usable declared cover means no cached cover (the glyph stands)"
             );
         }
@@ -695,7 +836,7 @@ mod tests {
                 .map_err(AppError::from)
             })
             .unwrap();
-        let cover = cache_path(&covers_dir, &row_path, size, mtime);
+        let cover = cache_path(&covers_dir, &row_path, size, mtime, None);
 
         // The import enqueues a job with no password (the row has none): the
         // pool runs, and no cover file appears.
@@ -752,7 +893,7 @@ mod tests {
                 .map_err(AppError::from)
             })
             .unwrap();
-        let old_cover = cache_path(&covers_dir, &row_path, size, mtime);
+        let old_cover = cache_path(&covers_dir, &row_path, size, mtime, None);
         drain(&queue, 90);
         assert!(old_cover.exists(), "the imported document has its cover");
 
@@ -768,7 +909,7 @@ mod tests {
             })
             .unwrap();
         drain(&queue, 90);
-        let new_cover = cache_path(&covers_dir, &renamed.path, size, mtime);
+        let new_cover = cache_path(&covers_dir, &renamed.path, size, mtime, None);
         assert!(
             new_cover.exists(),
             "AC-110: the cover is regenerated under the new cache key"
@@ -845,6 +986,7 @@ mod tests {
                 size: *size,
                 mtime: *mtime,
                 password: None,
+                cover_choice: None,
             });
         }
         queue.enqueue(CoverJob {
@@ -853,6 +995,7 @@ mod tests {
             size: jobs[0].1,
             mtime: jobs[0].2,
             password: None,
+            cover_choice: None,
         });
         queue.enqueue(CoverJob {
             doc_id: 31,
@@ -860,6 +1003,7 @@ mod tests {
             size: broken_key.1,
             mtime: broken_key.2,
             password: None,
+            cover_choice: None,
         });
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -884,12 +1028,12 @@ mod tests {
         );
         for (path, size, mtime) in &jobs {
             assert!(
-                cache_path(temp.path(), path, *size, *mtime).exists(),
+                cache_path(temp.path(), path, *size, *mtime, None).exists(),
                 "AC-57: every document in the batch has its cover from the pipeline"
             );
         }
         assert!(
-            !cache_path(temp.path(), &broken_key.0, broken_key.1, broken_key.2).exists(),
+            !cache_path(temp.path(), &broken_key.0, broken_key.1, broken_key.2, None).exists(),
             "R5.3: the unrenderable file produced no cover and did not block the queue"
         );
 
@@ -913,5 +1057,275 @@ mod tests {
             (total_jobs as i64, total_jobs as i64),
             "AC-57: the final drain event reports the whole batch"
         );
+    }
+
+    // ─────────────────────────────── cover choice (FR-31, SPEC-v0.0.12 §3.8)
+
+    #[test]
+    fn no_choice_keys_are_byte_identical_to_the_released_function() {
+        // AC-180 (test-pinned literals, taken from the released function):
+        // with no choice nothing is hashed and the key is unchanged — the
+        // migration re-keys nothing, untouched documents never re-render.
+        assert_eq!(
+            cache_key("C:/a.pdf", 10, 20, RENDER_TARGET_WIDTH, None),
+            "91ec229e41afc9b6",
+        );
+        assert_eq!(
+            cache_key("C:/one.pdf", 10, 20, RENDER_TARGET_WIDTH, None),
+            "4a236dd366969dcf",
+        );
+
+        // A choice changes the key; the tags follow the §3.8 grammar.
+        assert_eq!(choice_tag(&CoverChoice::Page(3)), "p3");
+        let tag = choice_tag(&CoverChoice::EpubImage {
+            entry: "OEBPS/images/cover.png".into(),
+            media: "image/png".into(),
+        });
+        assert!(
+            tag.starts_with('e') && tag.len() == 17 && tag[1..].chars().all(|c| c.is_ascii_hexdigit()),
+            "an EPUB choice tags as e<entry-hash>, got {tag}"
+        );
+        assert_ne!(
+            cache_key("C:/a.pdf", 10, 20, RENDER_TARGET_WIDTH, Some("p3")),
+            "91ec229e41afc9b6",
+            "the tagged key differs from the automatic one"
+        );
+    }
+
+    #[test]
+    fn cover_choice_grammar_is_validated_at_the_boundary() {
+        // §3.8: kind/file-type match, malformed JSON and malformed page
+        // numbers are rejected at the command boundary; an out-of-range page
+        // number is grammatical — its fallback is the render's job (DR-404).
+        assert_eq!(
+            validate_choice(r#"{"kind":"page","page":2}"#, "C:/a.pdf").unwrap(),
+            CoverChoice::Page(2)
+        );
+        assert_eq!(
+            validate_choice(r#"{"kind":"page","page":0}"#, "C:/a.pdf").unwrap(),
+            CoverChoice::Page(0)
+        );
+        assert_eq!(
+            validate_choice(r#"{"kind":"page","page":999999}"#, "C:/a.pdf").unwrap(),
+            CoverChoice::Page(999999),
+            "out of range is not a grammar error"
+        );
+        assert_eq!(
+            validate_choice(
+                r#"{"kind":"epub-image","entry":"OEBPS/images/i.png","media":"image/png"}"#,
+                "C:/a.epub",
+            )
+            .unwrap(),
+            CoverChoice::EpubImage {
+                entry: "OEBPS/images/i.png".into(),
+                media: "image/png".into(),
+            }
+        );
+
+        let bad: [(&str, &str); 11] = [
+            ("not json", "C:/a.pdf"),
+            (r#"{"kind":"page","page":-1}"#, "C:/a.pdf"),
+            (r#"{"kind":"page","page":1.5}"#, "C:/a.pdf"),
+            (r#"{"kind":"page","page":4294967296}"#, "C:/a.pdf"),
+            (r#"{"kind":"page","page":2,"extra":1}"#, "C:/a.pdf"),
+            (r#"{"kind":"page"}"#, "C:/a.pdf"),
+            (
+                r#"{"kind":"epub-image","entry":"i.png","media":"image/png"}"#,
+                "C:/a.pdf",
+            ),
+            (r#"{"kind":"page","page":2}"#, "C:/a.epub"),
+            (r#"{"kind":"other","page":2}"#, "C:/a.pdf"),
+            (r#"{"kind":"epub-image","entry":"","media":"image/png"}"#, "C:/a.epub"),
+            (r#"[1,2]"#, "C:/a.pdf"),
+        ];
+        for (value, path) in bad {
+            assert!(
+                matches!(validate_choice(value, path), Err(AppError::Validation(_))),
+                "must reject: {value} ({path})"
+            );
+        }
+
+        // The read side is lenient: an unparseable column value behaves like
+        // no choice at all (the automatic cover), never as an error.
+        assert_eq!(parse_choice("garbage"), None);
+        assert_eq!(parse_choice(r#"{"kind":"page","page":-1}"#), None);
+        assert_eq!(parse_choice(r#"{"kind":"page","page":4}"#), Some(CoverChoice::Page(4)));
+    }
+
+    #[test]
+    fn enqueue_missing_covers_reads_the_choice_column_and_checks_the_tagged_key() {
+        // §3.8: the expected key is the choice-tagged one — a document whose
+        // chosen cover is missing is re-enqueued even when its superseded
+        // automatic file still sits in the cache, and a job carries the
+        // parsed choice to the render stage.
+        let conn = open_in_memory().unwrap();
+        let temp = TempDir::new("covers-choice-enqueue");
+        conn.execute(
+            "INSERT INTO documents (id, path, filename, title, size, mtime, added_at, cover_choice)
+             VALUES (1, 'C:/one.pdf', 'one.pdf', 'one', 10, 20, 0, '{\"kind\":\"page\",\"page\":2}'),
+                    (2, 'C:/two.pdf', 'two.pdf', 'two', 30, 40, 0, '{\"kind\":\"page\",\"page\":2}'),
+                    (3, 'C:/three.pdf', 'three.pdf', 'three', 50, 60, 0, '{\"kind\":\"page\",\"page\":2}')",
+            [],
+        )
+        .unwrap();
+        let choice = CoverChoice::Page(2);
+        // doc 2: only the superseded automatic file present → must re-enqueue;
+        // doc 3: the chosen cover present → must not.
+        std::fs::write(cache_path(temp.path(), "C:/two.pdf", 30, 40, None), "png").unwrap();
+        std::fs::write(cache_path(temp.path(), "C:/three.pdf", 50, 60, Some(&choice)), "png").unwrap();
+
+        let (queue, receiver) = test_queue(temp.path().to_path_buf());
+        enqueue_missing_covers(&conn, &queue).unwrap();
+        let jobs: Vec<CoverJob> = receiver.try_iter().collect();
+        assert_eq!(
+            jobs.iter().map(|job| job.doc_id).collect::<Vec<_>>(),
+            vec![1, 2],
+            "missing-chosen covers re-enqueue, present ones do not"
+        );
+        assert!(jobs.iter().all(|job| job.cover_choice == Some(CoverChoice::Page(2))));
+    }
+
+    #[test]
+    fn sweep_keeps_the_chosen_cover_and_sweeps_the_superseded_automatic_one() {
+        // §3.8: a row's expected key is its choice-tagged one — the chosen
+        // cover survives the startup sweep, the superseded automatic file is
+        // an orphan.
+        let conn = open_in_memory().unwrap();
+        let temp = TempDir::new("covers-choice-sweep");
+        conn.execute(
+            "INSERT INTO documents (path, filename, title, size, mtime, added_at, cover_choice)
+             VALUES ('C:/kept.pdf', 'kept.pdf', 'kept', 10, 20, 0, '{\"kind\":\"page\",\"page\":1}')",
+            [],
+        )
+        .unwrap();
+        let choice = CoverChoice::Page(1);
+        std::fs::write(cache_path(temp.path(), "C:/kept.pdf", 10, 20, None), "png").unwrap();
+        std::fs::write(cache_path(temp.path(), "C:/kept.pdf", 10, 20, Some(&choice)), "png").unwrap();
+        std::fs::write(temp.path().join("stale.png"), "png").unwrap();
+
+        sweep_orphans(&conn, temp.path()).unwrap();
+
+        assert!(
+            cache_path(temp.path(), "C:/kept.pdf", 10, 20, Some(&choice)).exists(),
+            "the chosen cover is the row's expected file"
+        );
+        assert!(
+            !cache_path(temp.path(), "C:/kept.pdf", 10, 20, None).exists(),
+            "the superseded automatic cover is swept as an orphan"
+        );
+        assert!(!temp.path().join("stale.png").exists());
+    }
+
+    #[test]
+    fn a_chosen_page_renders_under_the_tagged_key_and_completes_without_loops() {
+        // §3.8 render dispatch + AC-180's no-loop fact: the chosen page
+        // renders through the pipeline under the choice-tagged key — the
+        // pixels are the chosen page's, not page 1's — and afterwards both
+        // the startup enqueue and the sweep treat the entry as complete.
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping render proof");
+            return;
+        }
+        let temp = TempDir::new("covers-choice-render");
+        let path = fixture_multi("multi-012.pdf").to_string_lossy().into_owned();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let (size, mtime) = (metadata.len() as i64, epoch_secs(&metadata));
+        let conn = open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO documents (id, path, filename, title, size, mtime, added_at, cover_choice)
+             VALUES (1, ?1, 'multi-012.pdf', 'm', ?2, ?3, 0, '{\"kind\":\"page\",\"page\":5}')",
+            rusqlite::params![path, size, mtime],
+        )
+        .unwrap();
+
+        let sink: Arc<dyn EventSink> = Arc::new(RecordingSink::default());
+        let queue =
+            start_pool_with_workers(temp.path().to_path_buf(), sink, 1, RenderService::shared());
+        enqueue_missing_covers(&conn, &queue).unwrap(); // the enqueue path carries the choice
+        drain(&queue, 90);
+
+        let choice = CoverChoice::Page(5);
+        let chosen_file = cache_path(temp.path(), &path, size, mtime, Some(&choice));
+        assert!(chosen_file.exists(), "the chosen cover lands under the tagged key");
+        assert!(
+            !cache_path(temp.path(), &path, size, mtime, None).exists(),
+            "nothing is written under the automatic key"
+        );
+
+        // Lossless round-trip (the AC-74 pattern): the cached file decodes
+        // back as the chosen page's render — and not as page 1.
+        let service = RenderService::shared();
+        let decoded = image::open(&chosen_file)
+            .expect("the chosen cover decodes")
+            .into_bytes();
+        let chosen_render = service
+            .render_cover(&path, 5, RENDER_TARGET_WIDTH, RENDER_TARGET_HEIGHT, None)
+            .expect("page 6 (0-based 5) of the fixture renders")
+            .into_bytes();
+        let first_page_render = service
+            .render_cover(&path, 0, RENDER_TARGET_WIDTH, RENDER_TARGET_HEIGHT, None)
+            .expect("page 1 renders")
+            .into_bytes();
+        assert_eq!(decoded, chosen_render, "the rendered image is the chosen page");
+        assert_ne!(decoded, first_page_render, "the chosen cover is not the automatic one");
+
+        // No-loop fact (DR-404): the entry is complete for the next startup —
+        // neither the enqueue nor the sweep touches it again.
+        let (idle_queue, idle_receiver) = test_queue(temp.path().to_path_buf());
+        enqueue_missing_covers(&conn, &idle_queue).unwrap();
+        assert_eq!(idle_receiver.try_iter().count(), 0, "no re-enqueue loop");
+        sweep_orphans(&conn, temp.path()).unwrap();
+        assert!(chosen_file.exists(), "the chosen cover survives the sweep");
+    }
+
+    #[test]
+    fn an_out_of_range_page_choice_renders_the_automatic_cover_under_its_tagged_key() {
+        // DR-404 + §3.10 (out-of-range half): the choice stands, page 1 is
+        // rendered, the file lands under the tagged key, and the entry is
+        // complete — no enqueue/sweep loop.
+        if !pdfium_binary_present() {
+            eprintln!("pdfium binary missing — run scripts/fetch-pdfium.mjs; skipping render proof");
+            return;
+        }
+        let temp = TempDir::new("covers-choice-out-of-range");
+        let path = fixture_multi("multi-012.pdf").to_string_lossy().into_owned();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let (size, mtime) = (metadata.len() as i64, epoch_secs(&metadata));
+        let conn = open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO documents (id, path, filename, title, size, mtime, added_at, cover_choice)
+             VALUES (1, ?1, 'multi-012.pdf', 'm', ?2, ?3, 0, '{\"kind\":\"page\",\"page\":999}')",
+            rusqlite::params![path, size, mtime],
+        )
+        .unwrap();
+
+        let sink: Arc<dyn EventSink> = Arc::new(RecordingSink::default());
+        let queue =
+            start_pool_with_workers(temp.path().to_path_buf(), sink, 1, RenderService::shared());
+        enqueue_missing_covers(&conn, &queue).unwrap();
+        drain(&queue, 90);
+
+        let choice = CoverChoice::Page(999);
+        let tagged_file = cache_path(temp.path(), &path, size, mtime, Some(&choice));
+        assert!(
+            tagged_file.exists(),
+            "the fallback render writes under the requested choice-tagged key"
+        );
+        assert!(
+            !cache_path(temp.path(), &path, size, mtime, None).exists(),
+            "the automatic key stays empty — the choice identity is what stands"
+        );
+        let decoded = image::open(&tagged_file).expect("the fallback cover decodes").into_bytes();
+        let first_page_render = RenderService::shared()
+            .render_cover(&path, 0, RENDER_TARGET_WIDTH, RENDER_TARGET_HEIGHT, None)
+            .expect("page 1 renders")
+            .into_bytes();
+        assert_eq!(decoded, first_page_render, "the fallback renders the automatic cover");
+
+        let (idle_queue, idle_receiver) = test_queue(temp.path().to_path_buf());
+        enqueue_missing_covers(&conn, &idle_queue).unwrap();
+        assert_eq!(idle_receiver.try_iter().count(), 0, "the fallback file is complete — no loop");
+        sweep_orphans(&conn, temp.path()).unwrap();
+        assert!(tagged_file.exists(), "the fallback file survives the sweep");
     }
 }

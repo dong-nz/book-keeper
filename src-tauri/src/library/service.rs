@@ -12,14 +12,16 @@ use rusqlite::{Connection, params, params_from_iter, types::Value as SqlValue};
 use crate::applog;
 use crate::covers::{self, CoverJob, CoverQueue};
 use crate::db;
+use crate::epubmeta;
+use crate::epubsrv;
 use crate::error::{AppError, is_unique_violation};
 use crate::pdf;
 use crate::Db;
 
 use super::query::{self, Query};
 use super::{
-    CountsDto, DocumentDto, EventSink, ImportResult, JobProgress, RescanResult, SETTINGS_KEYS,
-    SearchPage, SettingsDto, TagDto, filename_of, is_document_path, normalize_path,
+    CountsDto, CoverCandidateDto, DocumentDto, EventSink, ImportResult, JobProgress, RescanResult,
+    SETTINGS_KEYS, SearchPage, SettingsDto, TagDto, filename_of, is_document_path, normalize_path,
     title_from_filename,
 };
 
@@ -480,6 +482,8 @@ fn import_chunk(
             size: *size,
             mtime: *mtime,
             password: None,
+            // A fresh import has no choice — the automatic cover (FR-31).
+            cover_choice: None,
         });
     }
     tx.commit()?;
@@ -544,11 +548,12 @@ pub fn rescan(
         mtime: i64,
         missing: bool,
         password: Option<String>,
+        cover_choice: Option<covers::CoverChoice>,
     }
     let entries: Vec<Entry> = db.with_raw(|conn| {
         let mut entries: Vec<Entry> = Vec::new();
         let mut stmt = conn.prepare(
-            "SELECT id, path, size, mtime, missing, pdf_password FROM documents ORDER BY id",
+            "SELECT id, path, size, mtime, missing, pdf_password, cover_choice FROM documents ORDER BY id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Entry {
@@ -561,6 +566,10 @@ pub fn rescan(
                     let value = row.get::<_, String>(5)?;
                     (!value.is_empty()).then_some(value)
                 },
+                cover_choice: row
+                    .get::<_, Option<String>>(6)?
+                    .as_deref()
+                    .and_then(covers::parse_choice),
             })
         })?;
         for entry in rows {
@@ -635,6 +644,9 @@ pub fn rescan(
                                 size,
                                 mtime,
                                 password: entry.password.clone(),
+                                // FR-31: a changed file re-renders the chosen
+                                // cover under the tagged key, not page 1.
+                                cover_choice: entry.cover_choice.clone(),
                             });
                         }
                     }
@@ -684,11 +696,11 @@ pub fn delete_documents(
     if ids.is_empty() {
         return Ok(());
     }
-    let mut rows: Vec<(i64, String, i64, i64)> = Vec::new();
+    let mut rows: Vec<(i64, String, i64, i64, Option<String>)> = Vec::new();
     {
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, path, size, mtime FROM documents WHERE id IN ({placeholders})"
+            "SELECT id, path, size, mtime, cover_choice FROM documents WHERE id IN ({placeholders})"
         ))?;
         let found = stmt.query_map(params_from_iter(ids.iter()), |row| {
             Ok((
@@ -696,6 +708,7 @@ pub fn delete_documents(
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })?;
         for row in found {
@@ -713,7 +726,7 @@ pub fn delete_documents(
     }
 
     if delete_files {
-        for (_, path, _, _) in &rows {
+        for (_, path, ..) in &rows {
             match fs::remove_file(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -734,15 +747,27 @@ pub fn delete_documents(
             &format!("DELETE FROM documents WHERE id IN ({placeholders})"),
             params_from_iter(ids.iter()),
         )?;
+        // FR-28 (AC-167): the reader position memory goes with the document,
+        // in the same transaction.
+        crate::positions::cleanup(&tx, ids)?;
         tx.commit()?;
     }
 
-    for (_, path, size, mtime) in &rows {
-        let cache_file = covers::cache_path(&covers_queue.dir, path, *size, *mtime);
-        match fs::remove_file(&cache_file) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => {} // a stale cache file is swept at startup; deletion never fails the flow
+    for (_, path, size, mtime, choice_raw) in &rows {
+        // FR-31: a chosen cover goes with the row too — the tagged file and
+        // any still-present superseded automatic file (no document leaves an
+        // orphan cover).
+        let cover_choice = choice_raw.as_deref().and_then(covers::parse_choice);
+        let mut cache_files = vec![covers::cache_path(&covers_queue.dir, path, *size, *mtime, None)];
+        if let Some(choice) = cover_choice.as_ref() {
+            cache_files.push(covers::cache_path(&covers_queue.dir, path, *size, *mtime, Some(choice)));
+        }
+        for cache_file in &cache_files {
+            match fs::remove_file(cache_file) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {} // a stale cache file is swept at startup; deletion never fails the flow
+            }
         }
     }
 
@@ -779,14 +804,14 @@ pub fn relink_document(
         return Err(AppError::UnsupportedType { path: normalized });
     }
 
-    let stored: Option<(String, String)> = conn
+    let stored: Option<(String, String, Option<String>)> = conn
         .query_row(
-            "SELECT path, title_source FROM documents WHERE id = ?1",
+            "SELECT path, title_source, cover_choice FROM documents WHERE id = ?1",
             params![id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .ok();
-    let Some((stored_path, title_source)) = stored else {
+    let Some((stored_path, title_source, choice_raw)) = stored else {
         return Err(AppError::DocumentNotFound { id });
     };
     if !same_document_extension(&stored_path, &normalized) {
@@ -817,12 +842,15 @@ pub fn relink_document(
     }
     tx.commit()?;
 
+    // FR-31 (§3.8): relink keeps the id and the choice — the job re-renders
+    // under the choice-tagged key for the new path.
     covers_queue.enqueue(CoverJob {
         doc_id: id,
         path: normalized,
         size,
         mtime,
         password: stored_password(conn, id)?,
+        cover_choice: choice_raw.as_deref().and_then(covers::parse_choice),
     });
     emit_status(conn, sink)?;
     get_document(conn, &covers_queue.dir, id)
@@ -875,10 +903,17 @@ pub fn set_password(
         return Err(AppError::DocumentNotFound { id });
     }
     if !password.is_empty() {
-        let (path, size, mtime) = conn.query_row(
-            "SELECT path, size, mtime FROM documents WHERE id = ?1",
+        let (path, size, mtime, choice_raw) = conn.query_row(
+            "SELECT path, size, mtime, cover_choice FROM documents WHERE id = ?1",
             params![id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
         )?;
         covers_queue.enqueue(CoverJob {
             doc_id: id,
@@ -886,9 +921,119 @@ pub fn set_password(
             size,
             mtime,
             password: Some(password.to_string()),
+            // FR-31: the stored choice rides the re-enqueue — unlocking a
+            // protected document renders the chosen cover, not page 1.
+            cover_choice: choice_raw.as_deref().and_then(covers::parse_choice),
         });
     }
     emit_status(conn, sink)
+}
+
+/// The row data a cover job needs, or the typed `DocumentNotFound`.
+fn cover_job_source(
+    conn: &Connection,
+    id: i64,
+) -> Result<(String, i64, i64, Option<String>), AppError> {
+    let result = conn.query_row(
+        "SELECT path, size, mtime, pdf_password FROM documents WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    );
+    match result {
+        Ok((path, size, mtime, password)) => Ok((
+            path,
+            size,
+            mtime,
+            (!password.is_empty()).then_some(password),
+        )),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(AppError::DocumentNotFound { id }),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// FR-31 (AC-179/AC-180): set the manual cover choice. The value is validated
+/// against the row's file type (`covers::validate_choice` owns the grammar and
+/// the kind/file-type match — a malformed or mismatched choice never reaches
+/// storage), stored verbatim (it passed the grammar), and the cover job is
+/// enqueued with the new choice: the command returns while the render is
+/// background work (AC-180). The response is the updated row DTO — its
+/// `cover_path` is the choice-tagged key the moment the render lands.
+pub fn set_cover_choice(
+    conn: &Connection,
+    covers_queue: &CoverQueue,
+    id: i64,
+    choice: &str,
+) -> Result<DocumentDto, AppError> {
+    let (path, size, mtime, password) = cover_job_source(conn, id)?;
+    let parsed = covers::validate_choice(choice, &path)?;
+    conn.execute(
+        "UPDATE documents SET cover_choice = ?2 WHERE id = ?1",
+        params![id, choice],
+    )?;
+    covers_queue.enqueue(CoverJob {
+        doc_id: id,
+        path,
+        size,
+        mtime,
+        password,
+        cover_choice: Some(parsed),
+    });
+    get_document(conn, &covers_queue.dir, id)
+}
+
+/// FR-31 (AC-177): clear the choice — NULL plus re-enqueue of the automatic
+/// cover, the released path restored under the untagged key.
+pub fn clear_cover_choice(
+    conn: &Connection,
+    covers_queue: &CoverQueue,
+    id: i64,
+) -> Result<DocumentDto, AppError> {
+    let (path, size, mtime, password) = cover_job_source(conn, id)?;
+    conn.execute(
+        "UPDATE documents SET cover_choice = NULL WHERE id = ?1",
+        params![id],
+    )?;
+    covers_queue.enqueue(CoverJob {
+        doc_id: id,
+        path,
+        size,
+        mtime,
+        password,
+        cover_choice: None,
+    });
+    get_document(conn, &covers_queue.dir, id)
+}
+
+/// FR-31 (AC-178): the EPUB manifest images the cover pipeline can decode —
+/// resolved entries with their declared media types, in manifest order; the
+/// UI delivers them through the released `bookkeeper-epub:` protocol. A PDF
+/// is refused: its picker is the page-thumbnail strip (`app_pdf_thumbs`).
+pub fn cover_candidates(
+    conn: &Connection,
+    id: i64,
+) -> Result<Vec<CoverCandidateDto>, AppError> {
+    let target = open_target(conn, id)?;
+    if !epubsrv::is_epub_path(&target.path) {
+        return Err(AppError::Validation(
+            "cover candidates are the EPUB picker's list; a PDF picker uses page thumbnails".into(),
+        ));
+    }
+    Ok(
+        epubmeta::cover_candidates(&target.path)
+            .into_iter()
+            .map(|candidate| CoverCandidateDto {
+                entry: candidate.entry,
+                media_type: candidate.media_type,
+            })
+            .collect(),
+    )
 }
 
 // ------------------------------------------------------------- rename (FR-21)
@@ -910,7 +1055,7 @@ pub fn rename_document(
     new_name: &str,
 ) -> Result<DocumentDto, AppError> {
     let row = conn.query_row(
-        "SELECT path, filename, title_source, size, mtime, pdf_password FROM documents WHERE id = ?1",
+        "SELECT path, filename, title_source, size, mtime, pdf_password, cover_choice FROM documents WHERE id = ?1",
         params![id],
         |row| {
             Ok((
@@ -920,10 +1065,11 @@ pub fn rename_document(
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         },
     );
-    let (path, old_filename, title_source, size, mtime, password) = match row {
+    let (path, old_filename, title_source, size, mtime, password, choice_raw) = match row {
         Ok(values) => values,
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             return Err(AppError::DocumentNotFound { id })
@@ -1023,13 +1169,15 @@ pub fn rename_document(
 
     // §3.4 step 5: the cover is enqueued for the new identity; the stale
     // cache entry is removed by the existing orphan sweep (AC-110). The
-    // password travels with the row.
+    // password travels with the row — and so does the cover choice (FR-31:
+    // rename keeps the id, the choice rides the tagged key).
     covers_queue.enqueue(CoverJob {
         doc_id: id,
         path: new_path,
         size,
         mtime,
         password: (!password.is_empty()).then_some(password),
+        cover_choice: choice_raw.as_deref().and_then(covers::parse_choice),
     });
     emit_status(conn, sink)?;
     get_document(conn, &covers_queue.dir, id)
@@ -1111,6 +1259,13 @@ pub fn tags_delete(conn: &Connection, id: i64) -> Result<(), AppError> {
         return Err(AppError::TagNotFound { id });
     }
     Ok(())
+}
+
+pub fn tags_delete_all(conn: &Connection) -> Result<usize, AppError> {
+    // FR-32: the bulk delete. Join rows cascade exactly as for one tag
+    // (documents are never touched, FR-02); the count is the completion
+    // report. An empty library answers 0 — not an error.
+    Ok(conn.execute("DELETE FROM tags", [])?)
 }
 
 /// FR-07: add and/or remove tags over a multi-selection in ONE transaction /
@@ -1197,6 +1352,9 @@ pub fn get_settings(conn: &Connection) -> Result<SettingsDto, AppError> {
         log_level: db::get_setting(conn, "log_level")?
             .filter(|v| matches!(v.as_str(), "error" | "info"))
             .unwrap_or_else(|| "error".into()),
+        view_mode: db::get_setting(conn, "view_mode")?
+            .filter(|v| matches!(v.as_str(), "single" | "continuous" | "facing" | "horizontal"))
+            .unwrap_or_else(|| "continuous".into()),
     })
 }
 
@@ -1276,6 +1434,7 @@ pub fn set_setting(
         "last_filter" => is_valid_filter(value),
         "epub_text_size" => is_valid_text_size(value),
         "log_level" => matches!(value, "error" | "info"),
+        "view_mode" => matches!(value, "single" | "continuous" | "facing" | "horizontal"),
         _ => false,
     };
     if !valid {
@@ -1698,6 +1857,41 @@ mod tests {
     }
 
     #[test]
+    fn tags_delete_all_detaches_every_membership_and_keeps_documents() {
+        // AC-182 (FR-32): the bulk delete removes every tag row, cascades the
+        // memberships, touches no document, and reports the count; an empty
+        // library answers 0, not an error.
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("tags-all");
+        let sink = RecordingSink::default();
+        let (queue, _receiver) = covers::test_queue(temp.path().join("covers"));
+        let first = import_copy(&db, &temp, "info-none.pdf", &sink);
+        let second = import_copy(&db, &temp, "info-title.pdf", &sink);
+
+        let a = on(&db, |conn| tags_create(conn, "Bulk A")).unwrap();
+        let b = on(&db, |conn| tags_create(conn, "Bulk B")).unwrap();
+        on(&db, |conn| set_document_tags(conn, &sink, first.id, &[a.id, b.id])).unwrap();
+        on(&db, |conn| set_document_tags(conn, &sink, second.id, &[b.id])).unwrap();
+
+        let deleted = on(&db, |conn| tags_delete_all(conn)).unwrap();
+        assert_eq!(deleted, 2);
+        assert!(
+            on(&db, |conn| tags_list(conn)).unwrap().is_empty(),
+            "every tag row is removed"
+        );
+        let document = on(&db, |conn| get_document(conn, &queue.dir, first.id)).unwrap();
+        assert!(
+            document.tags.is_empty(),
+            "memberships are detached, the document keeps its row"
+        );
+        let counts = on(&db, |conn| get_counts(conn)).unwrap();
+        assert_eq!(counts.total, 2, "documents are never deleted (FR-02)");
+
+        let deleted = on(&db, |conn| tags_delete_all(conn)).unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
     fn reading_membership_single_and_bulk_with_view_and_counts() {
         // AC-121/AC-103 (FR-19): the toggle works per document and across a
         // selection, the Reading view lists exactly the members, and the
@@ -1921,6 +2115,158 @@ mod tests {
         // Unknown documents are refused like every other mutation.
         assert!(matches!(
             on(&db, |conn| set_password(conn, &sink, &queue, 999, "x")),
+            Err(AppError::DocumentNotFound { id: 999 })
+        ));
+    }
+
+    /// Reads the raw `cover_choice` column — the tests assert on the stored
+    /// value itself, not on a DTO that deliberately does not carry it.
+    fn stored_choice(db: &Db, id: i64) -> Option<String> {
+        on(db, |conn| {
+            conn.query_row(
+                "SELECT cover_choice FROM documents WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn cover_choice_set_and_clear_store_the_value_and_enqueue_the_render() {
+        // AC-177/AC-180 (FR-31): a valid choice is stored verbatim and the
+        // enqueued job carries the parsed choice; clearing NULLs the column
+        // and re-enqueues the automatic cover; both return the updated row.
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("cover-choice");
+        let sink = RecordingSink::default();
+        let covers_dir = temp.path().join("covers");
+        let document = import_copy_with(&db, &temp, "info-none.pdf", &sink, &covers_dir);
+        let (queue, receiver) = covers::test_queue(covers_dir.clone());
+
+        let updated = on(&db, |conn| {
+            set_cover_choice(conn, &queue, document.id, r#"{"kind":"page","page":2}"#)
+        })
+        .unwrap();
+        assert_eq!(updated.id, document.id);
+        assert!(
+            updated.cover_path.is_empty(),
+            "the tagged key has no file yet — the card keeps its glyph until the render lands"
+        );
+        assert_eq!(stored_choice(&db, document.id).as_deref(), Some(r#"{"kind":"page","page":2}"#));
+        let job = receiver.try_recv().expect("setting a choice enqueues the render");
+        assert_eq!(job.doc_id, document.id);
+        assert_eq!(job.cover_choice, Some(covers::CoverChoice::Page(2)));
+
+        let cleared = on(&db, |conn| clear_cover_choice(conn, &queue, document.id)).unwrap();
+        assert_eq!(cleared.id, document.id);
+        assert_eq!(stored_choice(&db, document.id), None);
+        let job = receiver.try_recv().expect("clearing re-enqueues the automatic cover");
+        assert_eq!(job.doc_id, document.id);
+        assert_eq!(job.cover_choice, None);
+
+        // An out-of-range page is grammatical (§3.8): it stores and renders
+        // the fallback under the tagged key — the covers tests own the
+        // render half; here it must simply not be rejected.
+        on(&db, |conn| {
+            set_cover_choice(conn, &queue, document.id, r#"{"kind":"page","page":9999}"#)
+        })
+        .unwrap();
+        assert_eq!(stored_choice(&db, document.id).as_deref(), Some(r#"{"kind":"page","page":9999}"#));
+        let job = receiver.try_recv().expect("a grammatical choice enqueues");
+        assert_eq!(job.cover_choice, Some(covers::CoverChoice::Page(9999)));
+
+        assert!(matches!(
+            on(&db, |conn| set_cover_choice(conn, &queue, 999, r#"{"kind":"page","page":0}"#)),
+            Err(AppError::DocumentNotFound { id: 999 })
+        ));
+        assert!(matches!(
+            on(&db, |conn| clear_cover_choice(conn, &queue, 999)),
+            Err(AppError::DocumentNotFound { id: 999 })
+        ));
+    }
+
+    #[test]
+    fn cover_choice_rejects_bad_grammar_and_type_mismatch_before_storage() {
+        // AC-179 (FR-31): malformed JSON, a bad grammar, and a kind that
+        // does not match the row's file type are the typed rejection at the
+        // service boundary — the stored value never changes.
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("cover-choice-reject");
+        let sink = RecordingSink::default();
+        let covers_dir = temp.path().join("covers");
+        let pdf = import_copy_with(&db, &temp, "info-none.pdf", &sink, &covers_dir);
+        let epub = import_copy_with(&db, &temp, "epub-images.epub", &sink, &covers_dir);
+        let (queue, receiver) = covers::test_queue(covers_dir.clone());
+
+        let rejected: &[(&str, &str)] = &[
+            ("not JSON at all", "not JSON at all"),
+            (r#"{"kind":"page"}"#, "page value missing"),
+            (r#"{"kind":"page","page":-1}"#, "negative page"),
+            (r#"{"kind":"page","page":1,"extra":true}"#, "extra member"),
+            (r#"{"kind":"epub-image","entry":"OEBPS/images/cover.png","media":"image/png"}"#, "epub kind on a PDF"),
+            (r#"{"kind":"unknown"}"#, "unknown kind"),
+        ];
+        for (value, why) in rejected {
+            let result = on(&db, |conn| set_cover_choice(conn, &queue, pdf.id, value));
+            assert!(
+                matches!(result, Err(AppError::Validation(_))),
+                "{why} must be a typed rejection, got {result:?}"
+            );
+        }
+        // The kind/file-type match cuts both ways.
+        let result = on(&db, |conn| {
+            set_cover_choice(conn, &queue, epub.id, r#"{"kind":"page","page":0}"#)
+        });
+        assert!(matches!(result, Err(AppError::Validation(_))), "page kind on an EPUB must be rejected, got {result:?}");
+
+        assert_eq!(stored_choice(&db, pdf.id), None, "a rejected choice never reaches storage");
+        assert_eq!(stored_choice(&db, epub.id), None);
+        assert!(
+            receiver.try_recv().is_err(),
+            "a rejected choice enqueues nothing"
+        );
+    }
+
+    #[test]
+    fn cover_candidates_lists_the_epub_manifest_images_and_refuses_a_pdf() {
+        // AC-178 (FR-31): the picker grid's list — every manifest raster the
+        // pipeline can decode, in the book's display order (DR-411): the
+        // fixture's chapter 1 shows plate-two, chapter 2 shows plate-one, so
+        // they lead in that order; the declared cover, shown by no chapter,
+        // follows in manifest order; a PDF is the typed refusal (its picker
+        // is the thumbnail strip).
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("cover-candidates");
+        let sink = RecordingSink::default();
+        let covers_dir = temp.path().join("covers");
+        let pdf = import_copy_with(&db, &temp, "info-none.pdf", &sink, &covers_dir);
+        let epub = import_copy_with(&db, &temp, "epub-images.epub", &sink, &covers_dir);
+
+        let candidates = on(&db, |conn| cover_candidates(conn, epub.id)).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.entry.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "OEBPS/images/plate-two.png",
+                "OEBPS/images/plate-one.png",
+                "OEBPS/images/cover.png",
+            ],
+            "display order first, the unreferenced declared cover last"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.media_type == "image/png"),
+            "the declared media type travels with every candidate"
+        );
+
+        let result = on(&db, |conn| cover_candidates(conn, pdf.id));
+        assert!(matches!(result, Err(AppError::Validation(_))), "a PDF must be refused, got {result:?}");
+        assert!(matches!(
+            on(&db, |conn| cover_candidates(conn, 999)),
             Err(AppError::DocumentNotFound { id: 999 })
         ));
     }
@@ -2346,9 +2692,9 @@ mod tests {
         fs::write(reader_dir.join(format!("{}/1-800.png", removed.id)), "png").unwrap();
         let kept_mtime = mtime_secs(&fs::metadata(&kept.path).unwrap());
         let removed_mtime = mtime_secs(&fs::metadata(&removed.path).unwrap());
-        let kept_cover = covers::cache_path(&covers_dir, &kept.path, kept.size, kept_mtime);
+        let kept_cover = covers::cache_path(&covers_dir, &kept.path, kept.size, kept_mtime, None);
         let removed_cover =
-            covers::cache_path(&covers_dir, &removed.path, removed.size, removed_mtime);
+            covers::cache_path(&covers_dir, &removed.path, removed.size, removed_mtime, None);
         fs::write(&kept_cover, "png").unwrap();
         fs::write(&removed_cover, "png").unwrap();
 
@@ -2788,6 +3134,119 @@ mod tests {
             ),
             ("none", "auto")
         );
+    }
+
+    /// FR-29 (SPEC-v0.0.12 §3.3): the reader view mode rides the existing
+    /// settings pair; the grammar is exactly the four mode names, no row is
+    /// the default `continuous` (the released behavior), a corrupt row falls
+    /// back to it, and every window hears the change through `settings_changed`.
+    #[test]
+    fn view_mode_setting_round_trips_with_the_four_modes() {
+        let conn = open_in_memory().unwrap();
+        let sink = RecordingSink::default();
+        assert_eq!(get_settings(&conn).unwrap().view_mode, "continuous");
+
+        for mode in ["single", "continuous", "facing", "horizontal"] {
+            set_setting(&conn, &sink, "view_mode", mode).unwrap();
+            assert_eq!(get_settings(&conn).unwrap().view_mode, mode);
+        }
+
+        for value in ["bogus", "", "Continuous", "two-page"] {
+            assert!(
+                matches!(set_setting(&conn, &sink, "view_mode", value), Err(AppError::Validation(_))),
+                "view_mode={value} should be rejected"
+            );
+        }
+
+        db::set_setting(&conn, "view_mode", "garbage").unwrap();
+        assert_eq!(get_settings(&conn).unwrap().view_mode, "continuous");
+
+        // DR-230 event path: the change is announced after the durable write.
+        set_setting(&conn, &sink, "view_mode", "facing").unwrap();
+        assert!(
+            sink
+                .settings()
+                .iter()
+                .any(|(key, value)| key == "view_mode" && value == "facing"),
+            "every window learns the new mode through settings_changed"
+        );
+    }
+
+    /// AC-166 no-bloat half (§3.3): per-document position rows never reach
+    /// the settings DTO — the DTO's serialized fields are exactly the
+    /// settings-store keys, and a `reader.pos.<id>` row changes nothing in it.
+    #[test]
+    fn position_rows_do_not_bloat_the_settings_dto() {
+        let conn = open_in_memory().unwrap();
+        let sink = RecordingSink::default();
+        conn.execute(
+            "INSERT INTO documents (id, path, filename, title, size, mtime, added_at) VALUES (1, '/a.pdf', 'a.pdf', 'A', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        crate::positions::set(&conn, 1, r#"{"p":12,"o":0.4}"#).unwrap();
+
+        let settings = get_settings(&conn).unwrap();
+        assert_eq!(settings.view_mode, "continuous", "positions are not settings");
+
+        let fields: Vec<String> = serde_json::to_value(&settings)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let mut expected: Vec<&str> = SETTINGS_KEYS.to_vec();
+        expected.sort_unstable();
+        let mut fields_sorted = fields.clone();
+        fields_sorted.sort_unstable();
+        assert_eq!(fields_sorted, expected, "the DTO is exactly the settings keys — nothing per-document rides it");
+        let serialized = serde_json::to_string(&settings).unwrap();
+        assert!(!serialized.contains("reader.pos"), "no position key reaches any window");
+        let _ = sink;
+    }
+
+    /// FR-28 (AC-167): `delete_documents` removes the position keys in the
+    /// same transaction; relink keeps the id, so the memory survives (§3.2).
+    #[test]
+    fn delete_documents_removes_position_memory_relink_keeps_it() {
+        let db = test_db(open_in_memory().unwrap());
+        let temp = TempDir::new("pos-memory");
+        let sink = RecordingSink::default();
+        let document = import_copy(&db, &temp, "info-none.pdf", &sink);
+        let (queue, receiver) = covers::test_queue(temp.path().join("covers"));
+        let reader_dir = temp.path().join("reader");
+
+        on(&db, |conn| {
+            crate::positions::set(conn, document.id, r#"{"p":5,"o":0.5}"#)
+        })
+        .unwrap();
+
+        // Relink: same id, new path — the memory stays (AC-167 relink half).
+        let new_path = temp.path().join("moved.pdf");
+        fs::rename(&document.path, &new_path).unwrap();
+        rescan(&db, &sink, &queue, false).unwrap();
+        on(&db, |conn| {
+            relink_document(conn, &sink, &queue, document.id, &new_path.to_string_lossy())
+        })
+        .unwrap();
+        assert_eq!(
+            on(&db, |conn| crate::positions::get(conn, document.id)).unwrap().as_deref(),
+            Some(r#"{"p":5,"o":0.5}"#),
+            "relink keeps the position"
+        );
+
+        // Delete: the keys go with the row, in the same transaction.
+        on(&db, |conn| {
+            delete_documents(conn, &sink, &queue, &[document.id], false, &reader_dir)
+        })
+        .unwrap();
+        let stored = on(&db, |conn| {
+            db::get_setting(conn, &crate::positions::key_for(document.id))
+        })
+        .unwrap();
+        assert_eq!(stored, None, "AC-167: the position memory is removed with the document");
+        drop(receiver);
     }
 
     /// FR-26 (SPEC-v0.0.11 §3.8): the level persists through the settings

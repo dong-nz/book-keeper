@@ -495,6 +495,81 @@ textarea {
   color: var(--text-primary);
 }
 
+/* Toolbar dialog (DR-408): a dialog that passes actions carries the app's
+   toolbar language across its top — the title on the bar, the actions as its
+   buttons. Full-bleed across the modal's padding (negative margins); the
+   close control is the bar's last element. */
+.modal-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--toolbar-height);
+  /* DR-415: 8 px here + the area's 4 px top padding — the same 12 px the
+     content has always started below the bar, split so the clip edge sits
+     above the first content row instead of on it. */
+  margin: -20px -24px 8px;
+  padding: 8px 16px;
+  background: var(--surface-0);
+  border-bottom: 1px solid var(--border-hairline);
+  border-radius: var(--radius-modal) var(--radius-modal) 0 0;
+}
+
+/* The bar is pinned (DR-410): the dialog box itself does not scroll in this
+   variant — the content area below the bar owns all scrolling, so the
+   scrollbar belongs to the content and never runs alongside the toolbar.
+   `scrollbar-gutter` reserves the gutter whether or not the scrollbar is
+   shown, so a fit-content dialog sized to its content keeps its exact
+   content width in both states, on every platform.
+   The area runs full-bleed on the sides (DR-411): negative side margins cancel the dialog's
+   side padding and its own side padding restores the content inset, so the scrollbar sits at
+   the dialog's side edges — the released modal scrollbar position. Its bottom stays at the
+   dialog's content box (DR-412): the dialog's bottom padding below it, so the scrollbar
+   stops above the rounded bottom corners instead of reaching the corner arc.
+   Its top keeps a 4 px clearance (DR-415): the area's top padding sits the first content
+   row below the overflow-clip edge — flush content put the first row's top border exactly
+   on the clip boundary, a row the clip drops at fractional device-pixel positions (the
+   new-tag field's border read as hidden by the bar). `scroll-padding-top` keeps the same
+   clearance when the browser scrolls a focused field back into view. */
+.modal-with-toolbar {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-with-toolbar .modal-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  margin: 0 -24px;
+  padding: 4px 24px 0;
+  scroll-padding-top: 4px;
+}
+
+/* On the bar the close control is a flex item (centered by the bar), not an
+   absolutely-placed corner control — a corner control would scroll away with
+   the content. */
+.modal-toolbar .modal-close {
+  position: static;
+  flex-shrink: 0;
+}
+
+.modal-toolbar-title {
+  margin: 0;
+  padding-right: 0;
+}
+
+.modal-toolbar-spacer {
+  flex: 1;
+}
+
+.modal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 [data-dialog-content][data-state="open"] {
   animation: modal-in var(--duration-overlay) var(--ease);
 }

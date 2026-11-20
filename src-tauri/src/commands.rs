@@ -10,10 +10,11 @@ use crate::epubsrv;
 use crate::library::query::{self, Query};
 use crate::library::service;
 use crate::library::{
-    DocumentDto, ImportResult, RescanResult, SearchPage, SettingsDto, TagDto,
+    CoverCandidateDto, DocumentDto, ImportResult, RescanResult, SearchPage, SettingsDto, TagDto,
 };
 use crate::pdf;
 use crate::pdfmeta;
+use crate::positions;
 use crate::{Covers, Db, Reader, TauriSink};
 
 /// The non-DB half of the command-boundary hook (FR-26 §3.2, M5, DR-354):
@@ -288,6 +289,47 @@ pub fn library_set_password(
     })
 }
 
+/// FR-31 (AC-177/AC-180): set the manual cover choice — the service validates
+/// the value's grammar and its match with the document's file type, stores it,
+/// and enqueues the render as background work; this command returns the updated
+/// row while the cover pipeline catches up. Thin wrapper (R1.2).
+#[tauri::command]
+pub async fn app_cover_choice(
+    app: AppHandle,
+    id: i64,
+    choice: String,
+) -> Result<DocumentDto, AppErrorPayload> {
+    background(app, "app_cover_choice", move |db, covers, _sink| {
+        db.with("app_cover_choice", |conn| {
+            service::set_cover_choice(conn, &covers.0, id, &choice)
+        })
+    })
+    .await
+}
+
+/// FR-31 (AC-177): clear the choice — the automatic cover returns under the
+/// released untagged key.
+#[tauri::command]
+pub async fn app_cover_clear(app: AppHandle, id: i64) -> Result<DocumentDto, AppErrorPayload> {
+    background(app, "app_cover_clear", move |db, covers, _sink| {
+        db.with("app_cover_clear", |conn| service::clear_cover_choice(conn, &covers.0, id))
+    })
+    .await
+}
+
+/// FR-31 (AC-178): the EPUB's decodable manifest images for the picker grid;
+/// a PDF is refused — its picker asks `app_pdf_thumbs` instead.
+#[tauri::command]
+pub async fn app_cover_candidates(
+    app: AppHandle,
+    id: i64,
+) -> Result<Vec<CoverCandidateDto>, AppErrorPayload> {
+    background(app, "app_cover_candidates", move |db, _covers, _sink| {
+        db.with("app_cover_candidates", |conn| service::cover_candidates(conn, id))
+    })
+    .await
+}
+
 #[tauri::command]
 pub fn library_bulk_tags(
     app: AppHandle,
@@ -429,6 +471,11 @@ pub fn tags_rename(db: State<'_, Db>, id: i64, name: String) -> Result<TagDto, A
 #[tauri::command]
 pub fn tags_delete(db: State<'_, Db>, id: i64) -> Result<(), AppErrorPayload> {
     db.with("tags_delete", |conn| service::tags_delete(conn, id))
+}
+
+#[tauri::command]
+pub fn tags_delete_all(db: State<'_, Db>) -> Result<usize, AppErrorPayload> {
+    db.with("tags_delete_all", |conn| service::tags_delete_all(conn))
 }
 
 // -------------------------------------------------------------------- app
@@ -633,6 +680,111 @@ pub async fn app_pdf_page(
             ),
         )
     })
+    .await
+}
+
+/// FR-30 (AC-169): one page's embedded text — selectable runs in top-origin
+/// page-point coordinates plus the page size in points (the §3.3 DTO). Served
+/// from the reader directory's per-document text cache; extraction runs on the
+/// render service's thread off the UI thread (R3.5). A page without embedded
+/// text answers an empty run list — the reader shows no layer, no message.
+/// A protected document answers the released `password-required` payload.
+#[tauri::command]
+pub async fn app_pdf_text(
+    app: AppHandle,
+    id: i64,
+    page: u32,
+) -> Result<pdf::PageText, AppErrorPayload> {
+    if page == 0 {
+        return fail("app_pdf_text", AppError::Validation("page must be 1 or greater".into()));
+    }
+    let (render, reader_dir) = {
+        let reader = app.state::<Reader>();
+        (reader.render.clone(), reader.dir.clone())
+    };
+    background(app, "app_pdf_text", move |db, _covers, _sink| {
+        let target = db.with("app_pdf_text", |conn| service::open_target(conn, id))?;
+        boundary(
+            "app_pdf_text",
+            pdf::serve_text(
+                &render,
+                &reader_dir,
+                id,
+                &target.path,
+                page,
+                target.password.as_deref(),
+            ),
+        )
+    })
+    .await
+}
+
+/// §3.8 (AC-181): a window of cover-picker page thumbnails at the picker's
+/// fixed width (a server-side constant — the command carries only the page
+/// window). Served through the same two-stage path as reader pages, under the
+/// reader directory's `picker/` subdirectory (DR-404), returned as file paths
+/// in page order. A malformed window is rejected before any rendering.
+#[tauri::command]
+pub async fn app_pdf_thumbs(
+    app: AppHandle,
+    id: i64,
+    from: u32,
+    to: u32,
+) -> Result<Vec<String>, AppErrorPayload> {
+    let (render, reader_dir) = {
+        let reader = app.state::<Reader>();
+        (reader.render.clone(), reader.dir.clone())
+    };
+    background(app, "app_pdf_thumbs", move |db, _covers, _sink| {
+        let target = db.with("app_pdf_thumbs", |conn| service::open_target(conn, id))?;
+        boundary(
+            "app_pdf_thumbs",
+            pdf::serve_thumbs(
+                &render,
+                &reader_dir,
+                id,
+                &target.path,
+                from,
+                to,
+                target.password.as_deref(),
+            ),
+        )
+    })
+    .await
+}
+
+/// FR-28 (AC-166): the stored reading position of a document — the stored
+/// value or null. Deliberately no `settings_changed` event (§3.2): a position
+/// is per-document state, not a window setting.
+#[tauri::command]
+pub async fn app_reader_position_get(
+    app: AppHandle,
+    id: i64,
+) -> Result<Option<String>, AppErrorPayload> {
+    background(app, "app_reader_position_get", move |db, _covers, _sink| {
+        db.with("app_reader_position_get", |conn| positions::get(conn, id))
+    })
+    .await
+}
+
+/// FR-28 (AC-167): write a reading position. The value grammar and the id's
+/// existence are validated at the storage boundary (`positions::set`); clamping
+/// to the document's current extent is the reader's job on open (§3.2).
+#[tauri::command]
+pub async fn app_reader_position_set(
+    app: AppHandle,
+    id: i64,
+    value: String,
+) -> Result<(), AppErrorPayload> {
+    background(
+        app,
+        "app_reader_position_set",
+        move |db, _covers, _sink| {
+            db.with("app_reader_position_set", |conn| {
+                positions::set(conn, id, &value)
+            })
+        },
+    )
     .await
 }
 

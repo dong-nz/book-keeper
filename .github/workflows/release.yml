@@ -62,13 +62,24 @@ jobs:
             exit 1
           fi
 
+      # NFR-12 (SPEC-v0.0.12 §3.4a): the shared apt cache — same deps file and
+      # same cache key as ci.yml, so a recent master push warms this job too.
+      - name: Restore apt caches (NFR-12)
+        if: matrix.os == 'ubuntu-24.04'
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt/archives
+            /var/lib/apt/lists
+          key: apt-${{ matrix.os }}-${{ hashFiles('.github/linux-deps.txt') }}
+          restore-keys: |
+            apt-${{ matrix.os }}-
+
       - name: Install Linux build dependencies (Tauri)
         if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y --no-install-recommends $(grep -vE '^[[:space:]]*(#|$)' .github/linux-deps.txt | tr '\n' ' ')
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
@@ -92,7 +103,7 @@ jobs:
       - name: Cache the cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.os }}
+          key: app-${{ matrix.os }} # NFR-12 (§3.4b): the shared suffix — this job restores what the last master CI push stored
 
       - name: Fetch the Pdfium library (DR-50c; --universal per DR-359 on macOS)
         env:

@@ -181,6 +181,7 @@ fn order_clause(query: &Query) -> String {
 pub const ROW_COLUMNS: &str = concat!(
     "d.id, d.path, d.filename, d.title, d.author, d.notes, d.favorite, ",
     "d.size, d.mtime, d.added_at, d.missing, d.title_source, d.reading, ",
+    "d.cover_choice, ",
     "(SELECT group_concat(name, '\u{1f}') FROM (",
     "SELECT t.name AS name FROM document_tags dt ",
     "JOIN tags t ON t.id = dt.tag_id ",
@@ -213,9 +214,15 @@ pub fn map_row(row: &Row, covers_dir: &Path) -> Result<DocumentDto, rusqlite::Er
         // request, and the cover job's completion re-query (DR-231) carries
         // the path empty→real so the open view flips. The UI's onerror
         // fallback (R5.3) stands as the safety net for a file removed
-        // between query and render.
+        // between query and render. FR-31 (§3.8, DR-404): the expected key
+        // is the choice-tagged one — a card shows the chosen cover, an
+        // unparseable stored value falls back to the automatic key.
         cover_path: {
-            let cached = crate::covers::cache_path(covers_dir, &path, size, mtime);
+            let cover_choice = row
+                .get::<_, Option<String>>("cover_choice")?
+                .as_deref()
+                .and_then(crate::covers::parse_choice);
+            let cached = crate::covers::cache_path(covers_dir, &path, size, mtime, cover_choice.as_ref());
             if cached.exists() {
                 cached.to_string_lossy().into_owned()
             } else {
@@ -936,7 +943,7 @@ mod tests {
         std::fs::create_dir(&covers_dir).unwrap();
         // `seed` sets mtime to the size (10); the cache key follows the row.
         seed(&conn, "/one.pdf", "One", "", "", false, 10, 1, false);
-        let cached = crate::covers::cache_path(&covers_dir, "/one.pdf", 10, 10);
+        let cached = crate::covers::cache_path(&covers_dir, "/one.pdf", 10, 10, None);
 
         let page = search(&conn, &query("one"), 0, 100, &covers_dir).unwrap();
         assert_eq!(page.rows[0].cover_path, "", "no cached cover yet — no path delivered");

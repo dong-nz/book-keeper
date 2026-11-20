@@ -1,6 +1,6 @@
 # Getting started
 
-> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.6, v0.0.7, v0.0.8, v0.0.9 and v0.0.11** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.6, v0.0.7, v0.0.8, v0.0.9, v0.0.11 and v0.0.12** — verified by running the app.
 
 ## System requirements
 Windows 10+ (the v0.0.1 installer). macOS 12+ and Linux (AppImage or .deb) are target platforms; their builds arrive with a later release. Fully offline — no account, no network needed.
@@ -80,3 +80,9 @@ Nothing else is left behind: the app keeps no accounts and stores nothing outsid
 > - **The name.** The application is **Book Keeper** (it was PDF Keeper). Nothing else changed: same features, same library, same data folder.
 >
 > Importing, organizing, and the rest of this page are unchanged.
+
+> **Amendment (2026-11-19, v0.0.12): the data folder has a shorter name — and updating starts with a fresh, empty library** (verified by running the app).
+>
+> - The folder is now named **`com.bookkeeper`** — Windows: `AppData\Roaming\com.bookkeeper` inside your user folder; macOS: `Library/Application Support/com.bookkeeper` inside your home folder; Linux: `.local/share/com.bookkeeper` inside your home folder. The table above shows the old name; this note replaces it. The old name ended in `.app`, and macOS treated the folder as a broken application bundle — Finder could not open it. The shorter name fixes that.
+> - **Nothing is moved automatically.** If you used an earlier version, your data stays in the old `com.bookkeeper.app` folder, and this version starts fresh with an empty library in the new folder. Your own PDFs and books were never inside either folder — the app only ever kept an index — so filling the new library is just importing again. The old folder is no longer used; you can delete it whenever you like.
+> - The *Data location* display in Settings always shows the folder actually in use, so there is never a guess about where your library lives.

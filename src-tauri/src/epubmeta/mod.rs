@@ -110,6 +110,215 @@ pub fn cover_image(path: &str) -> Option<image::DynamicImage> {
     image::load_from_memory(&bytes).ok()
 }
 
+/// FR-31 (§3.8): a chosen manifest entry of an EPUB as raw pixels for the
+/// cover pipeline. The entry must be declared in the manifest with a raster
+/// media type — the lookup is the released [`media_types`] two-phase read
+/// (container and OPF only), the decode the released [`cover_image`] one
+/// (same size guard, same two raster types). Every failure — an entry the
+/// manifest does not declare, a non-raster declaration, an entry removed
+/// from the package, an over-guard size, an undecodable entry, an
+/// unreadable package — is `None`: a stale choice lands on the released
+/// glyph fallback, exactly like a missing declared cover.
+pub fn cover_image_at(path: &str, entry: &str) -> Option<image::DynamicImage> {
+    let media = media_types(path)?.get(entry).cloned()?;
+    if !matches!(
+        media.to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg"
+    ) {
+        return None;
+    }
+    let file = File::open(path).ok()?;
+    let mut zip = ZipArchive::new(file).ok()?;
+    let mut zip_entry = zip.by_name(entry).ok()?;
+    if zip_entry.size() > MAX_ENTRY_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    zip_entry.read_to_end(&mut bytes).ok()?;
+    image::load_from_memory(&bytes).ok()
+}
+
+/// FR-31 (`app_cover_candidates`, §3.8): the manifest images the cover
+/// pipeline can decode — entry plus declared media type, never decoded
+/// bytes (the [`CoverRef`] rule). Ordered by the book's display order per
+/// DR-411: spine-item order (the spine is reading order, §3.9 consequence
+/// 1), within each spine document the order its `<img>`/`<image>`
+/// references appear, first mention wins; declared raster images no spine
+/// document references follow in manifest document order — the candidate
+/// set is the manifest's, only its order changes. The same two-phase read
+/// as [`media_types`]; an unreadable package or a manifest without raster
+/// images is the empty list.
+pub fn cover_candidates(path: &str) -> Vec<CoverRef> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(mut zip) = ZipArchive::new(file) else {
+        return Vec::new();
+    };
+    let Ok(mimetype) = read_entry(&mut zip, path, "mimetype") else {
+        return Vec::new();
+    };
+    if !String::from_utf8_lossy(&mimetype).starts_with("application/epub+zip") {
+        return Vec::new();
+    }
+    let container = match read_entry(&mut zip, path, "META-INF/container.xml") {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let Ok(container) = String::from_utf8(container) else {
+        return Vec::new();
+    };
+    let Some(opf_path) = find_rootfile(&container) else {
+        return Vec::new();
+    };
+    let opf = match read_entry(&mut zip, path, &opf_path) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let Ok(opf) = String::from_utf8(opf) else {
+        return Vec::new();
+    };
+    let opf_directory = opf_dir(&opf_path);
+
+    // Manifest scan: the candidate set in manifest document order, the
+    // id → (href, media type) map the spine pass resolves through, and the
+    // spine's idref order.
+    let mut candidates: Vec<CoverRef> = Vec::new();
+    let mut declared: HashMap<String, (String, String)> = HashMap::new();
+    let mut spine_ids: Vec<String> = Vec::new();
+    let mut in_spine = false;
+    let mut reader = Reader::from_str(&opf);
+    reader.config_mut().trim_text(true);
+    loop {
+        let event = match reader.read_event() {
+            Ok(event) => event,
+            Err(_) => return Vec::new(),
+        };
+        match &event {
+            Event::Start(element) => match element.local_name().as_ref() {
+                "item" => declare_manifest_item(element, &opf_directory, &mut candidates, &mut declared),
+                "spine" => in_spine = true,
+                "itemref" if in_spine => {
+                    if let Some(idref) = attr_value(element, "idref") {
+                        spine_ids.push(idref);
+                    }
+                }
+                _ => {}
+            },
+            Event::Empty(element) => match element.local_name().as_ref() {
+                "item" => declare_manifest_item(element, &opf_directory, &mut candidates, &mut declared),
+                // A self-closing `<itemref/>` — the common shape.
+                "itemref" if in_spine => {
+                    if let Some(idref) = attr_value(element, "idref") {
+                        spine_ids.push(idref);
+                    }
+                }
+                _ => {}
+            },
+            Event::End(element) => {
+                if element.local_name().as_ref() == "spine" {
+                    in_spine = false;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    // Display order (DR-411): walk the spine. A spine item that is not an
+    // XHTML document, a document that cannot be read, and an image href
+    // that resolves to nothing are skipped — they carry no display order.
+    // Only declared raster candidates are collected; an image shown by
+    // several documents is listed at its first mention.
+    let mut ordered: Vec<CoverRef> = Vec::new();
+    for idref in &spine_ids {
+        let Some((href, media_type)) = declared.get(idref.as_str()) else {
+            continue;
+        };
+        if !media_type.to_ascii_lowercase().contains("xhtml") {
+            continue;
+        }
+        let Some(document_entry) = resolve_href(&opf_directory, href) else {
+            continue;
+        };
+        let Ok(bytes) = read_entry(&mut zip, path, &document_entry) else {
+            continue;
+        };
+        let Ok(document) = String::from_utf8(bytes) else {
+            continue;
+        };
+        let document_directory = entry_dir(&document_entry);
+        let mut document_reader = Reader::from_str(&document);
+        document_reader.config_mut().trim_text(true);
+        while let Ok(event) = document_reader.read_event() {
+            let element = match &event {
+                Event::Start(element) | Event::Empty(element) => element,
+                Event::Eof => break,
+                _ => continue,
+            };
+            // XHTML `<img src>`; SVG `<image>` under either href form
+            // (xlink:href as the attribute key, quick-xml keeps prefixes).
+            let source = match element.local_name().as_ref() {
+                "img" => attr_value(element, "src").or_else(|| attr_value(element, "href")),
+                "image" => attr_value(element, "href")
+                    .or_else(|| attr_value(element, "xlink:href"))
+                    .or_else(|| attr_value(element, "src")),
+                _ => continue,
+            };
+            let Some(source) = source else { continue };
+            let Some(entry) = resolve_href(&document_directory, &source) else {
+                continue;
+            };
+            if ordered.iter().any(|candidate| candidate.entry == entry) {
+                continue;
+            }
+            if let Some(candidate) = candidates.iter().find(|candidate| candidate.entry == entry) {
+                ordered.push(candidate.clone());
+            }
+        }
+    }
+
+    // Declared images no spine document shows (a cover used only as the
+    // library cover) follow, in manifest document order.
+    let tail: Vec<CoverRef> = candidates
+        .into_iter()
+        .filter(|candidate| !ordered.iter().any(|listed| listed.entry == candidate.entry))
+        .collect();
+    ordered.extend(tail);
+    ordered
+}
+
+fn declare_manifest_item(
+    element: &BytesStart,
+    opf_directory: &str,
+    candidates: &mut Vec<CoverRef>,
+    declared: &mut HashMap<String, (String, String)>,
+) {
+    let (Some(href), Some(media_type)) = (attr_value(element, "href"), attr_value(element, "media-type"))
+    else {
+        return;
+    };
+    if let Some(id) = attr_value(element, "id") {
+        declared.insert(id, (href.clone(), media_type.clone()));
+    }
+    // §3.8: only what the pipeline can decode — the two raster types.
+    if !matches!(
+        media_type.to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg"
+    ) {
+        return;
+    }
+    let Some(entry) = resolve_href(opf_directory, &href) else {
+        return;
+    };
+    // The same entry declared twice (e.g. cover + its reuse in the flow)
+    // is one candidate.
+    if candidates.iter().any(|candidate| candidate.entry == entry) {
+        return;
+    }
+    candidates.push(CoverRef { entry, media_type });
+}
+
 // ---------------------------------------------------------------------------
 // Reading facts (§3.9 consequence 8, §3.12 rule 1): the reading-stage package
 // read — spine order with per-entry facts, the ToC (nav → NCX → spine-derived
@@ -1279,6 +1488,117 @@ mod tests {
         assert!(
             matches!(result, Err(AppError::EpubUnopenable { .. })),
             "expected the typed error, got {result:?}"
+        );
+    }
+
+    // --- cover choice (§3.8, FR-31): cover_image_at + cover_candidates ----
+
+    fn tiny_png() -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .unwrap();
+        cursor.into_inner()
+    }
+
+    fn tiny_jpeg() -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(2, 2, image::Rgb([0, 0, 255]))
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        cursor.into_inner()
+    }
+
+    /// A synthetic multi-image package (the DR-411 shape): three raster
+    /// manifest images (one declared twice — the dedupe case), an SVG
+    /// declaration, a text item, and a two-document spine whose display
+    /// order differs from the manifest order — ch2 shows b then a (plus an
+    /// SVG `<image>` and an undeclared reference), ch1 shows a again; the
+    /// declared image c is shown by no document.
+    fn multi_image_book(temp: &TempDir) -> String {
+        write_zip(
+            temp,
+            "multi-image.epub",
+            &[
+                ("mimetype", MIMETYPE),
+                ("META-INF/container.xml", container().as_bytes()),
+                (
+                    "OEBPS/package.opf",
+                    full_opf(
+                        r#"<dc:title>Image Book</dc:title>"#,
+                        r#"<item id="a" href="images/a.png" media-type="image/png"/><item id="b" href="images/b.jpeg" media-type="image/jpeg"/><item id="s" href="images/s.svg" media-type="image/svg+xml"/><item id="ch1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/><item id="ch2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/><item id="a2" href="images/a.png" media-type="image/png"/><item id="c" href="images/c.png" media-type="image/png"/>"#,
+                        r#"<itemref idref="ch2"/><itemref idref="ch1"/>"#,
+                        "",
+                    )
+                    .as_bytes(),
+                ),
+                ("OEBPS/images/a.png", &tiny_png()),
+                ("OEBPS/images/b.jpeg", &tiny_jpeg()),
+                ("OEBPS/images/c.png", &tiny_png()),
+                ("OEBPS/images/s.svg", b"<svg/>"),
+                (
+                    "OEBPS/text/ch1.xhtml",
+                    b"<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><img src=\"../images/a.png\"/></body></html>",
+                ),
+                (
+                    "OEBPS/text/ch2.xhtml",
+                    b"<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><img src=\"../images/b.jpeg\"/><img src=\"../images/a.png\"/><svg><image xlink:href=\"../images/s.svg\"/></svg><img src=\"../images/missing.png\"/></body></html>",
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn cover_image_at_decodes_a_declared_raster_entry_and_refuses_the_rest() {
+        // §3.8: a chosen entry renders iff the manifest declares it with a
+        // raster media type — the released decode rules; everything else is
+        // None, the released glyph fallback for a stale choice.
+        let temp = TempDir::new("epub-cover-at");
+        let path = multi_image_book(&temp);
+
+        let chosen = cover_image_at(&path, "OEBPS/images/a.png")
+            .expect("a declared PNG entry decodes")
+            .to_rgba8();
+        assert_eq!(chosen.dimensions(), (2, 2));
+        assert_eq!(chosen.get_pixel(0, 0).0, [255, 0, 0, 255], "the entry's own pixels");
+        let chosen_jpeg = cover_image_at(&path, "OEBPS/images/b.jpeg")
+            .expect("a declared JPEG entry decodes")
+            .to_rgb8();
+        assert_eq!(chosen_jpeg.dimensions(), (2, 2));
+
+        // Not declared in the manifest (a choice made against an older
+        // package), a non-raster declaration, a non-image item: all None.
+        assert!(cover_image_at(&path, "OEBPS/images/missing.png").is_none());
+        assert!(cover_image_at(&path, "OEBPS/images/s.svg").is_none());
+        assert!(cover_image_at(&path, "OEBPS/text/ch1.xhtml").is_none());
+    }
+
+    #[test]
+    fn cover_candidates_follow_the_books_display_order() {
+        // app_cover_candidates (§3.8, DR-411): spine order, then the order
+        // inside each spine document — ch2 shows b then a, so b leads even
+        // though a comes first in the manifest; the duplicate declaration
+        // and the second mention of a in ch1 are listed once; the SVG and
+        // the undeclared reference carry no candidate; the declared image
+        // no document shows (c) comes last, in manifest order.
+        let temp = TempDir::new("epub-candidates");
+        let path = multi_image_book(&temp);
+        assert_eq!(
+            cover_candidates(&path),
+            vec![
+                CoverRef {
+                    entry: "OEBPS/images/b.jpeg".into(),
+                    media_type: "image/jpeg".into(),
+                },
+                CoverRef {
+                    entry: "OEBPS/images/a.png".into(),
+                    media_type: "image/png".into(),
+                },
+                CoverRef {
+                    entry: "OEBPS/images/c.png".into(),
+                    media_type: "image/png".into(),
+                },
+            ]
         );
     }
 

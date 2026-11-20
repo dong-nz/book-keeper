@@ -21,6 +21,10 @@ const en = {
   "tagsDialog.addTitle": "Add tag",
   "tagsDialog.rename": "Rename tag",
   "tagsDialog.delete": "Delete tag",
+  "tagsDialog.deleteAll": "Delete all tags",
+  "tagsDialog.deleteAllTitle": "Delete all tags?",
+  "tagsDialog.deleteAllBody": "All tags will be removed and detached from every document. The documents themselves are kept.",
+  "tagsDialog.deleteAllAction": "Delete all",
   "tagsDialog.empty": "No tags yet.",
 
   // Toolbar
@@ -185,6 +189,8 @@ const en = {
   "row.unreading": "Remove from Reading",
   "row.relink": "Relink",
   "row.rename": "Rename",
+  // v0.0.12 (FR-31/UI-55): the cover picker entry in the document context menu.
+  "row.updateCover": "Update cover",
   "row.delete": "Delete",
   "card.coverAlt": "Cover of {title}",
 
@@ -254,6 +260,8 @@ const en = {
   "toast.importSkipped.other": "{count} documents skipped (already in library)",
   "toast.deleted.one": "Deleted {count} document",
   "toast.deleted.other": "Deleted {count} documents",
+  "toast.tagsDeleted.one": "Deleted {count} tag",
+  "toast.tagsDeleted.other": "Deleted {count} tags",
   "toast.deletedFiles.one": "Deleted {count} document and its file",
   "toast.deletedFiles.other": "Deleted {count} documents and their files",
   "toast.fileDeleteFailedAction": "Retry",
@@ -299,6 +307,16 @@ const en = {
   "reader.view.facing": "Facing pages",
   // v0.0.10 (UI-34 MODIFIED, DR-290): the fourth view mode.
   "reader.view.horizontal": "Continuous horizontal",
+  // v0.0.12 (FR-31/UI-55, §3.8): the cover menu in the reader chrome strip
+  // and the cover picker dialog. The PDF menu acts on the page shown; the
+  // EPUB menu opens the candidate grid.
+  "reader.cover.menu": "Cover",
+  "reader.cover.setPage": "Set this page as cover",
+  "reader.cover.choose": "Choose cover",
+  "reader.cover.automatic": "Automatic cover",
+  "coverPicker.title": "Update cover",
+  "coverPicker.automatic": "Automatic cover",
+  "coverPicker.noImages": "This book has no images to choose from.",
   // v0.0.8: the unlock form of a protected document (FR-20, AC-104/AC-105).
   "reader.password.title": "This document has a password",
   "reader.password.field": "Password",

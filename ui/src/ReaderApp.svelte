@@ -13,7 +13,9 @@
   import { Tooltip as TooltipKit } from "bits-ui"; // the app's own `Tooltip` component is the window's wrapper
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import WindowControls from "./components/WindowControls.svelte";
+  import { currentUiPlatform, windowControlsLayout } from "$lib/platform";
   import SettingsMenu from "./components/SettingsMenu.svelte";
+  import CoverMenu from "./components/CoverMenu.svelte";
   import ReaderControls from "./components/ReaderControls.svelte";
   import ReaderView from "./components/ReaderView.svelte";
   import EpubReaderControls from "./components/EpubReaderControls.svelte";
@@ -244,20 +246,32 @@
   }
 
   let unlistenClose: (() => void) | undefined;
+  // FR-28 (DR-406 3): the intercepted close carries the awaited position
+  // flush; `closeFlushed` keeps the second (real) close request unhandled,
+  // so the flush runs exactly once per window. A `pagehide` write covers an
+  // abrupt exit, where no close request runs.
+  let closeFlushed = false;
   onMount(() => {
+    window.addEventListener("pagehide", () => {
+      void (epubStore ?? pdfStore)?.flushPosition();
+    });
     void getCurrentWindow()
       .onCloseRequested((event) => {
-        if (!tempStored) return;
+        if (closeFlushed) return;
+        const reader = epubStore ?? pdfStore;
+        if (!tempStored && !reader) return;
         event.preventDefault();
-        void api
-          .librarySetPassword(docId, "")
-          .catch(() => {
-            /* the row keeps the temporary value; the next open presents it */
-          })
-          .finally(() => {
-            tempStored = false;
-            void getCurrentWindow().close();
-          });
+        closeFlushed = true;
+        const flush = reader?.flushPosition() ?? Promise.resolve();
+        const password = tempStored
+          ? api.librarySetPassword(docId, "").catch(() => {
+              /* the row keeps the temporary value; the next open presents it */
+            })
+          : Promise.resolve();
+        void Promise.all([flush, password]).finally(() => {
+          tempStored = false;
+          void getCurrentWindow().close();
+        });
       })
       .then((un) => {
         unlistenClose = un;
@@ -269,6 +283,13 @@
   onDestroy(() => {
     unlistenClose?.();
   });
+
+  // UI-07 MODIFIED (SPEC-v0.0.12 §3.7): on macOS the window-controls cluster
+  // is the chrome strip's FIRST cell (the traffic-light corner; the existing
+  // chrome padding is its inset) for both reader kinds; the reader settings
+  // control (UI-50) keeps its released right end — its adjacency to the
+  // controls is a Windows/Linux fact. The Windows/Linux mount is unchanged.
+  const controlsLayout = windowControlsLayout(currentUiPlatform());
 </script>
 
 <svelte:window onkeydown={onKeydown} oncontextmenu={guardContextMenu} />
@@ -278,6 +299,9 @@
 <TooltipKit.Provider delayDuration={300}>
 <div class="reader" class:pinned={dockedOpen}>
   <header class="chrome" data-tauri-drag-region="deep">
+    {#if controlsLayout.side === "left"}
+      <WindowControls />
+    {/if}
     <Icon name="book-open" />
     <Tooltip text={store?.documentName ?? ""}>
       {#snippet control({ props })}
@@ -294,8 +318,20 @@
          components — the OverlayAnchor guard the menu registers with, this
          window's ToastStack, the plugin's app-level commands (the reader-windows
          capability carries updater:default, DR-344). -->
+    <!-- UI-55 (FR-31, §3.8): the cover menu joins the strip's right-end
+         cluster on every platform, left of the settings control — the
+         release's one new control surface. It acts on the ready surface
+         only: the page shown (PDF) or the book's candidates (EPUB). The
+         window controls keep their ends (UI-07 MODIFIED moves only them). -->
+    {#if pdfStore && pdfStore.status === "ready"}
+      <CoverMenu docId={pdfStore.docId} kind="pdf" currentPage={() => pdfStore?.currentPage ?? 1} />
+    {:else if epubStore && epubStore.status === "ready"}
+      <CoverMenu docId={epubStore.docId} kind="epub" />
+    {/if}
     <SettingsMenu />
-    <WindowControls />
+    {#if controlsLayout.side === "right"}
+      <WindowControls />
+    {/if}
   </header>
 
   <!-- Exactly one surface per window (§3.5, AC-125): the kind the route

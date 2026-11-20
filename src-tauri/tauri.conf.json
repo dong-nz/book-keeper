@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Book Keeper",
-  "version": "0.0.11",
-  "identifier": "com.bookkeeper.app",
+  "version": "0.0.12",
+  "identifier": "com.bookkeeper",
   "build": {
     "beforeDevCommand": "pnpm run vite",
     "devUrl": "http://localhost:1420",

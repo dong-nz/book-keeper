@@ -1,6 +1,6 @@
 # Cover thumbnails
 
-> **Status: ✅ Shipped in v0.0.1, updated in v0.0.3, v0.0.4, v0.0.5, v0.0.7 and v0.0.8** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.1, updated in v0.0.3, v0.0.4, v0.0.5, v0.0.7, v0.0.8, v0.0.9 and v0.0.12** — verified by running the app.
 
 Every document shows a cover: a thumbnail of its first page, in list rows and grid cards.
 
@@ -40,3 +40,12 @@ Covers are display-only: opening a document still uses your system's PDF viewer 
 > - **A book's cover is the cover image the book itself declares.** It is fitted into the cover space whole — never cropped — so nothing printed on a book's cover is cut away; the space around it shows the card's background color.
 > - **A book that declares no usable cover image gets the same generic placeholder** every unrenderable document gets. The import still succeeds, and everything else about the book works normally.
 > - Background generation, the appearance of covers in the open list, regeneration on change, and cleanup on removal work for books exactly as described above.
+
+> **Amendment (2026-11-19, v0.0.12): you can choose which page or image represents a document** (verified by running the app).
+>
+> - **"Update cover…" in the document's right-click menu** opens a cover chooser. For a PDF it shows a strip of the document's page thumbnails — they appear as you scroll, so even a long document opens the chooser instantly; click any page and that page becomes the document's cover. For a book it shows a grid of the images inside the book; pick one and it becomes the cover. A book with no pictures inside offers nothing to pick and keeps its current cover.
+> - **The reader can do the same from where you're reading:** in a PDF, the cover control in the top bar offers **"Set this page as cover"** for the page you're looking at; in a book, **"Choose cover…"** opens the same image grid ([reading-pdfs.md](reading-pdfs.md), [reading-epubs.md](reading-epubs.md)).
+> - **"Automatic cover"** — in the chooser and in the reader — reverts to the old behavior: the first page for a PDF, the book's own declared cover for a book.
+> - **Your choice is kept** — it survives restarts, and the new cover appears in the list and grid like any other, arriving through the same background queue: the app stays responsive while it's made. If a chosen page can't be rendered, the document shows the generic placeholder instead — nothing else about the document changes.
+>
+> Everything else on this page is unchanged — background generation, regeneration on change, the fallback symbol, and cleanup on removal. One note: after a Rescan finds a file changed, a document you gave a manual cover keeps that choice; documents without one behave exactly as before.

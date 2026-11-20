@@ -11,13 +11,28 @@
 // direction the last movement took. These are the numbers AC-65/72/78/79/80/
 // 96 and AC-143…146 measure in the real app; the math itself is proven here.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { appPdfPage, appPdfOutline, appPdfDocument, libraryGetDocument } = vi.hoisted(() => ({
+const {
+  appPdfPage,
+  appPdfOutline,
+  appPdfDocument,
+  libraryGetDocument,
+  appSetSetting,
+  appReaderPositionGet,
+  appReaderPositionSet,
+  appPdfText,
+} = vi.hoisted(() => ({
   appPdfPage: vi.fn<(id: number, page: number, width: number) => Promise<string>>(),
   appPdfOutline: vi.fn<(id: number) => Promise<unknown>>(),
   appPdfDocument: vi.fn<(id: number) => Promise<unknown>>(),
   libraryGetDocument: vi.fn<(id: number) => Promise<unknown>>(),
+  appSetSetting: vi.fn<(key: string, value: string) => Promise<void>>(() => Promise.resolve()),
+  appReaderPositionGet: vi.fn<(id: number) => Promise<string | null>>(() => Promise.resolve(null)),
+  appReaderPositionSet: vi.fn<(id: number, value: string) => Promise<void>>(() => Promise.resolve()),
+  appPdfText: vi.fn<(id: number, page: number) => Promise<unknown>>(() =>
+    Promise.resolve({ runs: [], truncated: false, page_width_pt: 612, page_height_pt: 792 }),
+  ),
 }));
 
 vi.mock("../../api", () => ({
@@ -26,6 +41,10 @@ vi.mock("../../api", () => ({
   appPdfPage,
   appPdfOutline,
   appOpenDocument: vi.fn(),
+  appSetSetting,
+  appReaderPositionGet,
+  appReaderPositionSet,
+  appPdfText,
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset:///${path}`,
@@ -40,10 +59,15 @@ import {
   ZOOM_STEPS,
   actualSizeWidth,
   edgeStep,
+  encodeReaderPosition,
   imageRequestWidth,
+  parseReaderPosition,
+  POSITION_WRITE_MS,
   stepZoom,
+  textPositions,
 } from "./reader.svelte";
-import type { OutlineEntry, PdfDocDto } from "../types";
+import { settings } from "./settings.svelte";
+import type { OutlineEntry, PageTextDto, PdfDocDto } from "../types";
 
 /** Two letter-size pages (612×792 pt) and one landscape page (792×612 pt)
  *  — the real fixture geometry (the multi-* fixtures are letter MediaBox). */
@@ -795,5 +819,331 @@ describe("the scroll position is a single source (DR-155)", () => {
     expect(delivered).toBe(store.pageOffsets()[2] + 1);
     store.scrollTop = delivered;
     expect(store.currentPage).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Position memory (FR-28, SPEC-v0.0.12 §3.2): the value grammar, the
+// restore/clamp math per mode (DR-406 1/2/5), the debounced write discipline
+// and the close flush (AC-167/AC-168). View-mode memory (FR-29/AC-169) and
+// the text-layer mapping (FR-30/UI-54, §3.3) are the other §3.10 units.
+// ---------------------------------------------------------------------------
+
+describe("position grammar (FR-28, §3.2 value grammar)", () => {
+  it("reads both kinds' grammars", () => {
+    expect(parseReaderPosition('{"p":5,"o":0.4}', 10)).toEqual({ page: 5, fraction: 0.4 });
+    expect(parseReaderPosition('{"c":3,"o":0}', 8)).toEqual({ page: 3, fraction: 0 });
+  });
+
+  it("clamps a stale anchor to the document's current extent (AC-167: relink to a shorter file)", () => {
+    expect(parseReaderPosition('{"p":9,"o":0.5}', 3)).toEqual({ page: 3, fraction: 0.5 });
+  });
+
+  it("reads a malformed value as no position at all — the released default takes over", () => {
+    expect(parseReaderPosition(null, 3)).toBeNull();
+    expect(parseReaderPosition("not json", 3)).toBeNull();
+    expect(parseReaderPosition('"page 4"', 3)).toBeNull();
+    expect(parseReaderPosition('{"p":1,"o":0.5,"c":2}', 3)).toBeNull(); // two anchors
+    expect(parseReaderPosition('{"o":0.5}', 3)).toBeNull(); // no anchor
+    expect(parseReaderPosition('{"p":0,"o":0.5}', 3)).toBeNull(); // anchor below 1
+    expect(parseReaderPosition('{"p":1.5,"o":0.5}', 3)).toBeNull(); // non-integer anchor
+    expect(parseReaderPosition('{"p":2,"o":1.5}', 3)).toBeNull(); // offset outside 0–1
+    expect(parseReaderPosition('{"p":2}', 3)).toBeNull(); // no offset
+    expect(parseReaderPosition('{"p":2,"o":0.5}', 0)).toBeNull(); // an empty document
+  });
+
+  it("encodes the exact grammar with the kind's anchor key and three-decimal offsets", () => {
+    expect(JSON.parse(encodeReaderPosition(12, 0.4, "p"))).toEqual({ p: 12, o: 0.4 });
+    expect(JSON.parse(encodeReaderPosition(3, 1 / 3, "c"))).toEqual({ c: 3, o: 0.333 });
+    expect(encodeReaderPosition(2, -0.2, "p")).toBe('{"p":2,"o":0}'); // clamped before encoding
+  });
+});
+
+describe("position restore (FR-28/AC-167, DR-406 1/2)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    appReaderPositionSet.mockClear();
+    appReaderPositionGet.mockReset();
+    appReaderPositionGet.mockResolvedValue(null);
+    settings.setReaderViewMode("continuous");
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A store through the real `load()` path with a stored position present
+   *  or absent — the same command mocks the released load test uses. */
+  async function loadedReader(position: string | null): Promise<ReaderStore> {
+    libraryGetDocument.mockResolvedValue({ id: 1, filename: "t.pdf" });
+    appPdfDocument.mockResolvedValue(doc);
+    appPdfOutline.mockResolvedValue([]);
+    appReaderPositionGet.mockResolvedValue(position);
+    const store = new ReaderStore(1);
+    await store.load();
+    store.fitWidth = 816; // 612 pt × 4/3 — the fit base used across this file
+    store.viewportHeight = 600;
+    return store;
+  }
+
+  it("reads the stored position before `ready` and holds the mount until it lands", async () => {
+    const store = await loadedReader('{"p":2,"o":0.5}');
+    expect(store.status).toBe("ready");
+    expect(store.restorePending).toBe(true);
+    // The gate is real: while pending, a scheduled write records nothing.
+    store.schedulePositionRecord();
+    vi.advanceTimersByTime(POSITION_WRITE_MS);
+    expect(appReaderPositionSet).not.toHaveBeenCalled();
+  });
+
+  it("a failed position read is the released default: no restore, no error", async () => {
+    appReaderPositionGet.mockRejectedValueOnce(new Error("no handle"));
+    const store = await loadedReader(null);
+    expect(store.status).toBe("ready");
+    expect(store.restorePending).toBe(false);
+    expect(store.error).toBeNull();
+  });
+
+  it("continuous lands at the page top plus o × the page's display height — the first page named is the restored one", async () => {
+    const store = await loadedReader('{"p":2,"o":0.5}');
+    const lands: number[] = [];
+    store.onScrollTo = (px) => lands.push(px);
+    store.applyRestoredPosition();
+    expect(lands).toHaveLength(1);
+    expect(lands[0]).toBeCloseTo(store.pageOffsets()[1] + 1 + 0.5 * store.pageHeights()[1], 6);
+    expect(store.restorePending).toBe(false);
+    expect(store.currentPage).toBe(2);
+  });
+
+  it("facing lands within the pair row (DR-406 2): the row anchor plus o × the row height", async () => {
+    settings.setReaderViewMode("facing");
+    const store = await loadedReader('{"p":3,"o":0.5}');
+    expect(store.viewMode).toBe("facing"); // FR-29: the store starts in the remembered mode
+    const lands: number[] = [];
+    store.onScrollTo = (px) => lands.push(px);
+    store.applyRestoredPosition();
+    // Page 3 is the first page of row 1 (3|4).
+    expect(lands[0]).toBeCloseTo(store.rowOffsets()[1] + 1 + 0.5 * store.rowHeights()[1], 6);
+    expect(store.currentPage).toBe(3);
+  });
+
+  it("horizontal lands at the page's left edge plus o × its display width (the x-axis model)", async () => {
+    settings.setReaderViewMode("horizontal");
+    const store = await loadedReader('{"p":3,"o":0.25}');
+    const lands: number[] = [];
+    store.onScrollTo = (px) => lands.push(px);
+    store.applyRestoredPosition();
+    expect(lands[0]).toBeCloseTo(store.rowXOffsets()[2] + 1 + 0.25 * store.pageWidth(3), 6);
+    expect(store.scrollLeft).toBeCloseTo(lands[0], 6);
+    expect(store.currentPage).toBe(3);
+  });
+
+  it("single mounts the restored page directly (index-driven, no scroll)", async () => {
+    settings.setReaderViewMode("single");
+    const store = await loadedReader('{"p":2,"o":0.7}');
+    const lands: number[] = [];
+    store.onScrollTo = (px) => lands.push(px);
+    store.applyRestoredPosition();
+    expect(lands).toEqual([]); // no scroll motion in single mode
+    expect(store.singleIndex).toBe(2);
+    expect(store.currentPage).toBe(2);
+    expect(store.restorePending).toBe(false);
+  });
+
+  it("a stale position clamps: the relink-to-shorter case lands on the last page", async () => {
+    const store = await loadedReader('{"p":9,"o":0.5}'); // doc has 3 pages
+    const lands: number[] = [];
+    store.onScrollTo = (px) => lands.push(px);
+    store.applyRestoredPosition();
+    expect(lands[0]).toBeCloseTo(store.pageOffsets()[2] + 1 + 0.5 * store.pageHeights()[2], 6);
+    expect(store.currentPage).toBe(3);
+  });
+
+  it("a no-op restore (page 1, offset 0) still clears the gate so the first page paints", async () => {
+    const store = await loadedReader('{"p":1,"o":0}');
+    store.onScrollTo = () => {};
+    store.applyRestoredPosition();
+    expect(store.restorePending).toBe(false);
+  });
+
+  it("applying a restore twice is inert, and without a stored position it changes nothing", async () => {
+    const store = await loadedReader('{"p":2,"o":0.5}');
+    store.onScrollTo = () => {};
+    store.applyRestoredPosition();
+    const lands: number[] = [];
+    store.onScrollTo = (px) => lands.push(px);
+    store.applyRestoredPosition(); // second call: no second jump
+    expect(lands).toEqual([]);
+    const plain = await loadedReader(null);
+    plain.onScrollTo = () => {};
+    plain.applyRestoredPosition(); // nothing was stored: no jump, gate stays closed
+    expect(plain.restorePending).toBe(false);
+  });
+});
+
+describe("position write discipline (FR-28/AC-168)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    appReaderPositionSet.mockClear();
+    appReaderPositionGet.mockReset();
+    appReaderPositionGet.mockResolvedValue(null);
+    settings.setReaderViewMode("continuous");
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function readyReader(): Promise<ReaderStore> {
+    libraryGetDocument.mockResolvedValue({ id: 1, filename: "t.pdf" });
+    appPdfDocument.mockResolvedValue(doc);
+    appPdfOutline.mockResolvedValue([]);
+    const store = new ReaderStore(1);
+    await store.load();
+    store.fitWidth = 816;
+    store.viewportHeight = 600;
+    return store;
+  }
+
+  it("scroll calls debounce to one write per settle — last value wins", async () => {
+    const store = await readyReader();
+    const offsets = store.pageOffsets();
+    store.scrollTop = offsets[1] + 400;
+    store.schedulePositionRecord();
+    store.scrollTop = offsets[1] + 500;
+    store.schedulePositionRecord();
+    store.schedulePositionRecord();
+    expect(appReaderPositionSet).not.toHaveBeenCalled(); // no per-scroll writes
+    vi.advanceTimersByTime(POSITION_WRITE_MS);
+    expect(appReaderPositionSet).toHaveBeenCalledTimes(1);
+    expect(appReaderPositionSet.mock.calls[0][0]).toBe(1);
+    const written = JSON.parse(appReaderPositionSet.mock.calls[0][1]);
+    expect(written.p).toBe(2); // the LAST value, not the first
+    expect(written.o).toBeCloseTo(500 / store.pageHeights()[1], 3);
+  });
+
+  it("flush cancels the pending debounce and writes the last value once — the close path", async () => {
+    const store = await readyReader();
+    store.scrollTop = store.pageOffsets()[2] + 100;
+    store.schedulePositionRecord();
+    await store.flushPosition();
+    expect(appReaderPositionSet).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(appReaderPositionSet.mock.calls[0][1]).p).toBe(3);
+    vi.advanceTimersByTime(POSITION_WRITE_MS);
+    expect(appReaderPositionSet).toHaveBeenCalledTimes(1); // cancelled, not doubled
+  });
+
+  it("a flush with nothing to record writes nothing", async () => {
+    const store = new ReaderStore(1); // never loaded: no position to record
+    await store.flushPosition();
+    expect(appReaderPositionSet).not.toHaveBeenCalled();
+  });
+
+  it("single-mode navigation records without a scroll event (DR-406 3/5)", async () => {
+    settings.setReaderViewMode("single");
+    const store = await readyReader();
+    store.goToPage(2); // the index change IS the position change
+    vi.advanceTimersByTime(POSITION_WRITE_MS);
+    expect(appReaderPositionSet).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(appReaderPositionSet.mock.calls[0][1])).toEqual({ p: 2, o: 0 });
+  });
+
+  it("a failed write is silent — the next settle re-tries", async () => {
+    const store = await readyReader();
+    appReaderPositionSet.mockRejectedValueOnce(new Error("window closing"));
+    store.scrollTop = store.pageOffsets()[1] + 300;
+    store.schedulePositionRecord();
+    vi.advanceTimersByTime(POSITION_WRITE_MS);
+    expect(store.status).toBe("ready");
+    expect(store.error).toBeNull();
+    store.schedulePositionRecord();
+    vi.advanceTimersByTime(POSITION_WRITE_MS);
+    expect(appReaderPositionSet).toHaveBeenCalledTimes(2); // re-tried, not swallowed forever
+  });
+});
+
+describe("view-mode memory (FR-29/AC-169)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    appSetSetting.mockClear();
+    appReaderPositionGet.mockReset();
+    appReaderPositionGet.mockResolvedValue(null);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function loadedStore(): Promise<ReaderStore> {
+    libraryGetDocument.mockResolvedValue({ id: 1, filename: "t.pdf" });
+    appPdfDocument.mockResolvedValue(doc);
+    appPdfOutline.mockResolvedValue([]);
+    const store = new ReaderStore(1);
+    await store.load();
+    store.fitWidth = 816;
+    store.viewportHeight = 600;
+    return store;
+  }
+
+  it("a new store starts in the remembered mode", async () => {
+    settings.setReaderViewMode("facing");
+    const store = await loadedStore();
+    expect(store.viewMode).toBe("facing");
+  });
+
+  it("the released default (continuous) stands until the user first chooses", async () => {
+    settings.setReaderViewMode("continuous"); // the store's own initial value
+    const store = await loadedStore();
+    expect(store.viewMode).toBe("continuous");
+  });
+
+  it("choosing a mode stays a per-window action and persists through the settings batch", async () => {
+    settings.setReaderViewMode("continuous");
+    const store = await loadedStore();
+    store.scrollTop = store.pageOffsets()[1] + 1; // the reader is on page 2
+    store.setViewMode("single");
+    expect(store.viewMode).toBe("single"); // the window switches exactly as today
+    expect(store.singleIndex).toBe(2); // carrying the current page (the released rule)
+    vi.advanceTimersByTime(300); // the settings store's debounced batch
+    expect(appSetSetting.mock.calls).toContainEqual(["view_mode", "single"]);
+    const reopened = await loadedStore(); // a NEW window…
+    expect(reopened.viewMode).toBe("single"); // …opens in the chosen mode
+  });
+});
+
+describe("text layer (FR-30/UI-54, §3.3)", () => {
+  const dto: PageTextDto = {
+    runs: [{ text: "Page 2 of the selection probe", x: 72, y: 100, w: 300, h: 12 }],
+    truncated: false,
+    page_width_pt: 612,
+    page_height_pt: 792,
+  };
+
+  it("maps page points to CSS px at the display scale — deterministic arithmetic, re-derived on zoom", () => {
+    const at2x = textPositions(dto, 1224); // 612 pt × 2
+    expect(at2x[0].x).toBeCloseTo(144, 9);
+    expect(at2x[0].y).toBeCloseTo(200, 9);
+    expect(at2x[0].w).toBeCloseTo(600, 9);
+    expect(at2x[0].h).toBeCloseTo(24, 9);
+    expect(at2x[0].text).toBe("Page 2 of the selection probe");
+    const atFit = textPositions(dto, 816); // the same run at the fit base
+    expect(atFit[0].x).toBeCloseTo(96, 9);
+    expect(atFit[0].h).toBeCloseTo(16, 9);
+    // A degenerate page width maps to zero, never to Infinity/NaN.
+    expect(textPositions({ ...dto, page_width_pt: 0 }, 816)[0].x).toBe(0);
+  });
+
+  it("requests each page once per window session; a failed extraction caches the empty layer", async () => {
+    const store = storeAt(816);
+    appPdfText.mockResolvedValueOnce(dto);
+    store.requestText(2);
+    await vi.waitFor(() => expect(store.texts.has(2)).toBe(true));
+    expect(store.texts.get(2)!.runs[0].text).toContain("selection probe");
+    store.requestText(2);
+    expect(appPdfText).toHaveBeenCalledTimes(1); // the cache answers, not the command
+    appPdfText.mockRejectedValueOnce(new Error("no text layer"));
+    store.requestText(3);
+    await vi.waitFor(() => expect(store.texts.has(3)).toBe(true));
+    expect(store.texts.get(3)!.runs).toEqual([]); // the scan case: a cached empty answer
+    store.requestText(3);
+    expect(appPdfText).toHaveBeenCalledTimes(2); // never re-asked
+    expect(store.error).toBeNull(); // a failed extraction never becomes the window error
   });
 });

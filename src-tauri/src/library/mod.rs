@@ -33,6 +33,16 @@ pub struct DocumentDto {
     pub cover_path: String,
 }
 
+/// FR-31 (AC-178): one EPUB manifest image the cover pipeline can decode —
+/// the resolved archive entry and its declared media type. The UI renders
+/// candidates through the released `bookkeeper-epub:` protocol and sends the
+/// pair back verbatim as the `epub-image` choice.
+#[derive(Debug, Clone, Serialize)]
+pub struct CoverCandidateDto {
+    pub entry: String,
+    pub media_type: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TagDto {
     pub id: i64,
@@ -95,6 +105,12 @@ pub struct SettingsDto {
     /// `"info"`; the default is `error` — the released settings default
     /// pattern.
     pub log_level: String,
+    /// Reader view mode (FR-29, SPEC-v0.0.12 §3.3): `"single"`,
+    /// `"continuous"`, `"facing"` or `"horizontal"`; the default is
+    /// `continuous` — the released behavior. Per-document page memory is
+    /// NOT part of this DTO (no bloat, §3.3): positions live under
+    /// `reader.pos.<id>` keys and travel only through their own commands.
+    pub view_mode: String,
 }
 
 /// Backend → UI events (`status_updated`, `library_job_progress`,
@@ -117,7 +133,11 @@ pub struct SettingsChanged {
     pub value: String,
 }
 
-pub const SETTINGS_KEYS: [&str; 9] = [
+/// The window-setting keys `app_get_settings`/`app_set_settings` accept.
+/// Per-document reader positions (`reader.pos.<id>`, positions module) are
+/// deliberately not settings-store keys of this pair (FR-28, §3.3 no-bloat
+/// rule): they never appear here or in `SettingsDto`.
+pub const SETTINGS_KEYS: [&str; 10] = [
     "view",
     "sort",
     "dir",
@@ -127,6 +147,7 @@ pub const SETTINGS_KEYS: [&str; 9] = [
     "last_filter",
     "epub_text_size",
     "log_level",
+    "view_mode",
 ];
 
 /// Absolute + lexically normalized path (RULES R2.5). Never touches the

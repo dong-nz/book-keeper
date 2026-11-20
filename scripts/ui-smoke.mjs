@@ -67,7 +67,7 @@ const APP_EXE = join(root, "src-tauri", "target", "debug", "bookkeeper.exe");
 // Same variable the app-side resolver reads (DR-162): scripts/ui-verify.mjs
 // points each suite at its own isolated library under the app data dir;
 // standalone runs keep the app's own directory.
-export const DATA_DIR = process.env.BOOKKEEPER_DATA_DIR || join(process.env.APPDATA, "com.bookkeeper.app");
+export const DATA_DIR = process.env.BOOKKEEPER_DATA_DIR || join(process.env.APPDATA, "com.bookkeeper");
 // Under the orchestrator the two suites run at once: cleanup closes only
 // this suite's own windows, never image-name kills that would hit the
 // other suite's app.
@@ -5025,6 +5025,59 @@ async function flowTagCrud() {
   await ensureTagNames(["Union A", "Union B"]);
   await openTagsManager();
 
+  // UI-10 (DR-414): the Tags manager is a toolbar dialog — title, close and
+  // *Delete all tags* on the bar, content in the variant's area; and the
+  // area carries the release's scrollbar shape (DR-411/DR-412): it reaches
+  // the dialog's side edges, its bottom stays clear of the rounded corners,
+  // and the tag rows keep the released content inset.
+  const structure = await waitForEval(`
+    const panel = document.querySelector('.tags-dialog');
+    const modal = panel?.closest('.modal');
+    const bar = modal?.querySelector('.modal-toolbar');
+    const scroll = modal ? Array.from(modal.children).find((c) => c.classList.contains('modal-scroll')) : null;
+    if (!panel || !modal || !bar || !scroll) return { fail: "structure" };
+    const deleteAll = Array.from(bar.querySelectorAll('.modal-toolbar-actions button')).find((b) => b.textContent.trim() === 'Delete all tags');
+    const out = {
+      fail: null,
+      titleOnBar: !!bar.querySelector('.modal-toolbar-title'),
+      closeOnBar: !!bar.querySelector('.modal-close'),
+      deleteAllOnBar: !!deleteAll,
+      barAboveContent: bar.getBoundingClientRect().bottom <= scroll.getBoundingClientRect().top + 2,
+    };
+    if (!out.titleOnBar || !out.closeOnBar || !out.deleteAllOnBar || !out.barAboveContent) out.fail = "bar";
+    return out;
+  `, { timeout: 5000 });
+  check("UI-10 (DR-414): the Tags manager renders as a toolbar dialog — title, close and Delete all tags on the bar above the content area",
+    structure !== null && structure.fail === null, JSON.stringify(structure));
+
+  const tagsScrollShape = await waitForEval(`
+    const panel = document.querySelector('.tags-dialog');
+    const modal = panel?.closest('.modal');
+    const area = modal ? Array.from(modal.children).find((c) => c.classList.contains('modal-scroll')) : null;
+    if (!panel || !modal || !area) return { fail: "no-area" };
+    const mr = modal.getBoundingClientRect();
+    const ar = area.getBoundingClientRect();
+    const row = area.querySelector('.tag-row');
+    const input = area.querySelector('input[aria-label="Add tag"]');
+    const out = {
+      fail: null,
+      left: Math.round(ar.left - mr.left),
+      right: Math.round(mr.right - ar.right),
+      bottom: Math.round(mr.bottom - ar.bottom),
+      rowInset: row ? Math.round(row.getBoundingClientRect().left - mr.left) : null,
+      inputClear: input ? Math.round(input.getBoundingClientRect().top - ar.top) : null,
+      modalW: Math.round(mr.width),
+      areaW: Math.round(ar.width),
+    };
+    if (Math.abs(out.left) > 2 || out.right > 2) out.fail = "sides";
+    else if (out.bottom < 14) out.fail = "bottom";
+    else if (!row || Math.abs(out.rowInset - 25) > 2) out.fail = "inset";
+    else if (out.inputClear < 2) out.fail = "clearance";
+    return out;
+  `, { timeout: 5000 });
+  check("UI-10 (DR-414): the Tags manager content area reaches the dialog's side edges with the content inset unchanged, its bottom clear of the rounded corners, and the new-tag field sitting below the area's top edge (DR-415)",
+    tagsScrollShape !== null && tagsScrollShape.fail === null, JSON.stringify(tagsScrollShape));
+
   await clickRowAction("Union A", "Rename tag");
 
   // Two dialogs are open from here on: the manager, and the rename dialog on
@@ -5105,6 +5158,41 @@ async function flowTagCrud() {
   const rows = await execute(`return document.querySelectorAll('[data-row-id]').length;`);
   check("AC-14: deleting a tag detaches it from documents and deletes no document",
     !!gone && afterTotal === beforeTotal && rows > 0, `library total: ${beforeTotal} → ${afterTotal}, rows rendered: ${rows}`);
+
+  // FR-32 (AC-183): the bar's *Delete all tags* action. The confirmation
+  // first (Discard keeps everything), then the confirmed bulk delete: the
+  // manager empties with the released empty-state text, the action disables,
+  // the completion toast reports the count, and no document is touched.
+  // `ensureTagNames` opens and closes the manager itself (D14) — it runs
+  // before the manager is opened for the action, never around an open one.
+  await ensureTagNames(["Bulk A"]);
+  await openTagsManager();
+  const tagsBefore = await execute(`return document.querySelectorAll('.modal .tag-name').length;`);
+  const DELETE_ALL_BUTTON = `() => Array.from(document.querySelectorAll('.modal-toolbar-actions button')).find((b) => b.textContent.trim() === 'Delete all tags')`;
+  await clickStable(DELETE_ALL_BUTTON);
+  const confirmOpen = await waitForEval(`return document.body.textContent.includes('Delete all tags?') ? true : null;`, { timeout: 5000 });
+  check("FR-32: Delete all tags opens a confirmation naming the operation", tagsBefore >= 2 && !!confirmOpen,
+    `tags before: ${tagsBefore}`);
+  await click('//button[normalize-space()="Discard"]', "xpath");
+  const keptAll = await waitForEval(`return document.querySelectorAll('.modal .tag-name').length >= 2 ? true : null;`, { timeout: 5000 });
+  check("FR-32: discarding the confirmation keeps every tag", !!keptAll);
+
+  const allBeforeTotal = await docCount();
+  await clickStable(DELETE_ALL_BUTTON);
+  await waitForEval(`return document.body.textContent.includes('Delete all tags?') ? true : null;`, { timeout: 5000 });
+  await click('//button[normalize-space()="Delete all"]', "xpath");
+  const emptied = await waitForEval(`
+    const empty = document.querySelector('.tags-dialog .empty');
+    const rows = document.querySelectorAll('.modal .tag-name').length;
+    const button = Array.from(document.querySelectorAll('.modal-toolbar-actions button')).find((b) => b.textContent.trim() === 'Delete all tags');
+    return empty && rows === 0 && button && button.disabled ? true : null;
+  `, { timeout: 8000 });
+  const toast = await toastContains(`Deleted ${tagsBefore} tags`);
+  const allAfterTotal = await docCount();
+  check("FR-32: confirming deletes every tag — the manager shows the empty state, the action disables, the completion toast reports the count, and no document is deleted",
+    !!emptied && !!toast && allAfterTotal === allBeforeTotal,
+    `tags before: ${tagsBefore}, toast: ${JSON.stringify(await execute(EVAL.toastTexts))}, library total: ${allBeforeTotal} → ${allAfterTotal}`);
+  await closeDialog("the tags manager");
 }
 
 // UI-11 / AC-15: one thin token-colored bar in every scroll container, none
@@ -5124,7 +5212,8 @@ async function flowScrollbars() {
   // A scrollbar exists only where something actually scrolls, so the flow
   // measures containers that are known to overflow: the document area holding
   // the whole library, and the two tag surfaces holding a list long
-  // enough to pass their own max-height.
+  // enough to pass their cap — the submenu's max-height, and the tags
+  // manager's toolbar-dialog content area (DR-414).
   await ensureTags(30);
   await browseSelect("All documents");
   await clearSearch(); // the document area must hold the whole library to overflow
@@ -5215,7 +5304,7 @@ async function flowScrollbars() {
   await menuClosed('.menu.browse-menu');
   await openTagsManager();
   await sleep(200);
-  const dialogSurfaces = await read([["tags manager list", ".tags-dialog"]]);
+  const dialogSurfaces = await read([["tags manager content area", ".modal-scroll"]]);
   await closeDialog("the tags manager");
 
   const all = [...surfaces, ...menuSurfaces, ...dialogSurfaces];
@@ -11561,19 +11650,29 @@ async function flowReaderViewModes() {
     !!atPair60 && pairMounted.some((alts) => alts.includes("Page 59") && alts.includes("Page 60")),
     JSON.stringify(pairMounted));
 
-  // A new reader window opens in continuous regardless of the previous
-  // window's mode (DR-181: a mode is session state of its own window).
-  // The second document is multi-096 — a multi-page fixture no flow ever
-  // deletes. multi-012 would also work standalone, but flowReaderClose
-  // (earlier in the same sequence) deletes it as its library-only-delete
-  // subject (DR-149), so in a single-instance set run its row is gone by
-  // the time this flow needs it (measured in the 2026-11-12 evidence run:
-  // the search returned zero rows and the flow crashed).
+  // A new reader window opens in the last chosen mode (FR-29, v0.0.12 —
+  // supersedes AC-80's per-window default, DR-409): this window ends in
+  // facing, so the new window opens in facing. The mode write rides the
+  // settings store's debounced batch — wait for it to land first (the
+  // flowReaderMemory pattern). The second document is multi-096 — a
+  // multi-page fixture no flow ever deletes. multi-012 would also work
+  // standalone, but flowReaderClose (earlier in the same sequence) deletes
+  // it as its library-only-delete subject (DR-149), so in a single-instance
+  // set run its row is gone by the time this flow needs it (measured in the
+  // 2026-11-12 evidence run: the search returned zero rows and the flow
+  // crashed).
+  let modeLanded = false;
+  for (let i = 0; i < 20 && !modeLanded; i += 1) {
+    const settingsState = await cInvoke("app_get_settings");
+    modeLanded = settingsState?.view_mode === "facing";
+    if (!modeLanded) await sleep(250);
+  }
+  if (!modeLanded) throw new Error("the facing-mode settings write did not land before the default check");
   const second = await cOpenReader("multi-096");
   await second.session.waitFor(FIRST_PAGE_READY, { timeout: 8000 });
   const modes2 = await modeButtons(second.session);
-  check("AC-80: a new reader window opens in continuous regardless of the previous window's mode",
-    modes2.length === 4 && modes2[1].pressed && !modes2[0].pressed && !modes2[2].pressed && !modes2[3].pressed,
+  check("AC-80 as superseded by FR-29: a new reader window opens in the last chosen mode — facing here (DR-409)",
+    modes2.length === 4 && modes2[2].pressed && !modes2[0].pressed && !modes2[1].pressed && !modes2[3].pressed,
     JSON.stringify(modes2));
   await second.session.key("Escape", "Escape", 27);
   await cWaitReaderId(second.id, false);
@@ -11935,19 +12034,27 @@ async function flowReaderHorizontal() {
     !!backCont && backCont.label === pageLabel(59, count),
     `label: ${JSON.stringify(backCont?.label ?? null)}`);
 
-  // AC-142 part 2: the mode is session state of its own window (DR-181
-  // unchanged): this window ends in the row mode, and a new reader window
-  // still opens in continuous.
+  // AC-142 part 2 as superseded by FR-29 (v0.0.12, DR-409): the mode is no
+  // longer session state of its own window — this window ends in the row
+  // mode, and a new reader window opens in it. Wait for the debounced
+  // settings write to land first (the flowReaderMemory pattern).
   await clickMode(s, "Continuous horizontal");
   const endedInRow = await waitReaderAt(s, pageLabel(59, count), { timeout: 10000 });
   if (!endedInRow || endedInRow.label !== pageLabel(59, count)) {
     throw new Error("the handoff into the row for the default check failed");
   }
+  let modeLanded = false;
+  for (let i = 0; i < 20 && !modeLanded; i += 1) {
+    const settingsState = await cInvoke("app_get_settings");
+    modeLanded = settingsState?.view_mode === "horizontal";
+    if (!modeLanded) await sleep(250);
+  }
+  if (!modeLanded) throw new Error("the horizontal-mode settings write did not land before the default check");
   const second = await cOpenReader("multi-096");
   await second.session.waitFor(FIRST_PAGE_READY, { timeout: 8000 });
   const modes2 = await modeButtons(second.session);
-  check("AC-142: a new reader window opens in continuous with the fourth choice inactive",
-    modes2.length === 4 && modes2[1].pressed && !modes2[0].pressed && !modes2[2].pressed && !modes2[3].pressed,
+  check("AC-142 as superseded by FR-29: a new reader window opens in the last chosen mode — the row here (DR-409)",
+    modes2.length === 4 && modes2[3].pressed && !modes2[0].pressed && !modes2[1].pressed && !modes2[2].pressed,
     JSON.stringify(modes2));
   await second.session.key("Escape", "Escape", 27);
   await cWaitReaderId(second.id, false);
@@ -11995,9 +12102,9 @@ async function flowReaderSettings() {
       stripModes: strip ? strip.querySelectorAll('.control[aria-pressed]').length : -1,
     };
   `);
-  check("AC-149: the reader chrome carries the settings control at its right end, immediately before the window controls — icon-only, named (UI-50 as revised by DR-338)",
+  check("AC-149: the reader chrome carries the settings control at its right end, immediately before the window controls — icon-only, named; the cover control precedes it in the cluster (UI-50 as revised by DR-338; cluster extended by UI-55, DR-409)",
     chrome.beforeWindow && chrome.iconOnly &&
-      JSON.stringify(chrome.order) === JSON.stringify(["Settings", "Minimize", "Maximize", "Close"]),
+      JSON.stringify(chrome.order) === JSON.stringify(["Cover", "Settings", "Minimize", "Maximize", "Close"]),
     JSON.stringify(chrome));
   check("AC-149: the control strip carries no settings control — the released controls only, the view-mode group last (UI-50 as revised by DR-338)",
     !chrome.stripHas && chrome.stripModes === 4 && chrome.stripControls === 10,
@@ -12221,9 +12328,9 @@ async function flowReaderSettings() {
         order: controls.map((c) => c.getAttribute('aria-label') ?? ''),
       };
     `);
-    check("AC-149: the EPUB reader's chrome carries the settings control at its right end, immediately before the window controls — the same control as the PDF reader's (UI-50 as revised by DR-344)",
+    check("AC-149: the EPUB reader's chrome carries the settings control at its right end, immediately before the window controls — the same control as the PDF reader's, the cover control in its cluster (UI-50 as revised by DR-344; cluster extended by UI-55, DR-409)",
       chromeE.beforeWindow && chromeE.iconOnly &&
-        JSON.stringify(chromeE.order) === JSON.stringify(["Settings", "Minimize", "Maximize", "Close"]),
+        JSON.stringify(chromeE.order) === JSON.stringify(["Cover", "Settings", "Minimize", "Maximize", "Close"]),
       JSON.stringify(chromeE));
     const openedMenuE = await clickReaderControl(es, () => document.querySelector('.chrome [aria-label="Settings"]'));
     const itemsE = await es.waitFor(`
@@ -12519,6 +12626,12 @@ async function flowReaderPerformance() {
   // process's first open — the exact state the known issue describes. Every
   // row is recorded; the claim is that each stays inside the activation
   // budget (NFR-08, the 800 ms row the activation measurement uses).
+  // FR-28 (v0.0.12) makes the open position a remembered state: every new
+  // window of multi-192 now resumes where this flow's measured scroll left
+  // it. The row measures first-open activation to the FIRST page, so the
+  // flow states the position the row opens at — the top of the fixture —
+  // instead of bypassing the memory (DR-409).
+  await cInvoke("app_reader_position_set", { id: opened.id, value: '{"p":1,"o":0}' });
   const firstOpenRows = [];
   for (let run = 0; run < 10; run += 1) {
     const fresh = await cOpenReader("multi-192");
@@ -13416,6 +13529,25 @@ async function cImportEpubFixture(name, titleNeedle) {
   return id;
 }
 
+// v0.0.12 (SPEC-v0.0.12 §3.10): one fixture file from a tier directory
+// through the app's own import pipeline (the cImportEpubFixture shape):
+// import, wait for the row, return its id. Idempotent like the pipeline
+// itself — a row another flow already imported is found, not duplicated.
+async function cImportFixtureFrom(dir, name, titleNeedle) {
+  const result = await cInvoke("library_import_paths", { paths: [join(dir, name)], tagIds: [] });
+  await cSearch(titleNeedle);
+  const appeared = await cMainWait(`
+    return Array.from(document.querySelectorAll('[data-row-id]')).some((r) =>
+      (r.querySelector('.title-line, .title')?.textContent ?? '').includes(${JSON.stringify(titleNeedle)})) ? true : null;
+  `, { timeout: 15000 });
+  if (!appeared) throw new Error(`the fixture ${name} did not appear in the library (import: ${JSON.stringify(result)})`);
+  const id = await cDocIdByTitle(titleNeedle);
+  if (id === null) throw new Error(`no row id for the imported fixture ${name}`);
+  return id;
+}
+const cImportSpecialFixture = (name, needle) => cImportFixtureFrom(FIXTURE_SPECIAL, name, needle);
+const cImportMultiFixture = (name, needle) => cImportFixtureFrom(FIXTURE_MULTI, name, needle);
+
 async function cDeleteByTitle(needle) {
   await cSearch(needle);
   const row = await cRow(needle);
@@ -13590,7 +13722,7 @@ async function flowEpubReader() {
   // AC-136's "no package content is copied to disk": the app data directory
   // is scanned before and after every open; none of the package's entry
   // names may appear in it.
-  const appDataDir = join(process.env.APPDATA ?? "", "com.bookkeeper.app");
+  const appDataDir = join(process.env.APPDATA ?? "", "com.bookkeeper");
   const scanEntryNames = () => {
     const names = new Set();
     const walk = (dir) => {
@@ -14949,18 +15081,25 @@ const AREAS = {
   // flowReaderPerformance (AC-73/AC-75 — the measured flow, `measure` group).
   // v0.0.10: flowReaderHorizontal (AC-142…AC-147, UI-34 MODIFIED);
   // flowReaderSettings (AC-149, FR-24 / UI-50).
-  "reading-pdfs": ["flowReaderOpen", "flowReaderNavigation", "flowReaderZoom", "flowReaderClose", "flowReaderErrors", "flowReaderToc", "flowReaderViewModes", "flowReaderHorizontal", "flowReaderSettings", "flowReaderPerformance"],
+  // v0.0.12: flowReaderMemory (AC-167…AC-169), flowReaderText (AC-170,
+  // AC-172) — the two carry their EPUB halves, so the reading-epubs area
+  // names them too.
+  "reading-pdfs": ["flowReaderOpen", "flowReaderNavigation", "flowReaderZoom", "flowReaderClose", "flowReaderErrors", "flowReaderToc", "flowReaderViewModes", "flowReaderHorizontal", "flowReaderSettings", "flowReaderMemory", "flowReaderText", "flowReaderPerformance"],
   // v0.0.8 (FR-20 / AC-104, AC-105): the unlock form of a protected document.
   "password-protected-pdfs": ["flowProtected"],
   // v0.0.9 (FR-17 / UI-48, AC-125, AC-132…AC-137 + AC-138 measured flow, DR-300).
-  "reading-epubs": ["flowEpubReader", "flowEpubPerformance"],
+  // v0.0.12: the two v0.0.12 reading flows carry EPUB scenarios (AC-167
+  // EPUB half, AC-172) — named here as in reading-pdfs.
+  "reading-epubs": ["flowEpubReader", "flowEpubPerformance", "flowReaderMemory", "flowReaderText"],
   "metadata-editing": ["flowMetadata", "flowMetadataDisplay", "flowMetaColumn", "flowTooltipSurfaces"], // the row/card text-line tooltips (DR-201)
   "missing-files-relinking": ["flowMissingAndRelink"],
   // v0.0.8 (FR-21 / AC-107, AC-108): rename a document's file.
   "renaming-a-documents-file": ["flowRename"],
   // UI-40 / AC-111: open the containing folder.
   "opening-containing-folder": ["flowOpenFolder"],
-  covers: ["flowCovers"],
+  // v0.0.12 (FR-31 / AC-177, AC-178, AC-180, AC-181): the cover choice —
+  // the reader menu, the picker, the card, the reset.
+  covers: ["flowCovers", "flowCoverChoice"],
   "sorting-and-views": ["flowSortSecondary", "flowViewColumns", "flowContentGutter", "flowRowDesign"], // the scale mount bound + width matrix: scripts/ui-10k.mjs (DR-161)
   "status-feedback": ["flowStatusBar", "flowProgressTransform"],
   "selecting-documents": ["flowSelectMode", "flowBulkFavorite"], // UI-41 / AC-112: the bulk favorite toggle
@@ -15071,6 +15210,691 @@ const FUNCTIONAL_SEQUENCE = [
   ["flowAppUpdate", flowAppUpdate],
 ];
 
+// ---------------------------------------------------------------------------
+// v0.0.12 (SPEC-v0.0.12 §3.10): the reading-memory, text-selection and
+// cover-choice lanes (FR-28/FR-29/FR-30/FR-31; AC-167…AC-172, AC-177,
+// AC-178, AC-180, AC-181). All three run in the CDP runtime like the other
+// reader lanes; each builds what it needs through the app's own commands and
+// leaves the shared library as it found it (D14).
+
+// The stored reading position of a document (the app's own storage read),
+// polled with the house bounded-wait — the write is debounced by the store
+// (AC-168), so its arrival is eventual by design. The value grammar is the
+// storage boundary's (positions.rs): {"p","o"} for a PDF, {"c","o"} for an
+// EPUB.
+async function cStoredPosition(id, { timeout = 8000 } = {}) {
+  const until = Date.now() + timeout;
+  for (;;) {
+    const raw = await cInvoke("app_reader_position_get", { id });
+    if (raw !== null && raw !== undefined) {
+      try { return JSON.parse(raw); } catch { return { unparsed: raw }; }
+    }
+    if (Date.now() > until) return null;
+    await sleep(250);
+  }
+}
+
+// The library card's cover file, polled until it satisfies the predicate —
+// covers render through the background queue and `map_row` delivers the path
+// only once the cache file exists (DR-237), so its arrival is eventual.
+async function cCoverPathWhere(id, predicate, { timeout = 30000 } = {}) {
+  const until = Date.now() + timeout;
+  for (;;) {
+    const doc = await cInvoke("library_get_document", { id });
+    const path = doc?.cover_path || "";
+    if (path && predicate(path)) return path;
+    if (Date.now() > until) return null;
+    await sleep(250);
+  }
+}
+const cCoverPathOf = (id, opts) => cCoverPathWhere(id, (p) => existsSync(p), opts);
+
+// The row context menu through the app's own gesture (the cDeleteViaUi
+// shape): right-click the row, click the item by its exact label. The row
+// must already be visible (the caller searched for it).
+async function cRowMenuClick(titleNeedle, label) {
+  const row = await cRow(titleNeedle);
+  if (!row) throw new Error(`no row for ${titleNeedle}`);
+  await cdpMain.rightClickAt(row.x, row.y);
+  const item = await cMainWait(`
+    const item = Array.from(document.querySelectorAll('.menu .menu-item')).find((i) => (i.textContent ?? '').trim() === ${JSON.stringify(label)});
+    if (!item) return null;
+    const r = item.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  `, { timeout: 5000 });
+  if (!item) throw new Error(`the row context menu did not offer ${label}`);
+  await cdpMain.clickAt(item.x, item.y);
+  return row.id;
+}
+
+async function flowReaderMemory() {
+  // FR-28 / FR-29 (AC-167, AC-168, AC-169): the reading memory. A settled
+  // position in one window is what the next window of the same document
+  // resumes at; a view-mode choice is what the next window of any document
+  // opens in; a stored position beyond the document's new extent clamps to
+  // its last page; a deleted document takes its memory with it (the units
+  // own the debounce-discipline and delete-cleanup halves — this flow
+  // observes the user-facing behavior). The EPUB memory is the chapter +
+  // offset pair, read off and back through the app's own position readout
+  // (the OQ-69 A shape).
+  const count24 = multiDoc("multi-024.pdf").pages;
+
+  // Deterministic start: the released default mode (the mode flows before
+  // this one may leave their last choice standing).
+  await cInvoke("app_set_setting", { key: "view_mode", value: "continuous" });
+
+  const opened = await cOpenReader("Fixture Doc multi-024");
+  const id24 = opened.id;
+  await opened.session.waitFor(FIRST_PAGE_READY, { timeout: 10000 });
+  const jumped = await fieldJumpTo(opened.session, "17", pageLabel(17, count24));
+  check("FR-28: the released page field reaches page 17 (the position the memory must carry)", !!jumped);
+  const stored = await cStoredPosition(id24);
+  check("AC-168: the position settles into storage after the reader stops — the debounced write landed",
+    !!stored && stored.p === 17, JSON.stringify(stored));
+  await opened.session.key("Escape", "Escape", 27);
+  const closed = await cWaitReaderId(id24, false);
+  check("FR-28: the reader window closes (the close-time flush rides this path)", closed);
+
+  // AC-167: the same document in a new window resumes at the remembered
+  // page. The observation is the app's own readout plus the mounted pages:
+  // page 17 among the completed paints, and no page-1 paint anywhere in
+  // the mounted window — the "no visible page-1 stop" claim itself.
+  const again = await cOpenReader("Fixture Doc multi-024");
+  const firstPaint = await again.session.waitFor(`
+    const imgs = Array.from(document.querySelectorAll('.page img'))
+      .filter((i) => i.complete && i.naturalWidth > 0);
+    if (imgs.length === 0) return null;
+    return {
+      alts: imgs.map((i) => i.getAttribute('alt')),
+      label: ${fieldLabel},
+    };
+  `, { timeout: 12000 });
+  check("AC-167: a re-opened document resumes at the remembered page — the readout says 17 and no page 1 is painted",
+    !!firstPaint && firstPaint.label === pageLabel(17, count24) && firstPaint.alts.includes("Page 17") &&
+      !firstPaint.alts.includes("Page 1"),
+    JSON.stringify(firstPaint));
+
+  // AC-169: the view-mode choice is app state, not window state — the next
+  // window of a different document opens in it. The write rides the
+  // settings store's debounced batch (FR-29) — wait for it to land before
+  // closing (the same discipline the theme flow applies to the theme).
+  const toSingle = await clickMode(again.session, "Single page");
+  let modeLanded = false;
+  for (let i = 0; i < 20 && !modeLanded; i += 1) {
+    const settingsState = await cInvoke("app_get_settings");
+    modeLanded = settingsState?.view_mode === "single";
+    if (!modeLanded) await sleep(250);
+  }
+  check("AC-169: the mode choice persists through the settings batch", toSingle && modeLanded);
+  await again.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(id24, false);
+  const other = await cOpenReader("Fixture Doc multi-048");
+  const singlePaint = await other.session.waitFor(`
+    const box = document.querySelector('.reader-single');
+    if (!box) return null;
+    const pages = Array.from(box.querySelectorAll('.page'));
+    if (pages.length !== 1) return null;
+    const img = pages[0].querySelector('img');
+    if (!(img && img.complete && img.naturalWidth > 0)) return null;
+    return { alt: img.getAttribute('alt') };
+  `, { timeout: 12000 });
+  const pressed = (await modeButtons(other.session)).find((m) => m.pressed)?.label ?? null;
+  check("AC-169: a new reader window opens in the last chosen view mode (a different document, the pressed control)",
+    toSingle && !!singlePaint && singlePaint.alt === "Page 1" && pressed === "Single page",
+    JSON.stringify({ singlePaint, pressed }));
+  await other.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(other.id, false);
+  // D14: the released default stands after the flow (the units own the
+  // default-until-first-choice half of AC-169).
+  await cInvoke("app_set_setting", { key: "view_mode", value: "continuous" });
+
+  // AC-167 (stale position): the stored 17 is beyond the document's new
+  // extent after a relink to a shorter file — the readout clamps to its
+  // last page, and the memory survives the relink itself (the id stands).
+  // The shorter file is a private copy: documents.path is UNIQUE and the
+  // fixture belongs to its own row. The relink re-derives the automatic
+  // title from the new file name (the released FR-05/FR-14 behavior) —
+  // that derived name is what the row is found by from here on.
+  const shorter = join(DATA_DIR, "flowReaderMemory-shorter.pdf");
+  copyFileSync(join(FIXTURE_MULTI, "multi-012.pdf"), shorter);
+  const relinked = await cInvoke("library_relink_document", { id: id24, newPath: shorter });
+  check("FR-14 plumbing: the relink to the shorter copy is accepted and re-derives the automatic title (the position memory survives the relink, per §3.2)",
+    !!relinked && relinked.id === id24 && relinked.title === "flowReaderMemory-shorter", JSON.stringify(relinked?.title));
+  const clamped = await cOpenReader("flowReaderMemory-shorter");
+  const clampPaint = await clamped.session.waitFor(`
+    const imgs = Array.from(document.querySelectorAll('.page img'))
+      .filter((i) => i.complete && i.naturalWidth > 0);
+    if (imgs.length === 0) return null;
+    return { alts: imgs.map((i) => i.getAttribute('alt')), label: ${fieldLabel} };
+  `, { timeout: 12000 });
+  check("AC-167: a position beyond the document's new extent clamps to its last page (12 of 12)",
+    !!clampPaint && clampPaint.label === pageLabel(12, 12) && clampPaint.alts.includes("Page 12"),
+    JSON.stringify(clampPaint));
+  await clamped.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(id24, false);
+  // The library goes back as found: remove the row (its title is now the
+  // copy's name), then re-import the fixture — AC-167's delete-cleanup
+  // through the app's own paths, and the row returns with its original
+  // title and no position for the flows that follow.
+  await cDeleteByTitle("flowReaderMemory-shorter");
+  // The stored read of the removed document answers its typed error — the
+  // position key is gone with the row (positions.rs: a position of a
+  // removed document is not a position).
+  const afterDelete = await cMainEval(`
+    return window.__TAURI_INTERNALS__.invoke("app_reader_position_get", { id: ${id24} })
+      .then((v) => ({ ok: true, value: v }))
+      .catch((e) => ({ ok: false, error: e }));
+  `);
+  check("AC-167: the memory is removed with the document (the stored read answers document_not_found)",
+    afterDelete?.ok === false && afterDelete.error?.kind === "document_not_found", JSON.stringify(afterDelete));
+  rmSync(shorter, { force: true });
+  await cImportMultiFixture("multi-024.pdf", "Fixture Doc multi-024");
+
+  // AC-167 (EPUB, the OQ-69 A shape): the chapter + offset pair the
+  // position readout states is what the next window resumes at.
+  const readoutExpr = `(() => {
+    const el = document.querySelector('.reader-controls .position-readout');
+    const a = el ? el.getAttribute('aria-label') : null;
+    if (!a) return null;
+    const m = a.match(/^Book position: (\\d+)% of (.+)$/);
+    if (!m) return null;
+    return { percent: Number(m[1]), chapter: m[2] };
+  })()`;
+  const epId = await cImportEpubFixture("epub-reading.epub", "Reading Fixture");
+  const er = await cOpenReader("Reading Fixture");
+  await er.session.waitFor(`return document.querySelector('.flow') ? true : null;`, { timeout: 15000 });
+  const startState = await er.session.waitFor(`return ${readoutExpr};`, { timeout: 10000 });
+  check("FR-17: a fresh EPUB window starts at the top of the book (0% of the first chapter)",
+    !!startState && startState.percent === 0, JSON.stringify(startState));
+  let moved = null;
+  if (startState) {
+    // Into chapter 2 and past its top edge (the same chapter-geometry
+    // idiom flowEpubReader uses), so the remembered offset is meaningful.
+    const scrolled = await er.session.evaluate(`
+      const flow = document.querySelector('.flow');
+      for (const section of document.querySelectorAll('section.chapter')) {
+        const root = section.querySelector('.chapter-body')?.shadowRoot;
+        if (root && (root.textContent ?? '').includes('Reading Chapter Two')) {
+          const top = flow.scrollTop + section.getBoundingClientRect().top - flow.getBoundingClientRect().top;
+          flow.scrollTo({ top: Math.round(top) + 400 });
+          return true;
+        }
+      }
+      return null;
+    `);
+    await sleep(250);
+    await sleep(250); // the readout follows the store's position source — read after the scroll lands
+    const now = await er.session.evaluate(`return ${readoutExpr};`);
+    if (scrolled && now && now.chapter !== startState.chapter) moved = now;
+  }
+  check("AC-167: the position readout reaches a later chapter (the chapter + offset the memory carries)",
+    !!moved, JSON.stringify({ startState, moved }));
+  // AC-168 (EPUB half): the write must settle into storage before close —
+  // "a position read by the app just before close is present after
+  // re-open" is observed literally, first at the storage boundary.
+  const chapterNumber = moved ? Number(moved.chapter.match(/(\d+)(?!.*\d)/)?.[1] ?? 0) : 0;
+  const storedEp = chapterNumber > 0 ? await cStoredPosition(epId, { timeout: 5000 }) : null;
+  check("AC-168: the EPUB position settles into storage before close (the debounced write landed)",
+    !!storedEp && storedEp.c === chapterNumber && storedEp.o > 0, JSON.stringify({ moved, storedEp }));
+  await er.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(epId, false);
+  const rr = await cOpenReader("Reading Fixture");
+  // The observation is the settled readout: after the landing window, two
+  // consecutive identical readings. A transient state during the restore
+  // is not what the user resumes into — and a window that never leaves
+  // chapter 1 never matches the recorded one.
+  await sleep(250);
+  await sleep(250);
+  await sleep(250);
+  await sleep(250);
+  let restored = null;
+  let previous = null;
+  for (let i = 0; i < 40 && !restored; i += 1) {
+    const now = await rr.session.evaluate(`return ${readoutExpr};`);
+    if (previous && now && now.chapter === previous.chapter && now.percent === previous.percent) restored = now;
+    previous = now;
+    if (!restored) await sleep(250);
+  }
+  const restoredDiag = await rr.session.evaluate(`
+    const scroller = document.querySelector('.flow');
+    const pads = Array.from(document.querySelectorAll('.pad')).map((p) => p.getBoundingClientRect().height);
+    const sections = Array.from(document.querySelectorAll('section.chapter')).map((s) => ({
+      top: Math.round(s.getBoundingClientRect().top), h: Math.round(s.getBoundingClientRect().height),
+    }));
+    return { scrollTop: scroller?.scrollTop ?? null, scrollHeight: scroller?.scrollHeight ?? null, pads, sections };
+  `);
+  check("AC-167: the re-opened EPUB resumes at the remembered chapter and offset (no chapter-1 stop)",
+    !!restored && !!moved && restored.chapter === moved.chapter && Math.abs(restored.percent - moved.percent) <= 3,
+    JSON.stringify({ moved, restored, restoredDiag }));
+  await rr.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(epId, false);
+  await cDeleteByTitle("Reading Fixture");
+}
+
+async function flowReaderText() {
+  // FR-30 (AC-170): the selectable text layer over a text-bearing PDF —
+  // the drag gesture across the fixture's known sentence yields exactly
+  // that text in all four view modes and after a zoom change; a page
+  // without embedded text gets no layer and no message, and the rendered
+  // page is unchanged. FR-30 (AC-172): the EPUB reading column stays
+  // selectable and its copy gesture leaves the reader intact — the
+  // clipboard hop itself is the user's Phase-B check, per §3.10.
+  const SENTENCE = "Page 1 of the selection probe document";
+  await cInvoke("app_set_setting", { key: "view_mode", value: "continuous" });
+  const probeId = await cImportSpecialFixture("text-probe.pdf", "Selection Probe");
+  const opened = await cOpenReader("Selection Probe");
+  await opened.session.waitFor(FIRST_PAGE_READY, { timeout: 10000 });
+
+  // The released drag gesture over the layer's spans (press, moves,
+  // release — the CDP port's own pointer events), read back as the web
+  // selection. The target is found by the fixture's own words — and only
+  // after the mode switch or zoom step has finished re-laying-out the
+  // page: the target is accepted once its rect stands unchanged across
+  // two polls (the released post-switch render wait, applied to the
+  // layer). The release lands past the span's right edge — inside the
+  // gap where no text exists — so the last glyph is inside the selection
+  // whatever the display scaling rounds to.
+  const dragSelectSentence = async (session) => {
+    const target = await session.waitFor(`
+      const span = Array.from(document.querySelectorAll('.page .text-layer span'))
+        .find((el) => (el.textContent ?? '').includes('selection probe document'));
+      if (!span) { window.__bkTextTarget = null; return null; }
+      const r = span.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return null;
+      const current = { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), right: Math.round(r.right) };
+      const previous = window.__bkTextTarget;
+      window.__bkTextTarget = current;
+      if (!previous || previous.right !== current.right || previous.width !== current.width) return null;
+      return { x: current.left + 2, y: current.top + Math.round(current.height / 2), endX: current.right + 6 };
+    `, { timeout: 15000 });
+    if (!target) return null;
+    await session.pointer("mousePressed", target.x, target.y);
+    for (let x = target.x + 24; x < target.endX; x += 24) {
+      await session.pointer("mouseMoved", x, target.y);
+    }
+    await session.pointer("mouseReleased", target.endX, target.y);
+    return session.evaluate(`return window.getSelection()?.toString() ?? "";`);
+  };
+
+  const modeResults = [];
+  for (const mode of ["Continuous", "Single page", "Facing pages", "Continuous horizontal"]) {
+    const switched = await clickMode(opened.session, mode);
+    const selected = await dragSelectSentence(opened.session);
+    modeResults.push({ mode, switched: !!switched, selected });
+    await opened.session.evaluate(`window.getSelection()?.removeAllRanges(); return true;`);
+  }
+  check("AC-170: drag-select across the fixture sentence yields exactly that text in all four view modes",
+    modeResults.every((m) => m.switched && m.selected === SENTENCE), JSON.stringify(modeResults));
+
+  // AC-170 (zoom): the layer maps at every zoom step — one step below fit
+  // and the same gesture yields the same text (the mapping is re-derived,
+  // never measured; §3.3).
+  const zoomedOut = await clickReaderControl(opened.session, () => document.querySelector('.reader-controls button[aria-label="Zoom out"]'));
+  const afterZoom = await dragSelectSentence(opened.session);
+  check("AC-170: the text layer follows the zoom ladder — the selection after a zoom step is the fixture text",
+    zoomedOut && afterZoom === SENTENCE, JSON.stringify(afterZoom));
+  await opened.session.evaluate(`window.getSelection()?.removeAllRanges(); return true;`);
+  await opened.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(opened.id, false);
+  await cDeleteByTitle("Selection Probe");
+
+  // AC-170 (no-layer): the image-only fixture answers an empty run list at
+  // the command and the window mounts no layer — the page renders as it
+  // always did, and no message appears (there is no message control).
+  const imageId = await cImportSpecialFixture("image-only.pdf", "Image Only");
+  const io = await cOpenReader("Image Only");
+  await io.session.waitFor(FIRST_PAGE_READY, { timeout: 10000 });
+  await sleep(250);
+  await sleep(250); // the text task's window: a layer would have appeared
+  const layerState = await io.session.evaluate(`
+    return {
+      layers: document.querySelectorAll('.text-layer').length,
+      spans: document.querySelectorAll('.text-layer span').length,
+      pages: Array.from(document.querySelectorAll('.page img')).filter((i) => i.complete && i.naturalWidth > 0).length,
+    };
+  `);
+  const textAnswer = await cInvoke("app_pdf_text", { id: imageId, page: 1 });
+  check("AC-170: a page without embedded text yields no layer and no message — empty runs at the command, no layer in the window, the page rendered",
+    layerState.layers === 0 && layerState.spans === 0 && layerState.pages >= 1 &&
+      Array.isArray(textAnswer?.runs) && textAnswer.runs.length === 0,
+    JSON.stringify({ layerState, runs: textAnswer?.runs?.length ?? null }));
+  await io.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(io.id, false);
+  await cDeleteByTitle("Image Only");
+
+  // AC-172: the released EPUB reading column is still selectable — the same
+  // drag gesture over a fixture paragraph inside the chapter's shadow tree.
+  const epId = await cImportEpubFixture("epub-reading.epub", "Reading Fixture");
+  const er = await cOpenReader("Reading Fixture");
+  const paragraph = await er.session.waitFor(`
+    const body = document.querySelector('section.chapter .chapter-body');
+    const p = body?.shadowRoot?.querySelector('.flow-root p');
+    if (!p) return null;
+    const r = p.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    return { x: Math.round(r.left + 2), y: Math.round(r.top + 6), endX: Math.round(r.left + r.width * 0.6) };
+  `, { timeout: 15000 });
+  check("FR-17: the EPUB reading column mounts its chapter paragraph", !!paragraph, JSON.stringify(paragraph));
+  let epubSelected = null;
+  if (paragraph) {
+    await er.session.pointer("mousePressed", paragraph.x, paragraph.y);
+    for (let x = paragraph.x + 24; x < paragraph.endX; x += 24) {
+      await er.session.pointer("mouseMoved", x, paragraph.y);
+    }
+    await er.session.pointer("mouseReleased", paragraph.endX, paragraph.y);
+    epubSelected = await er.session.evaluate(`
+      const body = document.querySelector('section.chapter .chapter-body');
+      const sel = body?.shadowRoot?.getSelection ? body.shadowRoot.getSelection() : document.getSelection();
+      return sel ? sel.toString() : null;
+    `);
+  }
+  check("AC-172: the EPUB reading column is selectable — the drag yields the fixture paragraph's text",
+    typeof epubSelected === "string" && epubSelected.includes("Opening chapter of the reading fixture"),
+    JSON.stringify(epubSelected));
+  // The copy path is the webview's own (Ctrl+C / Ctrl+Insert — no clipboard
+  // code in the app, §3.3): the lane exercises the gesture and checks the
+  // window and its selection stand; the clipboard hop is the user's check.
+  await er.session.key("c", "KeyC", 67, 2);
+  const stillWell = await er.session.evaluate(`return document.querySelector('.flow') ? true : null;`);
+  const stillSelected = await er.session.evaluate(`
+    const body = document.querySelector('section.chapter .chapter-body');
+    const sel = body?.shadowRoot?.getSelection ? body.shadowRoot.getSelection() : document.getSelection();
+    return sel ? sel.toString() : null;
+  `);
+  check("AC-172: the copy gesture leaves the reader and its selection intact (the released interactions unchanged)",
+    !!stillWell && typeof stillSelected === "string" && stillSelected.length > 0, JSON.stringify(stillSelected));
+  await er.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(epId, false);
+  await cDeleteByTitle("Reading Fixture");
+}
+
+async function flowCoverChoice() {
+  // FR-31 (AC-177, AC-178, AC-180, AC-181): cover choice. The reader's
+  // cover menu sets the page it shows as the cover; the library picker's
+  // strip fills lazily as it scrolls and a pick sets the choice; the card
+  // follows through the released cover-batch mechanism (DR-231); "Automatic
+  // cover" — in the reader menu and in the picker — restores the released
+  // automatic key. The EPUB grid works from both entry points. The choice
+  // commands enqueue background work only (the responsiveness probe below;
+  // the render contract itself is the Rust units' — AC-180).
+  const id12 = await (async () => {
+    await cSearch("Fixture Doc multi-012");
+    return cDocIdByTitle("Fixture Doc multi-012");
+  })();
+  if (id12 === null) throw new Error("the multi-012 fixture row is missing");
+  const count12 = multiDoc("multi-012.pdf").pages;
+  const auto12 = await cCoverPathOf(id12);
+  check("FR-16 baseline: the automatic cover exists before any choice", !!auto12 && existsSync(auto12), auto12);
+
+  // AC-177: the reader cover menu on page 2 — "Set this page as cover".
+  const opened = await cOpenReader("Fixture Doc multi-012");
+  await opened.session.waitFor(FIRST_PAGE_READY, { timeout: 10000 });
+  const jump2 = await fieldJumpTo(opened.session, "2", pageLabel(2, count12));
+  const menuUp = await clickReaderControl(opened.session, () => document.querySelector('.cover-trigger'));
+  const setItem = await opened.session.waitFor(`
+    const item = Array.from(document.querySelectorAll('.menu.cover-menu .menu-item')).find((i) => (i.textContent ?? '').trim() === 'Set this page as cover');
+    if (!item) return null;
+    const r = item.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  `, { timeout: 5000 });
+  check("UI-55: the reader chrome carries the cover menu with the current-page choice",
+    !!jump2 && !!menuUp && !!setItem, JSON.stringify({ jump2, menuUp, setItem: !!setItem }));
+  await opened.session.clickAt(setItem.x, setItem.y);
+  // AC-180: the choice enqueues background work only — right after the
+  // pick, the library window answers immediately and the reader window is
+  // still interactive while the chosen cover renders.
+  const probeStart = Date.now();
+  const probe = await cMainEval(`return 21 * 2;`);
+  const probeMs = Date.now() - probeStart;
+  const readerAlive = await opened.session.evaluate(`return ${fieldLabel};`);
+  check("AC-180: the choice command returns while the render runs — the library window answers in ms and the reader stays interactive",
+    probe === 42 && probeMs < 500 && typeof readerAlive === "string", `${probeMs} ms, reader label: ${JSON.stringify(readerAlive)}`);
+  const chosen12 = await cCoverPathWhere(id12, (p) => p !== auto12 && existsSync(p), { timeout: 30000 });
+  check("AC-177: the chosen page becomes the library cover — cover_path moves to the choice key and the PNG exists",
+    !!chosen12, `auto: ${auto12}`);
+  const cardShown = await cMainWait(`
+    const row = document.querySelector('[data-row-id="${id12}"]');
+    const img = row?.querySelector('.cover img');
+    if (!img) return null;
+    return (img.getAttribute('src') ?? "").includes(${JSON.stringify(basename(chosen12 ?? ""))}) ? true : null;
+  `, { timeout: 20000 });
+  check("AC-177: the library card renders the chosen cover (the released cover-batch re-query)", cardShown === true);
+
+  // AC-177 (persistence): the choice is stored state — it stands across
+  // the window's close and reopen. (The app-restart half of the claim is
+  // the covers queue's restart unit; the lane states the window half.)
+  await opened.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(opened.id, false);
+  const stillChosen = await cCoverPathOf(id12);
+  check("AC-177: the choice stands after the reader window closes (it is stored, not window state)",
+    stillChosen === chosen12, JSON.stringify({ chosen12, stillChosen }));
+
+  // AC-177 (reset): "Automatic cover" in the reader menu restores the
+  // released first-page key — the same path and file as before the choice.
+  const reOpen = await cOpenReader("Fixture Doc multi-012");
+  await reOpen.session.waitFor(FIRST_PAGE_READY, { timeout: 10000 });
+  const menuUp2 = await clickReaderControl(reOpen.session, () => document.querySelector('.cover-trigger'));
+  const autoItem = await reOpen.session.waitFor(`
+    const item = Array.from(document.querySelectorAll('.menu.cover-menu .menu-item')).find((i) => (i.textContent ?? '').trim() === 'Automatic cover');
+    if (!item) return null;
+    const r = item.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  `, { timeout: 5000 });
+  check("UI-55: the reader cover menu carries the reset choice", !!menuUp2 && !!autoItem);
+  await reOpen.session.clickAt(autoItem.x, autoItem.y);
+  const back12 = await cCoverPathWhere(id12, (p) => p === auto12, { timeout: 30000 });
+  check("AC-177: \"Automatic cover\" restores the released automatic key", back12 === auto12, back12);
+  await reOpen.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(reOpen.id, false);
+
+  // AC-181: the library picker — the row context menu's "Update cover".
+  // The 48-page fixture proves the lazy windows: the strip opens with
+  // bounded windows only (THUMB_WINDOW batches — never the full 48-page
+  // strip; on a tall dialog the sentinel can be visible at open, which
+  // legitimately loads one follow-on window), the strip fills the next
+  // window only when it scrolls, and a pick sets the choice through the
+  // same path.
+  await cSearch("Fixture Doc multi-048");
+  const id48 = await cDocIdByTitle("Fixture Doc multi-048");
+  if (id48 === null) throw new Error("the multi-048 fixture row is missing");
+  const auto48 = await cCoverPathOf(id48);
+  await cRowMenuClick("Fixture Doc multi-048", "Update cover");
+  const firstWindow = await cMainWait(`
+    return document.querySelectorAll('.modal .picker .strip .tile').length >= 12 ? true : null;
+  `, { timeout: 20000 });
+  const earlyTiles = await cMainEval(`return document.querySelectorAll('.modal .picker .strip .tile').length;`);
+  const count48 = multiDoc("multi-048.pdf").pages;
+  check("AC-181: the picker opens with bounded windows only — never the full 48-page strip",
+    firstWindow === true && earlyTiles >= 12 && earlyTiles < count48, `${earlyTiles} tiles for a ${count48}-page document`);
+  await cMainEval(`
+    const s = document.querySelector('.modal .picker .sentinel');
+    if (s) s.scrollIntoView({ block: 'center' });
+    return true;
+  `);
+  const grownTiles = await cMainWait(`
+    const n = document.querySelectorAll('.modal .picker .strip .tile').length;
+    return n > ${earlyTiles} ? n : null;
+  `, { timeout: 20000 });
+  check("AC-181: the strip fills the next window as it scrolls (lazy windows, the app responsive throughout)",
+    typeof grownTiles === "number" && grownTiles >= earlyTiles + 12, `${grownTiles} tiles after scrolling to the sentinel (${earlyTiles} before)`);
+  // UI-55 (DR-410): the toolbar bar is pinned — the dialog box itself never
+  // scrolls, the content area below the bar owns the scrolling.
+  const pinnedBar = await cMainEval(`
+    const modal = document.querySelector('.modal');
+    const bar = modal?.querySelector('.modal-toolbar');
+    const sc = modal?.querySelector('.modal-scroll');
+    if (!bar || !sc) return null;
+    sc.scrollTop = 300; // the flow drives the scroll: the grown strip overflows
+    if (sc.scrollTop < 40) return null;
+    if (modal.scrollTop !== 0) return null;
+    const mr = modal.getBoundingClientRect();
+    const br = bar.getBoundingClientRect();
+    if (Math.abs(br.top - mr.top) > 2) return null;
+    const tr = bar.querySelector('.modal-title')?.getBoundingClientRect();
+    if (!tr || tr.top < br.top - 1 || tr.bottom > br.bottom + 1) return null;
+    return { scrollTop: sc.scrollTop };
+  `);
+  check("UI-55: the toolbar bar stays pinned while the strip scrolls — the scrolling belongs to the content area",
+    pinnedBar !== null, JSON.stringify(pinnedBar));
+  // UI-55 (DR-410 + DR-411): the dialog is sized to the tile columns — a
+  // full row fills the content area's inner width (the area is full-bleed;
+  // its own padding is the content inset, and the only space past the last
+  // column is the reserved scrollbar gutter), nothing wraps, nothing
+  // overflows sideways.
+  const columnFit = await cMainEval(`
+    const sc = document.querySelector('.modal .modal-scroll');
+    const strip = sc?.querySelector('.picker .strip');
+    if (!strip) return { fail: "no-strip" };
+    if (sc.scrollWidth > sc.clientWidth + 1) return { fail: "hscroll", sw: sc.scrollWidth, cw: sc.clientWidth };
+    const tiles = Array.from(strip.querySelectorAll('.tile')).map((t) => t.getBoundingClientRect());
+    if (tiles.length < 8) return { fail: "tiles", n: tiles.length };
+    const row = tiles.filter((r) => Math.abs(r.top - tiles[0].top) < 2);
+    if (row.length < 2) return { fail: "row", n: row.length };
+    const left = Math.min(...row.map((r) => r.left));
+    const right = Math.max(...row.map((r) => r.right));
+    if (Math.abs(right - left - (row.length * 132 + (row.length - 1) * 8)) > 1) return { fail: "rowwidth", w: right - left, n: row.length };
+    const inner = sc.clientWidth - 48; // the area's own padding (24 + 24)
+    const dead = inner - (right - left);
+    // Subpixel layout rounding (getBoundingClientRect fractions) is not dead space.
+    if (dead < -1 || dead > 2) return { fail: "dead", inner, dead, rw: right - left, scw: sc.getBoundingClientRect().width };
+    return { row: row.length, dead: Math.round(dead) };
+  `);
+  check("UI-55: the dialog width fits the tile columns — a full row fills the content area's inner width, no sideways overflow",
+    columnFit !== null && !columnFit.fail, JSON.stringify(columnFit));
+  // UI-55 (DR-411 + DR-412): the content area runs full-bleed on the sides —
+  // its box reaches the dialog's side edges (the scrollbar sits there, the
+  // released modal position) while the content inset stays the dialog's
+  // padding — and its bottom stays inset by the dialog's bottom padding, so
+  // the scrollbar never reaches the rounded bottom corners (14 px arc).
+  const fullBleed = await cMainEval(`
+    const modal = document.querySelector('.modal');
+    const sc = modal?.querySelector('.modal-scroll');
+    if (!sc) return { fail: "no-scroll" };
+    const mr = modal.getBoundingClientRect();
+    const sr = sc.getBoundingClientRect();
+    if (Math.abs(sr.left - mr.left) > 2) return { fail: "left", d: sr.left - mr.left };
+    if (Math.abs(sr.right - mr.right) > 2) return { fail: "right", d: sr.right - mr.right };
+    const inset = mr.bottom - sr.bottom;
+    if (inset < 14 || inset > 24) return { fail: "bottom", inset };
+    const tiles = Array.from(sc.querySelectorAll('.picker .strip .tile')).map((t) => t.getBoundingClientRect());
+    if (tiles.length < 4) return { fail: "tiles", n: tiles.length };
+    const left = Math.min(...tiles.map((r) => r.left)) - mr.left;
+    if (Math.abs(left - 24) > 2) return { fail: "inset", left };
+    return { sideInset: Math.round(left), bottomInset: Math.round(inset) };
+  `);
+  check("UI-55: the content area is full-bleed on the sides with the content inset unchanged, and its scrollbar stops clear of the rounded bottom corners",
+    fullBleed !== null && !fullBleed.fail, JSON.stringify(fullBleed));
+  const tile2 = await cMainWait(`
+    const t = document.querySelector('.modal .picker .strip .tile[aria-label="Page 2"]');
+    if (!t) return null;
+    t.scrollIntoView({ block: 'center' });
+    const r = t.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  `, { timeout: 5000 });
+  check("AC-181: the strip's tiles name their pages (the pick target is addressable)", !!tile2);
+  await cdpMain.clickAt(tile2.x, tile2.y);
+  const chosen48 = await cCoverPathWhere(id48, (p) => p !== auto48 && existsSync(p), { timeout: 30000 });
+  const card48 = await cMainWait(`
+    const row = document.querySelector('[data-row-id="${id48}"]');
+    const img = row?.querySelector('.cover img');
+    if (!img) return null;
+    return (img.getAttribute('src') ?? "").includes(${JSON.stringify(basename(chosen48 ?? ""))}) ? true : null;
+  `, { timeout: 20000 });
+  check("AC-181: picking a page in the strip sets the choice and updates the card", !!chosen48 && card48 === true,
+    `auto: ${auto48}`);
+  // The picker's own reset control (present in both fills, AC-181), and the
+  // toolbar shape the user directed (UI-55, DR-408): the title and every
+  // action sit on the toolbar bar at the top of the dialog.
+  await cRowMenuClick("Fixture Doc multi-048", "Update cover");
+  const toolbarOk = await cMainWait(`
+    const bar = document.querySelector('.modal .modal-toolbar');
+    if (!bar) return null;
+    const br = bar.getBoundingClientRect();
+    const title = bar.querySelector('.modal-title');
+    const tr = title?.getBoundingClientRect();
+    if (!tr || tr.top < br.top - 1 || tr.bottom > br.bottom + 1) return null;
+    if ((title.textContent ?? '').trim() !== 'Update cover') return null;
+    const close = document.querySelector('.modal .modal-close');
+    const cr = close?.getBoundingClientRect();
+    if (!cr || cr.top < br.top - 1 || cr.bottom > br.bottom + 1) return null;
+    return true;
+  `, { timeout: 5000 });
+  check("UI-55: the picker is a toolbar dialog — the title and the close control sit on the toolbar bar", toolbarOk === true);
+  const autoBtn = await cMainWait(`
+    const b = Array.from(document.querySelectorAll('.modal .modal-toolbar-actions .control')).find((x) => (x.textContent ?? '').trim() === 'Automatic cover');
+    if (!b) return null;
+    const bar = b.closest('.modal-toolbar');
+    if (!bar) return null;
+    const br = bar.getBoundingClientRect();
+    const r = b.getBoundingClientRect();
+    return r.top >= br.top - 1 && r.bottom <= br.bottom + 1 ? { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } : null;
+  `, { timeout: 5000 });
+  check("AC-181: \"Automatic cover\" is present in the picker, as a button on the toolbar", !!autoBtn);
+  await cdpMain.clickAt(autoBtn.x, autoBtn.y);
+  const back48 = await cCoverPathWhere(id48, (p) => p === auto48, { timeout: 30000 });
+  check("AC-181: the picker's reset restores the automatic cover", back48 === auto48, back48);
+
+  // AC-178: the EPUB half — the candidates are the book's embedded
+  // manifest images in the book's display order (DR-411: chapter 1 shows
+  // plate-two, chapter 2 shows plate-one, the declared cover is shown by
+  // no chapter and comes last), the grid works from both entry points, and
+  // a chosen image becomes the cover through the released composition path.
+  const epId = await cImportEpubFixture("epub-images.epub", "Image Plate Book");
+  const cands = await cInvoke("app_cover_candidates", { id: epId });
+  check("AC-178: the EPUB candidates are the book's embedded manifest images in the book's display order (DR-411)",
+    Array.isArray(cands) && cands.length === 3 && cands[0].entry === "OEBPS/images/plate-two.png" &&
+      cands[1].entry === "OEBPS/images/plate-one.png" && cands[2].entry === "OEBPS/images/cover.png",
+    JSON.stringify(cands));
+  const autoEp = await cCoverPathOf(epId);
+  check("AC-178: the declared cover renders as the automatic cover", !!autoEp && existsSync(autoEp), autoEp);
+  await cRowMenuClick("Image Plate Book", "Update cover");
+  const gridCount = await cMainWait(`
+    return document.querySelectorAll('.modal .picker .grid .tile').length === 3 ? 3 : null;
+  `, { timeout: 15000 });
+  check("AC-181: the picker's EPUB grid lists the book's embedded images", gridCount === 3);
+  const firstTile = await cMainEval(`
+    const tiles = document.querySelectorAll('.modal .picker .grid .tile');
+    const t = tiles[0];
+    if (!t) return null;
+    t.scrollIntoView({ block: 'center' });
+    const r = t.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  `);
+  await cdpMain.clickAt(firstTile.x, firstTile.y);
+  const chosenEp = await cCoverPathWhere(epId, (p) => p !== autoEp && existsSync(p), { timeout: 30000 });
+  check("AC-178: a chosen embedded image becomes the cover (composed through the released contain-fit path)",
+    !!chosenEp, `auto: ${autoEp}`);
+  // The reader-menu entry point: the EPUB cover menu offers "Choose cover"
+  // and "Automatic cover", and its choice opens the same grid.
+  const er = await cOpenReader("Image Plate Book");
+  const triggerUp = await er.session.waitFor(`return document.querySelector('.cover-trigger') ? true : null;`, { timeout: 10000 });
+  await clickReaderControl(er.session, () => document.querySelector('.cover-trigger'));
+  const epMenu = await er.session.waitFor(`
+    const items = Array.from(document.querySelectorAll('.menu.cover-menu .menu-item')).map((i) => (i.textContent ?? '').trim());
+    return items.includes('Choose cover') && items.includes('Automatic cover') ? items : null;
+  `, { timeout: 5000 });
+  check("AC-178: the reader's EPUB cover menu offers both choices", !!epMenu && !!triggerUp, JSON.stringify(epMenu));
+  const chooseItem = await er.session.waitFor(`
+    const item = Array.from(document.querySelectorAll('.menu.cover-menu .menu-item')).find((i) => (i.textContent ?? '').trim() === 'Choose cover');
+    if (!item) return null;
+    const r = item.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  `, { timeout: 5000 });
+  await er.session.clickAt(chooseItem.x, chooseItem.y);
+  const readerGrid = await er.session.waitFor(`
+    const n = document.querySelectorAll('.modal .picker .grid .tile').length;
+    return n === 3 ? 3 : null;
+  `, { timeout: 10000 });
+  check("AC-178: the grid opens from the reader menu too (the same dialog, the same three candidates)", readerGrid === 3);
+  await clickReaderControl(er.session, () => document.querySelector('.modal .modal-close'));
+  await er.session.key("Escape", "Escape", 27);
+  await cWaitReaderId(epId, false);
+  await cDeleteByTitle("Image Plate Book");
+  // D14: the two multi-tier documents stand with their automatic covers
+  // (restored above); the EPUB fixture row is removed as every EPUB flow
+  // does. No reader window is left open.
+}
+
 // Reader section (multi tier, DR-147 CDP runtime), always last: the reader
 // windows live outside the tauri-driver session, and these flows build their
 // own library state through the app's own commands.
@@ -15096,6 +15920,15 @@ const READER_SEQUENCE = [
   ["flowProtected", flowProtected],
   // D20 / AC-116, reader half: the guard at the reader window's root.
   ["flowReaderContextMenu", flowReaderContextMenu],
+  // v0.0.12 (FR-28/FR-29 / AC-167…AC-169): reading memory — position
+  // restore, mode memory, the relink clamp, the EPUB chapter + offset.
+  ["flowReaderMemory", flowReaderMemory],
+  // v0.0.12 (FR-30 / AC-170, AC-172): the selectable text layer on text
+  // PDFs, the no-layer claim, EPUB selection preserved.
+  ["flowReaderText", flowReaderText],
+  // v0.0.12 (FR-31 / AC-177, AC-178, AC-180, AC-181): cover choice — the
+  // reader menu, the picker, the card, the reset.
+  ["flowCoverChoice", flowCoverChoice],
   ["flowReaderPerformance", flowReaderPerformance],
   // v0.0.9 (AC-125, AC-132…AC-137, AC-138): the EPUB reader flows run last —
   // they build their own library state from the fixtures/epub tier (§3.8) and

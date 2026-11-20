@@ -18,10 +18,21 @@
   import Tooltip from "./Tooltip.svelte";
   import Icon from "./Icon.svelte";
   import { layout } from "$lib/state/layout.svelte";
+  import { currentUiPlatform, windowControlsLayout } from "$lib/platform";
   import { t } from "$lib/i18n";
+
+  // UI-07 MODIFIED (SPEC-v0.0.12 §3.7): on macOS the window-controls cluster
+  // is the toolbar's FIRST cell (the traffic-light corner; the existing 12 px
+  // toolbar padding is its inset) and the app menu (UI-12) keeps its released
+  // right end — the adjacency fact stands only on Windows/Linux. The
+  // Windows/Linux mount is byte-for-byte the released one.
+  const controlsLayout = windowControlsLayout(currentUiPlatform());
 </script>
 
 <header class="toolbar" data-tauri-drag-region="deep">
+  {#if controlsLayout.side === "left"}
+    <WindowControls />
+  {/if}
   <BrowseMenu />
   <SearchBox />
   <span class="toolbar-spacer"></span>
@@ -45,7 +56,9 @@
   </Tooltip>
   <ViewMenu />
   <SettingsMenu />
-  <WindowControls />
+  {#if controlsLayout.side === "right"}
+    <WindowControls />
+  {/if}
 </header>
 
 <style>

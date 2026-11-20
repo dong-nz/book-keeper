@@ -7,10 +7,49 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import Icon from "./Icon.svelte";
   import Tooltip from "./Tooltip.svelte";
+  import { currentUiPlatform, windowControlsLayout } from "$lib/platform";
   import { t } from "$lib/i18n";
 
   const win = getCurrentWindow();
   let maximized = $state(false);
+
+  // UI-07 MODIFIED (SPEC-v0.0.12 §3.7): the three buttons are unchanged —
+  // same commands, same tooltips/aria labels, same 44 px geometry (DR-315) —
+  // but their ORDER comes from the layout decision: macOS renders
+  // close–minimize–maximize (the traffic-light order), Windows/Linux the
+  // released minimize–maximize–close. The mount side (left/right) is the
+  // hosts' concern (`windowControlsLayout().side`).
+  const layout = windowControlsLayout(currentUiPlatform());
+  const controls = $derived(
+    layout.order.map((action) =>
+      action === "minimize"
+        ? {
+            action,
+            tooltip: t("window.minimize"),
+            label: t("window.minimize"),
+            icon: "minus" as const,
+            extraClass: "",
+            run: () => void win.minimize(),
+          }
+        : action === "maximize"
+          ? {
+              action,
+              tooltip: maximized ? t("window.restore") : t("window.maximize"),
+              label: maximized ? t("window.restore") : t("window.maximize"),
+              icon: maximized ? ("restore" as const) : ("maximize" as const),
+              extraClass: "",
+              run: () => void win.toggleMaximize(),
+            }
+          : {
+              action,
+              tooltip: t("window.close"),
+              label: t("window.close"),
+              icon: "close" as const,
+              extraClass: " window-close",
+              run: () => void win.close(),
+            },
+    ),
+  );
 
   // The maximize button mirrors the window state: while maximized it is a
   // Restore button (spec §3.1). `isMaximized` is part of the granted
@@ -38,46 +77,22 @@
   });
 </script>
 
-<Tooltip text={t("window.minimize")}>
-  {#snippet control({ props })}
-    <button
-      {...props}
-      class="window-button"
-      aria-label={t("window.minimize")}
-      data-tauri-drag-region="false"
-      onclick={() => void win.minimize()}
-    >
-      <Icon name="minus" />
-    </button>
-  {/snippet}
-</Tooltip>
-<Tooltip text={maximized ? t("window.restore") : t("window.maximize")}>
-  {#snippet control({ props })}
-    <button
-      {...props}
-      class="window-button"
-      data-maximized={maximized || undefined}
-      aria-label={maximized ? t("window.restore") : t("window.maximize")}
-      data-tauri-drag-region="false"
-      onclick={() => void win.toggleMaximize()}
-    >
-      <Icon name={maximized ? "restore" : "maximize"} />
-    </button>
-  {/snippet}
-</Tooltip>
-<Tooltip text={t("window.close")}>
-  {#snippet control({ props })}
-    <button
-      {...props}
-      class="window-button window-close"
-      aria-label={t("window.close")}
-      data-tauri-drag-region="false"
-      onclick={() => void win.close()}
-    >
-      <Icon name="close" />
-    </button>
-  {/snippet}
-</Tooltip>
+{#each controls as item (item.action)}
+  <Tooltip text={item.tooltip}>
+    {#snippet control({ props })}
+      <button
+        {...props}
+        class="window-button{item.extraClass}"
+        data-maximized={item.action === "maximize" && maximized ? "" : undefined}
+        aria-label={item.label}
+        data-tauri-drag-region="false"
+        onclick={item.run}
+      >
+        <Icon name={item.icon} />
+      </button>
+    {/snippet}
+  </Tooltip>
+{/each}
 
 <style>
   .window-button {

@@ -1,6 +1,6 @@
 # Tags
 
-> **Status: ✅ Shipped in v0.0.1 (as *Categories*), renamed to **Tags** in v0.0.8** — verified by running the app. The feature is the same one that shipped as Categories; since v0.0.8 the app calls these groups **tags** everywhere — in the Browse menu, the tags window, document actions, tooltips, messages, and this guide.
+> **Status: ✅ Shipped in v0.0.1 (as *Categories*), renamed to **Tags** in v0.0.8, updated in v0.0.12** — verified by running the app. The feature is the same one that shipped as Categories; since v0.0.8 the app calls these groups **tags** everywhere — in the Browse menu, the tags window, document actions, tooltips, messages, and this guide.
 
 ## Managing tags
 - Open **Browse ▸ Manage tags**: it lists every tag with its live count, has an always-available *New tag* field, and per-row **Rename** / **Delete** actions. Tag names are unique (case-insensitive); a duplicate name is refused with a clear message.
@@ -26,3 +26,10 @@
 > **Amendment (2026-11-05, v0.0.4):** in the categories window, each count is quiet text in line with the rest of the row — no filled pill behind the number.
 
 > **Amendment (2026-11-10, v0.0.8):** the application now calls these groups **tags** in every surface: *Browse ▸ Tags*, *Browse ▸ Manage tags*, the Tags window, the bulk **Tags** action, the Details field, all tooltips and messages. Nothing about the feature changed — same groups, same counts, same multi-select filtering, same import assignment; only the name. Your existing groups and assignments carried over unchanged when you updated the app.
+
+> **Amendment (2026-11-19, v0.0.12): the tags window gained a toolbar and *Delete all tags*** (verified by running the app).
+>
+> - **The tags window now has a bar across its top** — the title, the **Delete all tags** action, and the close button — with the tag list below it, like the app's other working dialogs. The list itself, the *New tag* field, and the per-row Rename / Delete actions work exactly as before.
+> - **Delete all tags** clears every tag in one action. A confirmation dialog asks first and says plainly that your documents are kept — nothing is deleted but the tags themselves. After it completes, a message reports how many tags were removed. If you were filtering by tags when you did it, that filter is cleared and your documents show unfiltered. The action is disabled while there are no tags. Like a single tag delete, there is no undo.
+>
+> Everything else on this page is unchanged — assigning tags, multi-select filtering, live counts, import assignment.

@@ -7,14 +7,20 @@
 // the zip's uncompressed entry sizes, chapter resolution, the mount window —
 // is computed here, pure, like the released store's math.
 
-import { indexAt, stackOffsets, window as mountWindow } from "$lib/virtual";
+import { indexAt, stackOffsets, window as mountWindow, type WindowRange } from "$lib/virtual";
 import {
   PAGE_GAP,
+  clampFraction,
+  encodeReaderPosition,
+  parseReaderPosition,
+  POSITION_WRITE_MS,
   isTocParentOf,
   tocParentsOf,
   tocVisibleOf,
+  type ReaderPosition,
   type ReaderStatus,
 } from "$lib/state/reader.svelte";
+import { debounce } from "../debounce";
 import { settings } from "$lib/state/settings.svelte";
 import * as api from "../../api";
 import { asAppError, type AppErrorPayload, type EpubManifestDto, type OutlineEntry } from "../types";
@@ -212,6 +218,26 @@ export class EpubReaderStore {
 
   #pending = new Map<number, Promise<void>>();
 
+  /** FR-28 (DR-406 1/4): the position read at load. The landing is applied
+   *  by the view once the store has real geometry (`applyRestoredPosition`);
+   *  while it is pending the view mounts ONLY the landing chapter (its text
+   *  was fetched in `load`), so no other chapter is fetched or painted
+   *  first — and the landing scrolls against a stack whose landing-chapter
+   *  span has a real height under it, never one whose only content is a
+   *  byte estimate that can be smaller than what it stands for.
+   *  `#reanchor` is the exact second landing once a height arrives. */
+  #restore: ReaderPosition | null = null;
+  #reanchor: { index: number; fraction: number } | null = null;
+  restorePending = $state(false);
+  /** The 0-based spine index the pending landing targets (the view's mount
+   *  window while `restorePending` is exactly this chapter). */
+  get restoreTarget(): number {
+    return Math.max(0, (this.#restore?.page ?? 1) - 1);
+  }
+  /** FR-28 write cadence (1 s, §3.2): one write per settle, last value
+   *  wins; `flushPosition` cancels it on close. */
+  #writePosition = debounce(() => this.#writePositionNow(), POSITION_WRITE_MS);
+
   constructor(docId: number) {
     this.docId = docId;
   }
@@ -234,7 +260,22 @@ export class EpubReaderStore {
       this.heights = manifest.spine.map(() => 0);
       this.tocCollapsed = new Set(tocParentsOf(this.outline));
       this.tocExpandMode = true;
-      await this.requestChapter(1);
+      // FR-28 (AC-167): the position is read before `ready`; the view
+      // applies it on its first measured step, before anything mounts
+      // (DR-406 1). A failed read is the released default; a stale chapter
+      // is clamped inside `parseReaderPosition`.
+      try {
+        const stored = await api.appReaderPositionGet(this.docId);
+        this.#restore = parseReaderPosition(stored, manifest.spine.length);
+      } catch {
+        this.#restore = null;
+      }
+      this.restorePending = this.#restore !== null;
+      // The released current-page-first rule (NFR-08/DR-150): the current
+      // chapter IS the restored one when there is one — chapter 1 leads only
+      // when it is the current chapter. `ready` still means "the current
+      // chapter is in hand", never "window first, content later".
+      await this.requestChapter(this.#restore?.page ?? 1);
       this.status = "ready";
     } catch (error) {
       this.error = asAppError(error);
@@ -298,8 +339,8 @@ export class EpubReaderStore {
   /** The mount window (§3.12 rule 3): the chapters the viewport touches,
    *  plus one on each side; `padTop`/`padBottom` reproduce the full height
    *  so the scrollbar stays honest. */
-  mountRange(): { start: number; end: number; padTop: number; padBottom: number } {
-    if (!this.manifest) return { start: 0, end: 0, padTop: 0, padBottom: 0 };
+  mountRange(): WindowRange {
+    if (!this.manifest) return { start: 0, end: 0, padTop: 0, padBottom: 0, totalHeight: 0 };
     return mountWindow(
       this.scrollTop,
       this.viewportHeight,
@@ -363,20 +404,41 @@ export class EpubReaderStore {
     return (this.manifest?.spine[index]?.size ?? 0) > CHUNKED_MOUNT_BYTES;
   }
 
-  /** Record a measured chapter height (DR-303 item 3). Returns the delta the
-   *  view applies to the scroll when the change happened above the reader's
-   *  place (lazy images must not move what the user is looking at). The
-   *  delta is against the height the layout was ACTUALLY using — the byte
-   *  estimate until the first measurement, the previous measurement after —
-   *  so the first real height corrects the estimate, not zero. */
-  recordHeight(index: number, height: number): number {
-    if (height <= 0) return 0;
+  /** Record a measured chapter height (DR-303 item 3). Returns the delta
+   *  and whether the change happened above the reader's place — the view
+   *  applies the delta to the scroll when it did (lazy images must not
+   *  move what the user is looking at). The delta is against the height
+   *  the layout was ACTUALLY using — the byte estimate until the first
+   *  measurement, the previous measurement after — so the first real
+   *  height corrects the estimate, not zero. The reader's position is
+   *  judged against the model BEFORE this height enters it: a change above
+   *  the reader moves the chapter boundary under them, and judging after
+   *  the update would silence the compensation that exists exactly for
+   *  that shift — and read a waiting landing as a reader who left it. */
+  recordHeight(index: number, height: number): { delta: number; aboveReader: boolean } {
+    if (height <= 0) return { delta: 0, aboveReader: false };
     const current = this.chapterHeight(index);
-    if (Math.abs(height - current) < 1) return 0;
+    if (Math.abs(height - current) < 1) return { delta: 0, aboveReader: false };
+    const readerIndex = indexAt(this.chapterOffsets(), this.scrollTop);
     const next = [...this.heights];
     next[index] = height;
     this.heights = next;
-    return height - current;
+    // DR-406 4: the restored landing is exact at the first measurement of
+    // its chapter — the absolute landing replaces the delta compensation for
+    // that one measurement (the reader stays at `o` within the real height).
+    // A landing the reader has already left is not re-anchored at all.
+    const reanchor = this.#reanchor;
+    if (reanchor) {
+      if (reanchor.index === index && readerIndex === index) {
+        this.#reanchor = null;
+        const target = this.chapterOffsets()[index] + 1 + reanchor.fraction * height;
+        this.scrollTop = target;
+        this.onScrollTo?.(target);
+        return { delta: 0, aboveReader: false };
+      }
+      if (readerIndex !== reanchor.index) this.#reanchor = null; // the reader left the landing
+    }
+    return { delta: height - current, aboveReader: index < readerIndex };
   }
 
   /** `PgUp`/`PgDn` (UI-30 semantics, flow version): one viewport through the
@@ -424,6 +486,74 @@ export class EpubReaderStore {
   resolveHref(href: string): { chapter: number | null; fragment: string } | null {
     if (!this.manifest) return null;
     return resolveChapterHref(href, this.manifest.base_url, this.manifest.spine);
+  }
+
+  // ------------------------------------------------- position memory (FR-28)
+
+  /** Apply the restored position (DR-406 1/4): the view calls this once it
+   *  has real geometry. The landing is at the target chapter's start plus
+   *  `o ×` its CURRENT height — the byte estimate until the chapter is
+   *  mounted and measured — and `recordHeight` re-anchors exactly once when
+   *  the real height arrives. While `restorePending` the view mounts only
+   *  the landing chapter (`restoreTarget`), so no other chapter is fetched
+   *  or painted first. */
+  applyRestoredPosition(): void {
+    if (this.status !== "ready" || !this.manifest) return; // no geometry to land against
+    const restore = this.#restore;
+    if (!restore) return;
+    this.#restore = null;
+    const index = restore.page - 1;
+    const target = this.chapterOffsets()[index] + 1 + restore.fraction * this.chapterHeight(index);
+    this.scrollTop = target;
+    this.onScrollTo?.(target);
+    this.#reanchor = { index, fraction: restore.fraction };
+    this.restorePending = false;
+  }
+
+  /** Schedule the debounced position write (DR-406 3): the view's `measure`
+   *  is the only hook the flow model needs — every position change here is
+   *  a scroll, and every scroll reaches `measure`. The trailing debounce is
+   *  the write discipline (AC-168); a pending landing is not a position. */
+  schedulePositionRecord(): void {
+    if (this.status !== "ready" || this.restorePending) return;
+    this.#writePosition();
+  }
+
+  /** The current position in the §3.2 `{c,o}` grammar, from the store's own
+   *  sources (DR-155): the current chapter is `currentChapter`, the fraction
+   *  is the scroll against its current height — the same arithmetic the
+   *  readout already performs. */
+  positionValue(): string | null {
+    const manifest = this.manifest;
+    if (!manifest || manifest.spine.length === 0 || this.status !== "ready") return null;
+    const index = this.currentChapter - 1;
+    const height = this.chapterHeight(index);
+    const fraction = height > 0 ? clampFraction((this.scrollTop - this.chapterOffsets()[index]) / height) : 0;
+    return encodeReaderPosition(index + 1, fraction, "c");
+  }
+
+  #writePositionNow(): void {
+    const value = this.positionValue();
+    if (value === null) return;
+    void api.appReaderPositionSet(this.docId, value).catch(() => {
+      /* a lost position is not a user-facing error (the settings pattern);
+         the next settle re-tries */
+    });
+  }
+
+  /** Flush on window close (FR-28/AC-168, DR-406 3): cancel the debounce
+   *  and write the last value; the caller awaits it before the window
+   *  closes. */
+  flushPosition(): Promise<void> {
+    this.#writePosition.cancel();
+    const value = this.positionValue();
+    if (value === null) return Promise.resolve();
+    return api
+      .appReaderPositionSet(this.docId, value)
+      .then(() => undefined)
+      .catch(() => {
+        /* the last settle's value stands instead — stated in §3.2 */
+      });
   }
 
   // ------------------------------------------------------------- ToC tree

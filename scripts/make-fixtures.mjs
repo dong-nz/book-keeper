@@ -75,7 +75,10 @@ function buildPdf({ title, author }) {
 // /PageMode /UseOutlines, item dictionaries with /Title, /Parent, /First,
 // /Last, /Prev, /Next and /Dest [<page ref> /XYZ null null null]. `outline`
 // is a flat [{ title, page, depth }] list; depth 1 is top level.
-function buildMultiPagePdf({ pages, title, outline }) {
+// `textOf` overrides the per-page sentence (SPEC-v0.0.12 §3.3: the
+// selection-probe fixture carries a known sentence per page); the default
+// keeps every existing multi-tier document byte-identical.
+function buildMultiPagePdf({ pages, title, outline, textOf }) {
   const objects = [
     [1, "<< /Type /Catalog /Pages 2 0 R >>"],
     [
@@ -94,7 +97,8 @@ function buildMultiPagePdf({ pages, title, outline }) {
       `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contentObject} 0 R ` +
         "/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>",
     ]);
-    const stream = `BT /F1 24 Tf 72 700 Td (Page ${page} of ${pages}) Tj ET`;
+    const sentence = (textOf ?? ((p, n) => `Page ${p} of ${n}`))(page, pages);
+    const stream = `BT /F1 24 Tf 72 700 Td (${sentence}) Tj ET`;
     objects.push([contentObject, `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`]);
   }
   const pageObjectOf = (page) => 3 + 2 * (page - 1);
@@ -170,6 +174,72 @@ function buildMultiPagePdf({ pages, title, outline }) {
   objects.push([infoObject, `<< /Title ${literal(title)} /Author ${literal("Fixture Author")} >>`]);
   const trailer =
     `<< /Size ${infoObject + 1} /Root 1 0 R /Info ${infoObject} 0 R ` +
+    "/ID [<00000000000000000000000000000000> <00000000000000000000000000000000>] >>";
+  return assemble(objects, trailer);
+}
+
+// The no-text fixture (SPEC-v0.0.12 §3.3, FR-30): a page whose only content
+// is a real image XObject — a 4×4 DeviceRGB bitmap scaled to fill the page,
+// no text operators anywhere. Text extraction on it yields nothing: the
+// reader shows no text layer, exactly the released scan behavior.
+function buildImageOnlyPdf() {
+  const pixels = Buffer.alloc(4 * 4 * 3);
+  for (let row = 0; row < 4; row += 1) {
+    for (let col = 0; col < 4; col += 1) {
+      const offset = (row * 4 + col) * 3;
+      pixels[offset] = row < 2 ? 220 : 30;
+      pixels[offset + 1] = col < 2 ? 60 : 200;
+      pixels[offset + 2] = 90;
+    }
+  }
+  const content = "q 468 0 0 700 72 72 cm /Im0 Do Q";
+  const objects = [
+    [1, "<< /Type /Catalog /Pages 2 0 R >>"],
+    [2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"],
+    [
+      3,
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R " +
+        "/Resources << /XObject << /Im0 5 0 R >> >> >>",
+    ],
+    [4, `<< /Length ${content.length} >>\nstream\n${content}\nendstream`],
+    [
+      5,
+      `<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB ` +
+        `/BitsPerComponent 8 /Length ${pixels.length} >>\nstream\n${pixels.toString("latin1")}\nendstream`,
+    ],
+    [6, `<< /Title ${literal("Image Only Fixture")} /Author ${literal("Fixture Author")} >>`],
+  ];
+  const trailer =
+    `<< /Size 7 /Root 1 0 R /Info 6 0 R ` +
+    "/ID [<00000000000000000000000000000000> <00000000000000000000000000000000>] >>";
+  return assemble(objects, trailer);
+}
+
+// The cap fixture (SPEC-v0.0.12 §3.3): one 4 000 × 4 000 pt page carrying
+// 4 010 separate text runs on a 64×63 grid — more runs than the 4 000-run
+// extraction cap, each far enough from its neighbours that pdfium keeps
+// them separate. Only the Rust cap test consumes it.
+function buildDenseTextPdf() {
+  const runs = [];
+  for (let n = 0; n < 4010; n += 1) {
+    const x = 10 + (n % 64) * 60;
+    const y = 3900 - Math.floor(n / 64) * 60;
+    runs.push(`BT /F1 12 Tf ${x} ${y} Td (run ${n}) Tj ET`);
+  }
+  const stream = runs.join("\n");
+  const objects = [
+    [1, "<< /Type /Catalog /Pages 2 0 R >>"],
+    [2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"],
+    [
+      3,
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 4000 4000] /Contents 4 0 R " +
+        "/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>",
+    ],
+    [4, `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`],
+    [5, `<< /Title ${literal("Dense Text Fixture")} /Author ${literal("Fixture Author")} >>`],
+  ];
+  const trailer =
+    `<< /Size 6 /Root 1 0 R /Info 5 0 R ` +
     "/ID [<00000000000000000000000000000000> <00000000000000000000000000000000>] >>";
   return assemble(objects, trailer);
 }
@@ -419,6 +489,18 @@ const special = {
   // the filename fallback — a name no other fixture can produce. The spaces
   // keep it ordinary query tokens for the search flows.
   "meta column probe.pdf": buildPdf({}),
+  // FR-30 (§3.3): the selection probe — 8 pages, each carrying a known
+  // sentence at a fixed position (72, 700 in page points), the strings the
+  // text-layer units and the reader text lane assert.
+  "text-probe.pdf": buildMultiPagePdf({
+    pages: 8,
+    title: "Selection Probe",
+    textOf: (page) => `Page ${page} of the selection probe document`,
+  }),
+  // FR-30 no-layer case: a page with an image XObject and no text.
+  "image-only.pdf": buildImageOnlyPdf(),
+  // FR-30 cap proof: 4 010 separate runs on one page.
+  "dense-text.pdf": buildDenseTextPdf(),
   // AC-93 (UI-30/DR-206): the long-name fixture — exactly 72 characters,
   // which at the strip's fonts is wider than the space the reader chrome has
   // for the name at the window's minimum size, while the default 1000 px
@@ -875,6 +957,37 @@ const epubTier = [
     name: "epub-no-cover.epub",
     bytes: buildEpub({ title: "No Cover Book", author: "No Cover Author", chapters: 1 }),
     manifest: { title: "No Cover Book", author: "No Cover Author", chapters: 1 },
+  },
+  // FR-31 (AC-178, DR-411): the cover picker's candidate list — a declared
+  // cover plus two manifest-only raster images (distinct sizes so the picker
+  // grid shows distinct thumbnails), with the chapters displaying the plates
+  // in the reverse of the manifest order: chapter 1 shows plate-two, chapter
+  // 2 shows plate-one; the declared cover is displayed by no chapter.
+  // `app_cover_candidates` must enumerate all three in the book's display
+  // order — plate-two, plate-one, then the unreferenced cover; the lane
+  // chooses the first tile (plate-two), never the cover.
+  {
+    name: "epub-images.epub",
+    bytes: buildEpub({
+      title: "Image Plate Book",
+      author: "Plate Author",
+      chapters: [
+        { index: 1, body: '<p>Plate two opens this book:</p><img src="../images/plate-two.png" alt="Plate two" />' },
+        { index: 2, body: '<p>Plate one follows:</p><img src="../images/plate-one.png" alt="Plate one" />' },
+      ],
+      cover: { href: "images/cover.png", mediaType: "image/png", bytes: COVER_PNG },
+      extra: [
+        { id: "plate-one", href: "images/plate-one.png", mediaType: "image/png", bytes: buildPng(240, 320) },
+        { id: "plate-two", href: "images/plate-two.png", mediaType: "image/png", bytes: buildPng(96, 96) },
+      ],
+    }),
+    manifest: {
+      title: "Image Plate Book",
+      author: "Plate Author",
+      chapters: 2,
+      cover: { href: "images/cover.png", mediaType: "image/png" },
+      coverCandidates: ["images/plate-two.png", "images/plate-one.png", "images/cover.png"],
+    },
   },
   // Not a zip at all → the M17 rule: imports with the fallback, typed error
   // only when the app is asked to read it (AC-141, AC-133).

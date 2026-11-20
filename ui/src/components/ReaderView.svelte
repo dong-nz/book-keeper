@@ -14,6 +14,7 @@
   // collapse to zero above it, so an over-wide page stays fully reachable.
   import { CONTENT_GUTTER, OVERSCAN, window as mountWindow } from "$lib/virtual";
   import { edgeStep, type ReaderStore } from "$lib/state/reader.svelte";
+  import TextLayer from "./TextLayer.svelte";
   import { t } from "$lib/i18n";
 
   // DR-341 (the real close of DR-334): the overlay `<img>` is permanently
@@ -75,6 +76,14 @@
   // left behind is never requested.
   $effect(() => {
     if (!measured) return;
+    // DR-406 1: the remembered position lands in the first step that has
+    // real geometry — before any page is requested. While a restore is
+    // pending nothing is requested or painted; applying it moves the
+    // store's scroll source, so the requests below name the RESTORED page
+    // (the effect re-runs on the flag flip, and a no-op restore still
+    // clears it).
+    store.applyRestoredPosition();
+    if (store.restorePending) return;
     store.requestPage(store.currentPage);
     const currentWidth = store.pageWidth(store.currentPage);
     const image = store.images.get(store.currentPage);
@@ -108,6 +117,30 @@
     }
     for (let index = win.start; index < win.end; index++) {
       if (index + 1 !== store.currentPage) store.requestPage(index + 1);
+    }
+  });
+
+  // FR-30 (UI-54): the text layer follows the same mount window as the page
+  // images (§3.3 "requested lazily for pages entering the render window") on
+  // its own effect — extraction is independent of the image chain, and the
+  // store caches every page once per window session, so scrolling back asks
+  // for nothing. In single mode the render window is the one mounted page
+  // (no text prefetch: extraction is per-page work and navigation re-runs
+  // this effect).
+  $effect(() => {
+    if (!measured || store.restorePending) return;
+    store.requestText(store.currentPage);
+    if (mode === "single") return;
+    if (mode === "facing") {
+      for (let row = win.start; row < win.end; row++) {
+        for (const page of [2 * row + 1, 2 * row + 2]) {
+          if (page <= pageCount) store.requestText(page);
+        }
+      }
+      return;
+    }
+    for (let index = win.start; index < win.end; index++) {
+      store.requestText(index + 1);
     }
   });
 
@@ -212,6 +245,10 @@
     // The fit base is the same in horizontal mode (UI-34 MODIFIED: fit the
     // current page to the viewport; the row scrolls past it).
     store.fitWidth = Math.max(0, scroller.clientWidth - 2 * CONTENT_GUTTER);
+    // FR-28 (DR-406 3): the scroll settle is the reading-position signal —
+    // the store debounces the write itself (1 s, AC-168); this call only
+    // re-arms the timer.
+    store.schedulePositionRecord();
   }
 
   $effect(() => {
@@ -252,6 +289,7 @@
 {#snippet pageBox(page: number, height: number)}
   {@const width = store.pageWidth(page)}
   {@const image = store.images.get(page)}
+  {@const text = store.texts.get(page)}
   <div class="page" style="width: {width}px; height: {height}px">
     {#if image && image.width === width}
       <img src={image.src} alt={t("reader.pageAlt", { page })} style="width: {width}px; height: {height}px" />
@@ -296,6 +334,15 @@
            request is in flight — no fake content, no spinner copy. -->
       <div class="page-placeholder" role="img" aria-label={t("reader.pageAlt", { page })}></div>
     {/if}
+    <!-- FR-30 (UI-54): the selectable text layer over a rendered page —
+         mounted only once the page's raster is shown (text over a skeleton
+         would offer selection over content that isn't there), and only when
+         the page HAS text: a scan gets no layer and no message (§3.3). The
+         layer is invisible until used; positions are the store's exact
+         geometry scaled to this box (no measurement). -->
+    {#if image && image.width === width && text && text.runs.length > 0}
+      <TextLayer text={text} displayWidth={width} />
+    {/if}
   </div>
 {/snippet}
 
@@ -305,7 +352,10 @@
        taller, so a fit-width page is reachable to its bottom edge;
        continued wheel at a content edge navigates (edgeNavigate). The
        content gutters apply the same way; fit-width measures this box. -->
-  <div class="reader-single" bind:this={scroller} onwheel={edgeNavigate}>
+  <!-- FR-28 (DR-406 5): `measure` joins the single container too — the
+       store's scroll/viewport sources make the within-page position exact;
+       nothing else in single mode reads them. -->
+  <div class="reader-single" bind:this={scroller} onscroll={measure} onwheel={edgeNavigate}>
     {#if store.status === "ready" && measured}
       {@render pageBox(singlePage, singleHeight)}
     {/if}

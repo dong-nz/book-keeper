@@ -1,0 +1,13 @@
+# NFR-12 (SPEC-v0.0.12 §3.4a): the Linux build dependencies for the Tauri
+# jobs, one package per line — the single list both workflows (.github/
+# workflows/ci.yml, release.yml) install and key their apt cache on.
+# Blank lines and lines starting with # are ignored by the install steps.
+libwebkit2gtk-4.1-dev
+build-essential
+curl
+wget
+file
+libxdo-dev
+libssl-dev
+libayatana-appindicator3-dev
+librsvg2-dev

@@ -2,13 +2,13 @@
 
 **Living document, not a release spec.** It has no lifecycle status and is not a requirements source: requirements and acceptance criteria stay in the release specs (this file never restates them as definitions). It is the factual inventory of every test case the repository implements *today*, per `docs/specs/INDEX.md` → current spec → `AGENTS.md` §2a maintenance rules (DR-160).
 
-Regenerated 2026-11-12 by extracting the sources directly: `#[test]` items under `src-tauri/src/`, `it()`/`test()` items under `ui/src/`, and every `check()`/`skip()` call site in `scripts/ui-smoke.mjs` and `scripts/ui-10k.mjs`. Re-extracted 2026-11-17 for the v0.0.10 test deltas (the `flowReaderHorizontal` flow, the `flowReaderToc` and `flowEpubReader` extensions, the `flowReaderSettings` flow, the store unit additions, the `flowAppUpdate` flow and its fixture-build harness wiring) and verified against the tree by count; re-verified the same day after the Phase-B repairs (the re-pinned `flowReaderToc` 34 / `flowEpubReader` 42 / `flowReaderSettings` 9 call sites, the revised row texts per DR-337/DR-338, the "separates visibility from the pin" store units — all matched, and the reading-pdfs + reading-epubs lanes run passed 233/233); re-extracted the same day after the second Phase-B round (the DR-341 decodable-overlay regression check in `flowReaderOpen`, the DR-342 docked-position checks in `flowReaderToc` and `flowEpubReader`, the DR-343 dialog-over-panel hit test in `flowReaderSettings` — the flows then carried 16 / 35 / 43 / 10 call sites; the lanes runs passed 237/237; the AC-67 delete-cache check gained the same bounded wait its close-path siblings use — a check-side fix, no new call site); the DR-344 extension adds three more `flowReaderSettings` call sites (the EPUB-host control and menu checks, the functional *Check for updates* proof in a reader window) — now 13; the final lanes runs passed 240/240. At the v0.0.10 Ship commit the extraction was re-run against the tree and the §3 counts corrected (the direct-run shape 601 check call sites, 5 conditional skips, 6 `timingRow()` call sites, 61 flows); the fixture endpoint port is the tree's 14299 (DR-331 item 5); re-extracted 2026-11-17 for the v0.0.11 test deltas (the `applog` module's 10 tests, the two settings-store log-level units, the `flowLogs` flow with its 11 check call sites) and verified against the tree by count; re-extracted the same day for the v0.0.11 verification-infrastructure deltas (DR-360–DR-362: the `searchFor`/`clearSelection` reworks, the fixture-appearance waits, the tie-group scoping, the flow-restore undos, the `flowVirtualization` geometry-derived bound, the `ui-10k.mjs` corpus publish/seed — none adds or removes a `check()`/`skip()` call site; the `flowStartup` seeded-corpus branch adds one `check()` and one `skip()` call site). Counts below are call sites in the current working tree; parameterized checks (width matrix, contrast matrix) run once per case, and a lane run additionally asserts its own suite-level checks — core lanes the same three the direct run asserts (AC-56 sleep scan, AC-58 wall time, AC-60 area coverage), docs lanes their own budget check — so a full run asserts more than the number of listed call sites (the per-lane pattern is exact: each lane reports its flow's call sites plus those suite-level checks, the width matrix doubling at its two tested widths). The v0.0.7 full-mode lane run (Phase C, DR-192) will record its lane tallies here when it completes; the previous full-mode reference is the v0.0.6 Ship run (44/44 lanes green, 474/474 check executions, combined wall 130.7 s — inside the NFR-06 300 s budget). Re-extracted 2026-11-18 for the v0.0.11 rename deltas (FR-27: the `relocate` module's 8 tests added; no test gained or lost a `check()`/`skip()` call site anywhere — the rename re-pinned existing strings in place: the About/updates flow assertions, the EPUB protocol base URLs, the harness exe/env/data-dir names); the rename-relevant feature lanes (`settings-and-appearance`, `keeping-up-to-date`, `reading-epubs`) ran 186/186 against the renamed binary; re-extracted the same day after the user's DR-381 (the data-directory migration removed: the `relocate` section and its 8 tests deleted, the count back to 142 in 12 files; no `check()`/`skip()` call site changed — the flowStrings were untouched by the migration's presence; `flowLogs` re-run 19/19 against the reduced binary on a fresh data directory). Re-extracted 2026-11-18 at the v0.0.11 Ship against the whole tree (§2a): the Rust and unit counts confirmed (142 in 12 files; 161 in 18 files), every §1/§2 section header and every §3 flow row matches the tree; the summary rows corrected — they had carried mid-build numbers since the v0.0.10 Ship. Measured against this tree: 630 flow-body `check()` call sites, 612 in the direct-run shape (611 asserted by a direct full run), three suite-level checks — no AC-49 "source scan" exists in the harness — three helper-internal `check()` calls (`fail()`, `timingRow()`, the error-toast guard), six `skip()` call sites, six `timingRow()` call sites; the 10k file's ten and the scale flows' 18 check + 3 `timingRow()` call sites confirmed. The whole delta since the v0.0.10 Ship tree is exactly `flowLogs` +11 and `flowStartup` +1 check +1 skip (DR-362) — every other flow's call sites unchanged.
+Regenerated 2026-11-12 by extracting the sources directly: `#[test]` items under `src-tauri/src/`, `it()`/`test()` items under `ui/src/`, and every `check()`/`skip()` call site in `scripts/ui-smoke.mjs` and `scripts/ui-10k.mjs`. Re-extracted 2026-11-17 for the v0.0.10 test deltas (the `flowReaderHorizontal` flow, the `flowReaderToc` and `flowEpubReader` extensions, the `flowReaderSettings` flow, the store unit additions, the `flowAppUpdate` flow and its fixture-build harness wiring) and verified against the tree by count; re-verified the same day after the Phase-B repairs (the re-pinned `flowReaderToc` 34 / `flowEpubReader` 42 / `flowReaderSettings` 9 call sites, the revised row texts per DR-337/DR-338, the "separates visibility from the pin" store units — all matched, and the reading-pdfs + reading-epubs lanes run passed 233/233); re-extracted the same day after the second Phase-B round (the DR-341 decodable-overlay regression check in `flowReaderOpen`, the DR-342 docked-position checks in `flowReaderToc` and `flowEpubReader`, the DR-343 dialog-over-panel hit test in `flowReaderSettings` — the flows then carried 16 / 35 / 43 / 10 call sites; the lanes runs passed 237/237; the AC-67 delete-cache check gained the same bounded wait its close-path siblings use — a check-side fix, no new call site); the DR-344 extension adds three more `flowReaderSettings` call sites (the EPUB-host control and menu checks, the functional *Check for updates* proof in a reader window) — now 13; the final lanes runs passed 240/240. At the v0.0.10 Ship commit the extraction was re-run against the tree and the §3 counts corrected (the direct-run shape 601 check call sites, 5 conditional skips, 6 `timingRow()` call sites, 61 flows); the fixture endpoint port is the tree's 14299 (DR-331 item 5); re-extracted 2026-11-17 for the v0.0.11 test deltas (the `applog` module's 10 tests, the two settings-store log-level units, the `flowLogs` flow with its 11 check call sites) and verified against the tree by count; re-extracted the same day for the v0.0.11 verification-infrastructure deltas (DR-360–DR-362: the `searchFor`/`clearSelection` reworks, the fixture-appearance waits, the tie-group scoping, the flow-restore undos, the `flowVirtualization` geometry-derived bound, the `ui-10k.mjs` corpus publish/seed — none adds or removes a `check()`/`skip()` call site; the `flowStartup` seeded-corpus branch adds one `check()` and one `skip()` call site). Counts below are call sites in the current working tree; parameterized checks (width matrix, contrast matrix) run once per case, and a lane run additionally asserts its own suite-level checks — core lanes the same three the direct run asserts (AC-56 sleep scan, AC-58 wall time, AC-60 area coverage), docs lanes their own budget check — so a full run asserts more than the number of listed call sites (the per-lane pattern is exact: each lane reports its flow's call sites plus those suite-level checks, the width matrix doubling at its two tested widths). The v0.0.7 full-mode lane run (Phase C, DR-192) will record its lane tallies here when it completes; the previous full-mode reference is the v0.0.6 Ship run (44/44 lanes green, 474/474 check executions, combined wall 130.7 s — inside the NFR-06 300 s budget). Re-extracted 2026-11-18 for the v0.0.11 rename deltas (FR-27: the `relocate` module's 8 tests added; no test gained or lost a `check()`/`skip()` call site anywhere — the rename re-pinned existing strings in place: the About/updates flow assertions, the EPUB protocol base URLs, the harness exe/env/data-dir names); the rename-relevant feature lanes (`settings-and-appearance`, `keeping-up-to-date`, `reading-epubs`) ran 186/186 against the renamed binary; re-extracted the same day after the user's DR-381 (the data-directory migration removed: the `relocate` section and its 8 tests deleted, the count back to 142 in 12 files; no `check()`/`skip()` call site changed — the flowStrings were untouched by the migration's presence; `flowLogs` re-run 19/19 against the reduced binary on a fresh data directory). Re-extracted 2026-11-18 at the v0.0.11 Ship against the whole tree (§2a): the Rust and unit counts confirmed (142 in 12 files; 161 in 18 files), every §1/§2 section header and every §3 flow row matches the tree; the summary rows corrected — they had carried mid-build numbers since the v0.0.10 Ship. Measured against this tree: 630 flow-body `check()` call sites, 612 in the direct-run shape (611 asserted by a direct full run), three suite-level checks — no AC-49 "source scan" exists in the harness — three helper-internal `check()` calls (`fail()`, `timingRow()`, the error-toast guard), six `skip()` call sites, six `timingRow()` call sites; the 10k file's ten and the scale flows' 18 check + 3 `timingRow()` call sites confirmed. The whole delta since the v0.0.10 Ship tree is exactly `flowLogs` +11 and `flowStartup` +1 check +1 skip (DR-362) — every other flow's call sites unchanged. Re-extracted 2026-11-19 for the v0.0.12 test deltas (§8 ledger, SPEC-v0.0.12): Rust +31 — the new `positions` module (4), `db` +1 (the v3 migration), `library/service` +6, `pdf` +12 (bind candidates per D34, `page_text`/`serve_text`, `serve_thumbs`), `epubmeta` +2, `covers` +6 — 173 in 13 files; frontend +38 — `reader.test.ts` +23 (position grammar/restore/write-discipline, view-mode memory, text layer), `epubReader.test.ts` +9 (position memory incl. the DR-407 pre-update height judgment), the new `platform.test.ts` (6) — 199 call sites in 19 files; harness +39 check call sites — the new flows `flowReaderMemory` 13 / `flowReaderText` 6 / `flowCoverChoice` 20 (no new `skip()` or `timingRow()` call sites), plus the four new fixtures (`text-probe.pdf`, `image-only.pdf`, `dense-text.pdf`, `epub-images.epub`); three drifted rows corrected against the tree — the EPUB store's `estimates …` and `labels a chapter with the first entry …` renames and the fast-render-cap preview row re-pinned to its DR-316/DR-323 form. The three new lanes ran green 2026-11-19 — `flowReaderMemory` 17/17, `flowReaderText` 10/10, `flowCoverChoice` 24/24 check executions (13/6/20 call sites; the mode-loop and picker-window sites run per case); the frontend units ran 285/285 at run time. The Rust layer was re-run against this tree 2026-11-19: 172/173 green — the single failure is the wall-time-sensitive `import_of_ten_thousand_fixtures_stays_within_budget` (31.96 s against the 30 s budget under the full suite's parallel load; the isolated re-run passes in 2.16 s — flake class, the D29 measurement family; the layer was green at the commands-stage checkpoint). Re-verified 2026-11-19 after the DR-408 picker-toolbar revision: `flowCoverChoice` now carries 21 call sites (the toolbar-shape check added; the reset-control check re-anchored from the dialog's bottom action row to the toolbar bar, its row text extended to name the toolbar); the flow-body total 670, the direct-run shape 652 (651 asserted by a direct full run); no other flow changed. `flowCoverChoice` re-run isolated after the revision: 25/25 check executions (3 950 ms). A full-mode run (65 lanes, 957/964, wall 420 s) taken during this verification found five released lanes red — triage and lane corrections in SPEC-v0.0.12 DR-409: the AC-80/AC-142 new-window mode-default rows re-pinned to the FR-29 contract (`flowReaderViewModes` 43/43, `flowReaderHorizontal` 31/31 isolated), the AC-149 chrome-order rows extended for the cover control (`flowReaderSettings` 17/17 isolated), `flowEpubReader` 47/47 isolated (its AC-137 image row is load-bound), `flowReaderPerformance` 12/12 isolated after the flow states the D24 row's position (no new call sites there). Re-verified 2026-11-19 after the DR-410 pinned-toolbar + column-fit revision: `flowCoverChoice` now carries 23 call sites (the pinned-bar and column-fit checks added); the flow-body total 672, the direct-run shape 654 (653 asserted by a direct full run); no other flow changed. `flowCoverChoice` re-run isolated: 27/27 check executions (the pinned-bar check drives the scroll itself — the flow's own `scrollIntoView` had nothing to scroll while the first window still fit the clamped dialog); `flowReaderSettings` re-run 17/17 — the no-actions branch of `Modal.svelte` renders exactly as before. Re-verified 2026-11-19 after the DR-411 display-order + full-bleed revision: `flowCoverChoice` now carries 24 call sites (the full-bleed check added; the column-fit probe gained per-condition diagnostics and a subpixel tolerance, the lazy-window checks re-anchored — no call-site change there); the flow-body total 673, the direct-run shape 655 (654 asserted by a direct full run); no other flow changed. The Rust layer carries the same 173 tests with one rename — `epubmeta::tests::cover_candidates_follow_the_books_display_order` replaces `cover_candidates_list_manifest_raster_images_in_manifest_order` (its fixture extended to a two-document spine with display order distinct from the manifest order), and the service unit `cover_candidates_lists_the_epub_manifest_images_and_refuses_a_pdf` re-pinned to the regenerated `epub-images.epub` fixture's display order — 173/173 green, clippy `-D warnings` clean. `flowCoverChoice` re-run isolated after the revision: 28/28 check executions (the first isolated run opened the strip with 12 tiles, an earlier set run with 24 — the bounded-window claim holds for both). Re-verified 2026-11-19 after the DR-412 corner-clearance fix: no call-site change (the full-bleed check re-anchored in place — sides flush, bottom inset measured); `flowCoverChoice` re-run isolated: 28/28 check executions. Re-verified the same day after the DR-413 Tags-manager scrollbar shape: `flowTagCrud` gained one check (the list panel reaches the dialog's side edges, its bottom clear of the rounded corners — 6 → 7 call sites in that flow); the flow-body total 674, the direct-run shape 656 (655 asserted by a direct full run); `flowTagCrud` isolated 14/14, the tags-area set re-run 45/45 green; no other flow changed. Re-verified the same day after the DR-414 toolbar-dialog + delete-all revision: `flowTagCrud` now carries 11 call sites (7 → 11 — the DR-413 panel-geometry check replaced by the toolbar-structure and variant-geometry pair, three delete-all-flow checks added); Rust +1 — `library/service`'s `tags_delete_all_detaches_every_membership_and_keeps_documents` — 174 in 13 files; `flowScrollbars`'s tags-manager surface measurement re-anchored to the shared variant's `.modal-scroll` (no call-site change). The flow-body total 678, the direct-run shape 660 (659 asserted by a direct full run). The tags-area set 49/49 green 2026-11-19 (57–60 s), `flowScrollbars` isolated 14/14 (the tags manager content area measured at the same 10 px gutter and token color as the released surfaces); frontend units 285/285, `svelte-check` 0 errors. Re-verified the same day after the DR-415 top-clearance fix: no call-site change (the `flowTagCrud` variant-geometry check extended in place with the input-top clearance assertion); `flowTagCrud` isolated 18/18 (measured clearance 4 px), `flowCoverChoice` — the variant's other consumer — 28/28, `flowScrollbars` 14/14; the tags-area set ran 45/47 with two Browse-menu open crashes (`flowTagCrud` at a menu item, `flowQuietCounts` at the *Manage tags* target — the D30/D31 flake class; both re-ran isolated green, 18/18 and 8/8), no flow's call sites changed.
 
 |Layer|Runner|Test call sites|
 |---|---|---|
-|Rust core|`cargo test` (in `src-tauri/`)|142 `#[test]` in 12 files|
-|Frontend units|`pnpm -C ui test` (Vitest)|161 test call sites in 18 files (the design-tokens checks iterate the role-pair and token lists: vitest reports **247** test cases at run time - 91 from those 5 call sites; every other file runs exactly its call-site count)|
-|UI smoke harness|`node scripts/ui-smoke.mjs`|62 flows (59 run directly - 57 internal + the two exported prefix flows; the three exported scale flows are executed only by the 10k suite and its lanes), 630 check call sites in flow bodies - 612 belong to the direct-run shape; plus 3 suite-level checks (AC-56 sleep scan, AC-58 wall time, AC-60 area coverage) and 3 `check()` calls inside the shared helpers - the `fail()` recorder, `timingRow()`'s budget assertion and the error-toast guard; plus 6 conditional `skip()` call sites and the AC-72 timing rows, asserted through the shared `timingRow()` helper (6 call sites). A direct full run asserts exactly 611 of the direct-run-shape sites - flowStartup's seeded-corpus branch (one check and one skip, DR-362) executes only in a seeded scale lane; under `scripts/ui-verify.mjs` full mode each core lane additionally asserts the three suite-level checks, which is why the full lane run reports more executions - see §3|
+|Rust core|`cargo test` (in `src-tauri/`)|174 `#[test]` in 13 files|
+|Frontend units|`pnpm -C ui test` (Vitest)|199 test call sites in 19 files (the design-tokens checks iterate the role-pair and token lists: vitest reports **285** test cases at run time - 91 from those 5 call sites; every other file runs exactly its call-site count)|
+|UI smoke harness|`node scripts/ui-smoke.mjs`|65 flows (62 run directly - 60 internal + the two exported prefix flows; the three exported scale flows are executed only by the 10k suite and its lanes), 678 check call sites in flow bodies - 660 belong to the direct-run shape; plus 3 suite-level checks (AC-56 sleep scan, AC-58 wall time, AC-60 area coverage) and 3 `check()` calls inside the shared helpers - the `fail()` recorder, `timingRow()`'s budget assertion and the error-toast guard; plus 6 conditional `skip()` call sites and the AC-72 timing rows, asserted through the shared `timingRow()` helper (6 call sites). A direct full run asserts exactly 659 of the direct-run-shape sites - flowStartup's seeded-corpus branch (one check and one skip, DR-362) executes only in a seeded scale lane; under `scripts/ui-verify.mjs` full mode each core lane additionally asserts the three suite-level checks, which is why the full lane run reports more executions - see §3|
 |10 000-document suite|`node scripts/ui-10k.mjs`|1 flow (8 check call sites) + 2 suite-level checks (abort guard, NFR-06 budget) = 10 in the file; the suite additionally runs the shared prefix (flowStartup — 3 check and 1 skip call sites since DR-362 — and flowDropAndSkip — 2 check call sites) and the three exported scale flows (18 check and 3 `timingRow()` call sites); the width matrix runs its four checks per tested window width; a seeded scale lane (DR-362) asserts the prefix's checks and, only when the empty-state variant is absent at its seeded startup, its one skip|
 |Full-verification orchestrator|`node scripts/ui-verify.mjs`|1 scheduler gate (every lane green + combined wall ≤ 300 s; with `SMOKE_VERIFY_WALL_GATE=0` the wall is measured and reported but does not gate the exit — DR-357, introduced for the CI lane job, which the user removed from CI in the same release, DR-390; the switch stays documented for local measured runs) — implemented as its own exit gate, not a `check()` call site, so it is not in the counts above; §3|
 
@@ -20,7 +20,7 @@ The authoritative **requirement → test** mapping stays in each release spec (a
 
 Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every product behavior is testable here). Clippy must stay clean (`cargo clippy -- -D warnings`).
 
-### `src-tauri/src/db/mod.rs` — schema & migration (6)
+### `src-tauri/src/db/mod.rs` — schema & migration (7)
 
 |Test|Verifies|
 |---|---|
@@ -30,6 +30,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`v2_upgrade_rebuilds_the_tag_tables_and_preserves_rows`|the AC-113 upgrade half: a pre-upgrade (version-1) database keeps its tag groups, memberships, assignments, settings and filter rows through the rebuild onto the clean tag tables (rows copied, ids preserved, old tables dropped), and gains the `reading` and `password` columns|
 |`fts_triggers_keep_index_in_sync_with_every_mutation`|FTS5 index follows insert/update/delete|
 |`settings_round_trip_and_overwrite`|settings table write/read/overwrite|
+|`v3_migration_adds_cover_choice_to_an_existing_database`|the SPEC-v0.0.12 §3.10 migration half: the additive `cover_choice` column lands on an existing version-2 database with rows kept, and every existing choice is NULL (automatic — the released behavior)|
 
 ### `src-tauri/src/data_dir.rs` — data-directory resolution (3, DR-162)
 
@@ -93,7 +94,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`tag_names_travel_with_rows_for_badges`|rows carry their tag names for the UI|—|
 |`cover_path_is_delivered_only_when_the_cache_file_exists`|an unprepared row carries no cover path; the path appears with the cached file (DR-237)|AC-100|
 
-### `src-tauri/src/library/service.rs` — library operations (32)
+### `src-tauri/src/library/service.rs` — library operations (39)
 
 |Test|Verifies|covers|
 |---|---|---|
@@ -104,6 +105,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`import_of_ten_thousand_fixtures_stays_within_budget`|10 000-file import under the time budget — the corpus is the AC-131 mix (9 000 PDFs + 1 000 EPUBs), title probes for one document of each type|AC-01, NFR-02, AC-131|
 |`search_of_ten_thousand_documents_stays_within_budget`|search latency at 10 000 documents|AC-02, AC-01|
 |`tags_membership_bulk_edit_and_delete_cascade`|create/assign/bulk-edit/delete with document detach|AC-03, FR-02|
+|`tags_delete_all_detaches_every_membership_and_keeps_documents`|the bulk delete reports the count, removes every tag row, cascades the memberships away, leaves the documents and their counts untouched, and an empty library answers 0|FR-32, AC-182|
 |`reading_membership_single_and_bulk_with_view_and_counts`|the Reading toggle per document and across a selection; the Reading view lists exactly the members; the status counts follow every change|AC-121, AC-103, FR-19|
 |`reading_view_combines_with_search_favorites_tags_and_missing`|the Reading predicate composes with every other filter under the same AND rule (spec §3.2)|AC-103|
 |`opening_relinking_and_rescan_never_change_reading_membership`|the manual-only rule: rescan, relink and an edited record leave Reading membership exactly as it was; the badge count still reports the member|AC-102, FR-19|
@@ -129,8 +131,23 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`last_filter_grammar_accepts_the_new_form_and_the_legacy_one`|the persisted filter grammar: the modes including `reading` and the `&tags=` list form, and the legacy `&cats=`/`cat:` forms all decode; malformed values are rejected|AC-113|
 |`log_level_grammar_and_reopen_survival`|the log level persists through the settings table and survives a reopen; no row is the default `error`, the grammar is exactly the two values, anything else is a typed rejection|FR-26, AC-155|
 |`import_assigns_every_active_tag`|import assigns to every active tag|FR-10|
+|`cover_choice_set_and_clear_store_the_value_and_enqueue_the_render`|a valid choice is stored verbatim and the enqueued cover job carries the parsed choice; clearing NULLs the column and re-enqueues the automatic cover; both return the updated row|FR-31, AC-177, AC-180|
+|`cover_choice_rejects_bad_grammar_and_type_mismatch_before_storage`|malformed JSON, a bad grammar, and a kind that does not match the row's file type are the typed rejection at the service boundary — the stored value never changes|FR-31, AC-179|
+|`cover_candidates_lists_the_epub_manifest_images_and_refuses_a_pdf`|the picker grid's list: every manifest raster the pipeline can decode, in the book's display order (DR-411: the fixture's chapter order, the unreferenced declared cover last); a PDF is the typed refusal (its picker is the thumbnail strip)|FR-31, AC-178|
+|`view_mode_setting_round_trips_with_the_four_modes`|the released settings pair serves FR-29's key unchanged: the default is `continuous`, the four mode values round-trip, anything else (`bogus`, empty, wrong case, an old name) is the typed validation rejection — no new command exists|FR-29, AC-169|
+|`position_rows_do_not_bloat_the_settings_dto`|reader positions are not settings: the settings DTO carries only the released keys (`reader.pos.*` rows are excluded from it); the position pair is the dedicated command path|FR-28|
+|`delete_documents_removes_position_memory_relink_keeps_it`|delete removes the deleted ids' position keys in the same transaction (R2); relink keeps the id, so the position memory survives it|FR-28, AC-168, FR-14|
 
-### `src-tauri/src/pdf/mod.rs` — reader engine (11)
+### `src-tauri/src/positions/mod.rs` — reader position storage (4, FR-28, SPEC-v0.0.12 §3.2)
+
+|Test|Verifies|covers|
+|---|---|---|
+|`position_round_trip_get_set`|a written position is exactly what `get` returns (last value wins); an unwritten one is `None`|AC-167|
+|`malformed_values_are_rejected_at_the_boundary`|the §3.2 grammar: malformed JSON, out-of-range bounds, both anchors, a 0 anchor, extra members — none reaches storage|FR-28, AC-167|
+|`unknown_id_is_rejected`|`set` and `get` for a document id that does not exist are the typed `DocumentNotFound`|FR-28|
+|`cleanup_removes_only_the_named_documents_keys`|the delete-cleanup pass removes exactly the named ids' `reader.pos.<id>` keys; another document's memory is untouched|FR-28, AC-168|
+
+### `src-tauri/src/pdf/mod.rs` — reader engine (23)
 
 |Test|Verifies|covers|
 |---|---|---|
@@ -145,6 +162,18 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`serve_page_writes_the_cache_once_and_serves_the_cached_file_after`|cache written once, served on re-request|—|
 |`the_chosen_encoder_writes_lossless_pixels_at_the_unchanged_cache_key`|the chosen encoder (DR-196) round-trips through the `image` crate with identical dimensions and identical pixels, at the unchanged cache path|AC-74|
 |`the_reader_helpers_report_an_unopenable_document_as_a_typed_error`|non-PDF/corrupt file → typed `AppError`, not a panic|AC-69|
+|`bind_candidates_reach_the_packaged_macos_and_deb_layouts`|the pure candidate function (D34 fix) finds the library in the published layouts: the macOS `.app` (`Contents/Resources/binaries` relative to the binary at `Contents/MacOS`) and the deb (`/usr/lib/Book Keeper/binaries` relative to `/usr/bin`) — the injected extra directories are what the packaged search path gains|FR-25, D34, AC-175|
+|`bind_candidates_keep_the_released_dev_and_next_to_binary_paths`|the source-tree and Windows/AppImage search order is untouched: exe directory → `binaries/` beside the exe → injected directories → `binaries/` in the working directory; unknown process paths contribute nothing, as today's `current_exe`/`current_dir` failures|D34|
+|`page_text_returns_top_origin_runs_for_a_text_bearing_page`|the probe fixture's known sentence (drawn bottom-origin at (72, 700) on a 612 × 792 page) comes back as top-origin page-point runs — the y sits near the page top, the coordinate flip is the whole point of the proof|FR-30, AC-169|
+|`a_page_without_text_extracts_nothing_and_is_not_an_error`|the image-only fixture (a real image XObject, no text operators) yields an empty run list — a scan gets no layer, not a failure|FR-30, AC-171|
+|`a_dense_page_is_capped_at_four_thousand_runs_with_the_flag_set`|the dense fixture's 4 010 runs serve as 4 000 with the `truncated` flag raised (§3.3 cap)|FR-30|
+|`page_text_follows_the_released_password_path`|the protected fixture answers `PasswordRequired` with no password (the reader's existing unlock form applies) and extracts with the stored one — no new prompt|FR-30, FR-20|
+|`serve_text_caches_the_extraction_and_serves_the_cached_page_after`|the page cache's serving rule mirrored for text: a miss extracts and writes, a hit serves from the file with no re-extraction (the sentinel method); a cache file that no longer parses counts as a miss|FR-30|
+|`serve_text_maps_the_password_state_to_the_released_typed_error`|the command-side classification is the released one (AC-104's mapping): `serve_text` hands the password state through unchanged|FR-30, AC-104|
+|`serve_thumbs_renders_the_window_at_picker_width_and_caches_it`|a window of pages comes back as file paths in page order under the reader directory's `picker/` subdirectory (DR-404) at the picker width; a second request is served from the cache (the sentinel method)|FR-31, AC-181|
+|`serve_thumbs_rejects_malformed_windows_before_rendering_anything`|a malformed window is refused with the existing validation kind (the `app_pdf_page` bounds pattern) — no rendering work done|FR-31|
+|`serve_thumbs_fails_a_window_past_the_document_with_the_released_error`|a page the document cannot answer fails the window with the released typed error (the picker asks only within the manifest it already has; same classification as page serving)|FR-31|
+|`serve_thumbs_honours_the_released_password_path`|the batch carries the stored password like every other request: no password is the typed prompt state, the right password renders|FR-31, FR-20|
 
 ### `src-tauri/src/pdfmeta/mod.rs` — metadata extraction and outlines (6)
 
@@ -157,7 +186,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`an_unparseable_file_yields_the_typed_error`|a file that cannot be parsed at all → `PdfUnopenable`, the same classification the reader paths give|AC-77|
 |`unresolvable_destinations_are_skipped_while_siblings_remain`|a dangling page reference and a named destination absent from the names tree cost their own entries only|AC-77|
 
-### `src-tauri/src/epubmeta/mod.rs` — EPUB package reading (21)
+### `src-tauri/src/epubmeta/mod.rs` — EPUB package reading (23)
 
 |Test|Verifies|covers|
 |---|---|---|
@@ -182,6 +211,8 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`read_package_derives_a_toc_from_the_spine_when_no_toc_exists`|no ToC in the package: the spine-derived list|AC-132|
 |`read_package_reads_declared_language_and_direction`|the package's declared language and writing direction reach the manifest|AC-132|
 |`read_package_rejects_a_malformed_package_like_import`|the reader path gives the same typed error the import path gives|AC-133|
+|`cover_image_at_decodes_a_declared_raster_entry_and_refuses_the_rest`|§3.8: a chosen entry renders iff the manifest declares it with a raster media type (the released decode rules); everything else — absent, SVG-only, non-raster — is `None`, the released glyph fallback for a stale choice|FR-31, AC-178|
+|`cover_candidates_follow_the_books_display_order`|`app_cover_candidates`'s enumeration (DR-411): spine-item order, then the order inside each spine document, first mention wins; declared raster images no spine document references follow in manifest document order; the two raster types only, resolved entry paths (the same container-root convention as the spine), a duplicate declaration listed once|FR-31, AC-178|
 
 ### `src-tauri/src/epubsrv/mod.rs` — EPUB content delivery (19)
 
@@ -207,7 +238,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`the_lru_holds_its_caps`|the cache's entry and byte ceilings hold|AC-138|
 |`manifest_composes_the_reading_facts_with_the_base_url`|the `app_epub_manifest` payload: spine, sizes, ToC, language/direction, base URL|AC-125, AC-132|
 
-### `src-tauri/src/covers/mod.rs` — cover pipeline (10)
+### `src-tauri/src/covers/mod.rs` — cover pipeline (16)
 
 |Test|Verifies|covers|
 |---|---|---|
@@ -221,6 +252,12 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 |`a_renamed_document_renders_under_the_new_key_and_the_stale_entry_is_swept`|the real rename path through the real cover pool: the cover follows the new identity (the key composes from the new path) and the stale entry is removed by the released orphan sweep|AC-110, FR-21|
 |`cover_pool_size_clamps_the_override_and_bounds_the_default`|pool-size setting clamped to its allowed range|—|
 |`worker_pool_renders_every_cover_exactly_once_across_two_workers`|parallel workers: no duplicate, no missed cover|AC-57|
+|`no_choice_keys_are_byte_identical_to_the_released_function`|with no choice the cache-key function is byte-identical to the released one (test-pinned literals): nothing is hashed, nothing re-keys, untouched documents never re-render|FR-16, AC-180|
+|`cover_choice_grammar_is_validated_at_the_boundary`|kind/file-type match, malformed JSON and malformed page numbers are rejected at the command boundary; an out-of-range page number is grammatical — its fallback is the render's job (DR-404)|FR-31, AC-179|
+|`enqueue_missing_covers_reads_the_choice_column_and_checks_the_tagged_key`|the expected key is the choice-tagged one: a document whose chosen cover is missing is re-enqueued even when its superseded automatic file still sits in the cache, and the job carries the parsed choice to the render stage|FR-31, AC-177|
+|`sweep_keeps_the_chosen_cover_and_sweeps_the_superseded_automatic_one`|a row's expected key is its choice-tagged one: the chosen cover survives the startup sweep, the superseded automatic file is an orphan|FR-31|
+|`a_chosen_page_renders_under_the_tagged_key_and_completes_without_loops`|the render dispatch: the chosen page renders through the pipeline under the choice-tagged key (the pixels are the chosen page's, not page 1's), and afterwards both the startup enqueue and the sweep treat the entry as complete|FR-31, AC-180|
+|`an_out_of_range_page_choice_renders_the_automatic_cover_under_its_tagged_key`|DR-404 + §3.10 out-of-range half: the choice stands, page 1 is rendered, the file lands under the tagged key and the entry is complete — no enqueue/sweep loop|FR-31|
 
 ---
 
@@ -280,6 +317,14 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 ### `ui/src/lib/native-title.test.ts` — 1 · *native title removal (UI-37, AC-87)*
 - no HTML element in ui/src carries a title attribute (component `title` props are not violations; the rendered half is the flowTooltipSurfaces lane)
 
+### `ui/src/lib/platform.test.ts` — 6 · *platform detection and the window-controls layout (UI-07 MODIFIED, SPEC-v0.0.12 §3.7, D33)*
+- recognizes the macOS user-agent strings
+- every other platform keeps the released shape
+- macOS: the cluster at the left end, close–minimize–maximize
+- Windows: the released right end, minimize–maximize–close — unchanged
+- Linux: the released right end likewise (the user's decision: right-end is the Linux default)
+- the order is always the same three controls, in some order
+
 ### `ui/src/lib/searchScope.test.ts` — 8 · *search placeholder (UI-16)*
 - names the whole library when no filter is active
 - names the one active tag
@@ -295,11 +340,12 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - sizes the cover placeholder from the constants, not from its own numbers
 - the cover's own CSS rule defines no dimensions
 
-### `ui/src/lib/state/epubReader.test.ts` — 27 · *the EPUB reader store's math (SPEC-v0.0.9 §3.13, DR-288/DR-303): the text-size ladder · the position model (cumulative uncompressed entry sizes → chapter byte starts, percent ↔ chapter resolution both directions) · the bounded mount window (§3.12 rule 3) · height bookkeeping (estimate → measured → deltas) · link routing through the sanitizer's protocol URLs · the ToC label and current-entry derivations · the ToC pin and its visibility state (UI-48 MODIFIED / UI-49, SPEC-v0.0.10 §3.8, revised by DR-337) · chapter fetching and failure marking · the strip's walk persistence*
+### `ui/src/lib/state/epubReader.test.ts` — 36 · *the EPUB reader store's math (SPEC-v0.0.9 §3.13, DR-288/DR-303): the text-size ladder · the position model (cumulative uncompressed entry sizes → chapter byte starts, percent ↔ chapter resolution both directions) · the bounded mount window (§3.12 rule 3) · height bookkeeping (estimate → measured → deltas, the reader-relative judgment per DR-407) · link routing through the sanitizer's protocol URLs · the ToC label and current-entry derivations · the ToC pin and its visibility state (UI-48 MODIFIED / UI-49, SPEC-v0.0.10 §3.8, revised by DR-337) · chapter fetching and failure marking · the strip's walk persistence · position memory (FR-28/FR-29, SPEC-v0.0.12 §3.2: read-before-ready, landing + re-anchor, {c,o} recording, write discipline)*
 - walks the six fixed steps in both directions
 - clamps at the ladder ends and resets an unknown value to the default
-- estimates a chapter's height from the uncompressed entry size with a floor
+- estimates from the uncompressed entry size with a floor
 - records a measured height once and returns deltas against what the layout used
+- judges aboveReader against the model BEFORE the height enters it (DR-407: measuring a chapter above the reader moves the boundary under the reader — the pre-update judgment is what keeps the compensation from silencing itself)
 - names the chunking threshold the mount rule uses
 - computes chapter byte starts and the book total
 - resolves a percent to the chapter containing it, clamped
@@ -310,7 +356,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - routes a bare fragment to the current chapter
 - resolves protocol URLs — percent-encoded or not — to spine chapters
 - refuses anything that is not an in-book chapter
-- labels a chapter with the first ToC entry targeting it, else nothing
+- labels a chapter with the first entry targeting it, else nothing
 - highlights the last entry (document order) the scroll has reached
 - prefers the ToC label, falls back to the chapter's own heading, else none
 - is session state of the window store: unpinned by default, closed through the reset (UI-48 MODIFIED / UI-49, SPEC-v0.0.10 §3.8, OQ-60 → A; DR-337: pin and visibility written together)
@@ -323,6 +369,14 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - marks a failed fetch on the chapter, not the window
 - ignores indexes outside the spine
 - the strip's walk persists through the settings store, clamped
+- reads the stored position before `ready` and holds the mount until the landing
+- the restored chapter is the current page, so it is the first chapter fetched (DR-150)
+- without a stored position the released flow is byte-for-byte unchanged
+- lands at the chapter start plus o × the current height, then re-anchors exactly at measurement (DR-406 4)
+- a landing the reader already left is not re-anchored
+- records the {c,o} grammar from the store's own scroll source (DR-155)
+- writes once per settle, last value wins; flush writes the last value once (AC-168)
+- a failed position write is silent — the next settle re-tries
 
 ### `ui/src/lib/state/feedback.test.ts` — 2 · *feedback overlay stack*
 - keeps a closed overlay counted until the current task ends
@@ -332,7 +386,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - finds store imports to check
 - every store import uses the canonical $lib/state/… spelling
 
-### `ui/src/lib/state/reader.test.ts` — 60 · *page geometry (exact, never measured)* · *navigation* · *view modes (UI-34)* · *the horizontal row math (UI-34 MODIFIED, SPEC-v0.0.10 §3.3)* · *zoom walk (UI-30 as re-anchored by DR-221)* · *the zoom anchor handoff (D23 / AC-119, v0.0.8)* · *the ToC tree (UI-33 as revised by DR-218 and DR-223)* · *the ToC pin and its visibility state (FR-24 / UI-49, SPEC-v0.0.10 §3.8, revised by DR-337)* · *the navigation direction (UI-34 as extended by DR-224)* · *the edge rule and the keyboard notch (UI-34/UI-39 as re-derived by DR-227/DR-228)* · *image request width* · *page serving through the store* · *the scroll position is a single source (DR-155)*
+### `ui/src/lib/state/reader.test.ts` — 83 · *page geometry (exact, never measured)* · *navigation* · *view modes (UI-34)* · *the horizontal row math (UI-34 MODIFIED, SPEC-v0.0.10 §3.3)* · *zoom walk (UI-30 as re-anchored by DR-221)* · *the zoom anchor handoff (D23 / AC-119, v0.0.8)* · *the ToC tree (UI-33 as revised by DR-218 and DR-223)* · *the ToC pin and its visibility state (FR-24 / UI-49, SPEC-v0.0.10 §3.8, revised by DR-337)* · *the navigation direction (UI-34 as extended by DR-224)* · *the edge rule and the keyboard notch (UI-34/UI-39 as re-derived by DR-227/DR-228)* · *image request width* · *page serving through the store* · *the scroll position is a single source (DR-155)* · *position grammar (FR-28, SPEC-v0.0.12 §3.2)* · *position restore (FR-28/AC-167, DR-406 1/2)* · *position write discipline (FR-28/AC-168, DR-406 3)* · *view-mode memory (FR-29/AC-169)* · *text layer (FR-30/UI-54, §3.3)*
 - fit-width renders every page at the content width and its own aspect ratio
 - a fixed percent renders the page's actual size × percent — per page, in every mode (AC-96)
 - Actual Size renders each page at its true dimensions (AC-96)
@@ -385,7 +439,7 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - stays inside the command's accepted range
 - serves a mounted page once per width: scrolling does not re-request it
 - a zoom change re-requests at the new width (NFR-08's re-show path)
-- a target above the fast-render cap previews first and refines in place (DR-151)
+- a target above the fast-render cap previews first; the view's previewShown promotes the full stage after the release window (DR-151 as re-derived by DR-316/DR-323)
 - a request before the first fit-width measurement stays inside the command's range (DR-153)
 - at devicePixelRatio above 1 the preview uses the CSS display width, not the cap (DR-153)
 - a target at or below the fast-render cap is a single request (DR-151)
@@ -393,6 +447,29 @@ Run: `cargo test` in `src-tauri/` (no UI, no network; per RULES R1.1 every produ
 - currentPage follows the store's scrollTop through the exact offsets
 - an unmeasured window claims page 1, the position the scroller is at (DR-154)
 - goToPage and currentPage agree: the delivered target names the page it claims
+- reads both kinds' grammars
+- clamps a stale anchor to the document's current extent (AC-167: relink to a shorter file)
+- reads a malformed value as no position at all — the released default takes over
+- encodes the exact grammar with the kind's anchor key and three-decimal offsets
+- reads the stored position before `ready` and holds the mount until it lands
+- a failed position read is the released default: no restore, no error
+- continuous lands at the page top plus o × the page's display height — the first page named is the restored one
+- facing lands within the pair row (DR-406 2): the row anchor plus o × the row height
+- horizontal lands at the page's left edge plus o × its display width (the x-axis model)
+- single mounts the restored page directly (index-driven, no scroll)
+- a stale position clamps: the relink-to-shorter case lands on the last page
+- a no-op restore (page 1, offset 0) still clears the gate so the first page paints
+- applying a restore twice is inert, and without a stored position it changes nothing
+- scroll calls debounce to one write per settle — last value wins
+- flush cancels the pending debounce and writes the last value once — the close path
+- a flush with nothing to record writes nothing
+- single-mode navigation records without a scroll event (DR-406 3/5)
+- a failed write is silent — the next settle re-tries
+- a new store starts in the remembered mode
+- the released default (continuous) stands until the user first chooses
+- choosing a mode stays a per-window action and persists through the settings batch
+- maps page points to CSS px at the display scale — deterministic arithmetic, re-derived on zoom
+- requests each page once per window session; a failed extraction caches the empty layer
 
 ### `ui/src/lib/state/settings.test.ts` — 8 · *settings store*
 - stores every key a query change modifies
@@ -704,13 +781,18 @@ Drives the **real built app** (`src-tauri/target/debug/bookkeeper.exe`) through 
 - AC-101: the completion toast reports the counts as released
 - AC-101/AC-123: the bar advances through per-chunk events from the opening event to completion (each step ≤ 5 — the D25 chunk bound, monotonic), without a gap
 
-**`flowTagCrud`** — tags · covers AC-14
+**`flowTagCrud`** — tags · covers AC-14, UI-10 MODIFIED (v0.0.12, DR-414), FR-32, AC-183
+- UI-10 (DR-414): the Tags manager renders as a toolbar dialog — title, close and Delete all tags on the bar above the content area
+- UI-10 (DR-414): the Tags manager content area reaches the dialog's side edges with the content inset unchanged, its bottom clear of the rounded corners, and the new-tag field sitting below the area's top edge (DR-415)
 - AC-14: rename opens the shipped dialog prefilled with the current name
 - AC-14: a duplicate name is refused inline and the dialog stays open
 - AC-14: renaming updates the manager list
 - AC-14: delete asks for confirmation naming the tag
 - AC-14: discarding the confirmation keeps the tag
 - AC-14: deleting a tag detaches it from documents and deletes no document
+- FR-32: Delete all tags opens a confirmation naming the operation
+- FR-32: discarding the confirmation keeps every tag
+- FR-32: confirming deletes every tag — the manager shows the empty state, the action disables, the completion toast reports the count, and no document is deleted
 
 **`flowQuietCounts`** — browsing-and-filtering, tags · covers AC-46
 - AC-46: a tag row's count computes transparent ground, no border, tabular figures
@@ -926,7 +1008,7 @@ Drives the **real built app** (`src-tauri/target/debug/bookkeeper.exe`) through 
 - AC-152: the install completes by launching the installer, and the app exits for it (the plugin's install path ends with the app's exit, DR-329 item 4)
 - *conditional skip:* `AC-152/AC-153: the update fixture build is not active in this binary` when the binary was not built with the fixture updater config
 
-### 3.4 Reader flows (14, CDP runtime, own instance, multi tier imported through the app; the two EPUB flows build their own library state from the fixtures/epub tier and delete it again at their end)
+### 3.4 Reader flows (17, CDP runtime, own instance, multi tier imported through the app; the flows with EPUB cases build their own library state from the fixtures/epub tier and delete it again at their end)
 
 **`flowReaderOpen`** — reading-pdfs · covers AC-64, AC-72, AC-76, AC-87, AC-93, DR-206, DR-215, DR-315, DR-316, DR-318, DR-319, DR-334, DR-341
 - NFR-08 / AC-72: activation → first page (192-page core fixture) within 800 ms — *measured through the shared `timingRow()` helper, the pattern for all AC-72 rows below*
@@ -1076,7 +1158,7 @@ Drives the **real built app** (`src-tauri/target/debug/bookkeeper.exe`) through 
 - AC-80: next moves one pair in facing mode
 - AC-80: PgDn moves one pair in facing mode
 - AC-80: entering page 60 opens the pair containing it and the page field shows that pair's first page (59)
-- AC-80: a new reader window opens in continuous regardless of the previous window's mode
+- AC-80 as superseded by FR-29: a new reader window opens in the last chosen mode — facing here (DR-409)
 - AC-80: a 1-page document renders unpaired, alone, in facing mode
 
 **`flowReaderHorizontal`** — reading-pdfs · covers AC-142…AC-147, FR-17, UI-34 (MODIFIED), UI-39 (MODIFIED), DR-290 (v0.0.10; the continuous-horizontal row, running next to the view-mode flow it extends)
@@ -1106,10 +1188,10 @@ Drives the **real built app** (`src-tauri/target/debug/bookkeeper.exe`) through 
 - AC-144: entering the row from continuous keeps page 60 in view
 - AC-144: switching from the row to facing lands on the pair containing page 60
 - AC-144: switching back from facing to continuous keeps the current page (the pair's first, 59) in view
-- AC-142: a new reader window opens in continuous with the fourth choice inactive
+- AC-142 as superseded by FR-29: a new reader window opens in the last chosen mode — the row here (DR-409)
 
 **`flowReaderSettings`** — reading-pdfs · covers AC-149, FR-24, UI-50 (v0.0.10; revised by DR-338: the settings menu in the reader window's chrome, the main window's complete menu; the main menu's item list is read from the main window itself, never hardcoded; the theme cycle is asserted against the windows' real ramps — the harness' OS theme is read at runtime, never assumed; extended by DR-344: the same control and menu asserted in the EPUB reader window — the flow imports and deletes the EPUB fixture itself — and the *Check for updates* item proven functional in a reader window against the flow's own fixture update server serving the current-version manifest; the flow participates in the fixture-build decision)
-- AC-149: the reader chrome carries the settings control at its right end, immediately before the window controls — icon-only, named (UI-50 as revised by DR-338)
+- AC-149: the reader chrome carries the settings control at its right end, immediately before the window controls — icon-only, named; the cover control precedes it in the cluster (UI-50 as revised by DR-338; cluster extended by UI-55, DR-409)
 - AC-149: the control strip carries no settings control — the released controls only, the view-mode group last (UI-50 as revised by DR-338)
 - UI-50: pointing at the settings control opens the app's tooltip naming it (UI-13)
 - AC-149: the reader settings menu is the main window's settings menu, complete — the theme cycle item naming the theme in effect, Settings, Check for updates, About, in the main window's order (UI-50 as revised by DR-338)
@@ -1119,7 +1201,7 @@ Drives the **real built app** (`src-tauri/target/debug/bookkeeper.exe`) through 
 - AC-149: the third activation advances the cycle to Auto and every open window returns to the OS-resolved ramp
 - AC-149: the Settings item opens the settings dialog in the reader window itself (the shared menu component, the released dialog, DR-338)
 - UI-50 + UI-49: with the panel pinned, the settings dialog renders above the docked panel — at the overlap point the topmost element is the dialog, not the panel (DR-343)
-- AC-149: the EPUB reader's chrome carries the settings control at its right end, immediately before the window controls — the same control as the PDF reader's (UI-50 as revised by DR-344)
+- AC-149: the EPUB reader's chrome carries the settings control at its right end, immediately before the window controls — the same control as the PDF reader's, the cover control in its cluster (UI-50 as revised by DR-344; cluster extended by UI-55, DR-409)
 - AC-149: the EPUB reader's settings menu is the main window's settings menu, complete — the same item list, read against the main window's own menu (UI-50 as revised by DR-344)
 - AC-149: the Check for updates item works in a reader window — the check runs against the update source and its result reports in that window (the reader-windows capability carries updater:default, DR-344)
 
@@ -1200,6 +1282,55 @@ Drives the **real built app** (`src-tauri/target/debug/bookkeeper.exe`) through 
 - AC-138 / DR-300-3: the warm back-and-forth scroll re-requests 0 chapters it already served (the cache holds everything the mount window asks for)
 - AC-138 / DR-300-3: warm-scroll cleanliness — app-process CPU ≤ 100 ms, ScriptDuration ≤ 200 ms, 0 dropped frames, 0 long tasks
 
+**`flowReaderMemory`** — reading-pdfs, reading-epubs · covers FR-28, FR-29, AC-167, AC-168, AC-169, FR-14 (relink plumbing), FR-17 (EPUB start state), DR-407 (v0.0.12; the 24-page fixture + a relink to its 12-page copy + the EPUB case; the storage-state observations go through the typed reads — `app_get_settings` for the batch, `app_reader_position_get` for the stored value)
+- FR-28: the released page field reaches page 17 (the position the memory must carry)
+- AC-168: the position settles into storage after the reader stops — the debounced write landed
+- FR-28: the reader window closes (the close-time flush rides this path)
+- AC-167: a re-opened document resumes at the remembered page — the readout says 17 and no page 1 is painted
+- AC-169: the mode choice persists through the settings batch
+- AC-169: a new reader window opens in the last chosen view mode (a different document, the pressed control)
+- FR-14 plumbing: the relink to the shorter copy is accepted and re-derives the automatic title (the position memory survives the relink, per §3.2)
+- AC-167: a position beyond the document's new extent clamps to its last page (12 of 12)
+- AC-167: the memory is removed with the document (the stored read answers document_not_found)
+- FR-17: a fresh EPUB window starts at the top of the book (0% of the first chapter)
+- AC-167: the position readout reaches a later chapter (the chapter + offset the memory carries)
+- AC-168: the EPUB position settles into storage before close (the debounced write landed)
+- AC-167: the re-opened EPUB resumes at the remembered chapter and offset (no chapter-1 stop)
+
+**`flowReaderText`** — reading-pdfs, reading-epubs · covers FR-30, UI-54, AC-170, AC-171, AC-172, FR-17 (EPUB column mount) (v0.0.12; the `text-probe.pdf` selection fixture and the `image-only.pdf` fixture; the drag target is waited to a rect unchanged across two polls after a mode switch or zoom step, per DR-407)
+- AC-170: drag-select across the fixture sentence yields exactly that text in all four view modes
+- AC-170: the text layer follows the zoom ladder — the selection after a zoom step is the fixture text
+- AC-170: a page without embedded text yields no layer and no message — empty runs at the command, no layer in the window, the page rendered
+- FR-17: the EPUB reading column mounts its chapter paragraph
+- AC-172: the EPUB reading column is selectable — the drag yields the fixture paragraph's text
+- AC-172: the copy gesture leaves the reader and its selection intact (the released interactions unchanged)
+
+**`flowCoverChoice`** — covers · covers FR-16 (automatic baseline), FR-31, UI-55, AC-177, AC-178, AC-180, AC-181 (v0.0.12; the 48-page fixture for the picker and the `epub-images.epub` three-image book for the EPUB case, both imported and deleted inside the flow)
+- FR-16 baseline: the automatic cover exists before any choice
+- UI-55: the reader chrome carries the cover menu with the current-page choice
+- AC-180: the choice command returns while the render runs — the library window answers in ms and the reader stays interactive
+- AC-177: the chosen page becomes the library cover — cover_path moves to the choice key and the PNG exists
+- AC-177: the library card renders the chosen cover (the released cover-batch re-query)
+- AC-177: the choice stands after the reader window closes (it is stored, not window state)
+- UI-55: the reader cover menu carries the reset choice
+- AC-177: "Automatic cover" restores the released automatic key
+- AC-181: the picker opens with bounded windows only — never the full 48-page strip (re-anchored by DR-411 from the 12-tile pin, which was layout-bound: a taller content area can legitimately show the sentinel at open and load one follow-on window)
+- AC-181: the strip fills the next window as it scrolls (lazy windows, the app responsive throughout — the growth is now measured against the opened state)
+- UI-55: the toolbar bar stays pinned while the strip scrolls — the scrolling belongs to the content area (DR-410)
+- UI-55: the dialog width fits the tile columns — a full row fills the content area's inner width, no sideways overflow (DR-410, re-anchored to the full-bleed area by DR-411)
+- UI-55: the content area is full-bleed on the sides with the content inset unchanged, and its scrollbar stops clear of the rounded bottom corners (DR-411; corner clearance added by DR-412)
+- AC-181: the strip's tiles name their pages (the pick target is addressable)
+- AC-181: picking a page in the strip sets the choice and updates the card
+- UI-55: the picker is a toolbar dialog — the title and the close control sit on the toolbar bar (DR-408)
+- AC-181: "Automatic cover" is present in the picker, as a button on the toolbar
+- AC-181: the picker's reset restores the automatic cover
+- AC-178: the EPUB candidates are the book's embedded manifest images in the book's display order (DR-411)
+- AC-178: the declared cover renders as the automatic cover
+- AC-181: the picker's EPUB grid lists the book's embedded images
+- AC-178: a chosen embedded image becomes the cover (composed through the released contain-fit path)
+- AC-178: the reader's EPUB cover menu offers both choices
+- AC-178: the grid opens from the reader menu too (the same dialog, the same three candidates)
+
 ### 3.5 Area → flow mapping (the `SMOKE_SET` vocabulary; suite-enforced against orphans)
 
 |Area (= guide page name)|Flows|
@@ -1212,14 +1343,14 @@ Drives the **real built app** (`src-tauri/target/debug/bookkeeper.exe`) through 
 |favorites|flowFavorites|
 |reading-collection|flowReading|
 |opening-and-deleting|flowOpen, flowDelete, flowContextMenu|
-|reading-pdfs|flowReaderOpen, flowReaderNavigation, flowReaderZoom, flowReaderClose, flowReaderErrors, flowReaderToc, flowReaderViewModes, flowReaderHorizontal, flowReaderSettings, flowReaderPerformance|
-|reading-epubs|flowEpubReader, flowEpubPerformance|
+|reading-pdfs|flowReaderOpen, flowReaderNavigation, flowReaderZoom, flowReaderClose, flowReaderErrors, flowReaderToc, flowReaderViewModes, flowReaderHorizontal, flowReaderSettings, flowReaderMemory, flowReaderText, flowReaderPerformance|
+|reading-epubs|flowEpubReader, flowEpubPerformance, flowReaderMemory, flowReaderText|
 |password-protected-pdfs|flowProtected|
 |metadata-editing|flowMetadata, flowMetadataDisplay, flowMetaColumn, flowTooltipSurfaces|
 |missing-files-relinking|flowMissingAndRelink|
 |renaming-a-documents-file|flowRename|
 |opening-containing-folder|flowOpenFolder|
-|covers|flowCovers|
+|covers|flowCovers, flowCoverChoice|
 |sorting-and-views|flowSortSecondary, flowViewColumns, flowContentGutter, flowRowDesign — *the scale mount bound + width matrix: `scripts/ui-10k.mjs` (DR-161)*|
 |status-feedback|flowStatusBar, flowProgressTransform|
 |selecting-documents|flowSelectMode, flowBulkFavorite|
@@ -1280,7 +1411,7 @@ Separated runner holding **every UI test case against the 10 000-document corpus
 
 |Script|Role|
 |---|---|
-|`scripts/make-fixtures.mjs`|generates every fixture: docs tier (the AC-131 mixed corpus: 9 000 single-page PDFs + 1 000 single-chapter EPUBs — every fifth index from 5005 to 10000 is an EPUB carrying the same "Fixture Doc …" title/author shape, a band chosen so no named fixture path the flows reference individually changes type), core tier (100, equal byte sizes, one without Info, manifests for the harness), multi-page fixtures (12/24/48/96/192-page core + the 1 000-page scale fixture), and the special fixtures (encrypted-looking, malformed, non-PDF, the differently-named meta-column probe, the 72-character long-name fixture the AC-93 chrome-ellipsis half of `flowReaderOpen` imports and deletes). D15: fixtures are generated, never committed|
+|`scripts/make-fixtures.mjs`|generates every fixture: docs tier (the AC-131 mixed corpus: 9 000 single-page PDFs + 1 000 single-chapter EPUBs — every fifth index from 5005 to 10000 is an EPUB carrying the same "Fixture Doc …" title/author shape, a band chosen so no named fixture path the flows reference individually changes type), core tier (100, equal byte sizes, one without Info, manifests for the harness), multi-page fixtures (12/24/48/96/192-page core + the 1 000-page scale fixture), and the special fixtures (encrypted-looking, malformed, non-PDF, the differently-named meta-column probe, the 72-character long-name fixture the AC-93 chrome-ellipsis half of `flowReaderOpen` imports and deletes, and the v0.0.12 selection fixtures (`text-probe.pdf` — 8 pages each carrying the known sentence "Page N of the selection probe document"; `image-only.pdf` — a real image XObject with no text operators; `dense-text.pdf` — 4 010 separate runs on one page for the cap proof; `epub-images.epub` — the three-image book "Image Plate Book" for the candidate grid). D15: fixtures are generated, never committed|
 |`scripts/fetch-pdfium.mjs`|fetches the bundled pdfium the reader engine links against|
 |`scripts/make-app-icon.mjs`|generates the packaged app icon|
 
