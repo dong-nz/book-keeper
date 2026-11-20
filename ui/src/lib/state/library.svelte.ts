@@ -380,6 +380,9 @@ class LibraryStore {
       this.rows = this.rows.filter((row) => !gone.has(row.id));
       this.total -= gone.size;
       this.clearSelection();
+      // D38 (SPEC-v0.0.14 §3.7): tag counts must reflect the deletion —
+      // the delete path re-reads the tag list alongside the documents.
+      await this.loadTags();
       feedback.notify(deleteFiles ? "toast.deletedFiles" : "toast.deleted", ids.length);
       return true;
     } catch (error) {
@@ -399,6 +402,9 @@ class LibraryStore {
     try {
       await api.libraryBulkTags(ids, add, remove);
       await this.refresh();
+      // D38 as widened by DR-436: the tag surfaces must read fresh counts
+      // after a bulk assignment too — the same re-read as delete/update.
+      await this.loadTags();
     } catch (error) {
       feedback.reportError(asAppError(error));
     }

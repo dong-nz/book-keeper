@@ -1,6 +1,6 @@
 # Browsing and filtering
 
-> **Status: ✅ Shipped in v0.0.2, updated in v0.0.3, v0.0.4, v0.0.7 and v0.0.8** — verified by running the app (10 000-document library).
+> **Status: ✅ Shipped in v0.0.2, updated in v0.0.3, v0.0.4, v0.0.7, v0.0.8 and v0.0.14** — verified by running the app (10 000-document library).
 
 The left sidebar is gone. Everything you used to do there — choosing All documents / Favorites / Missing, filtering by category, opening the category tools — now lives in one **Browse** menu and in the filter chips next to it.
 
@@ -56,3 +56,12 @@ Tab reaches the Browse menu from the toolbar, Enter opens it, the arrow keys mov
 > - **Reading** is a new view beside Favorites: it shows exactly the documents you marked as Reading, combines with search, not with the other views ([reading-collection.md](reading-collection.md)).
 >
 > Choosing *All documents* still clears every filter at once; your filters are still restored on reopen.
+
+> **Amendment (2026-11-20, v0.0.14): a strip above the document list now shows your active filters** (verified by running the app).
+>
+> - **When any filter is active** — a Favorites / Reading / Missing view, or one or more tags — a strip appears directly above the document list: one chip per active filter, the view and each tag. Each chip's **×** removes only that filter; **Clear all** removes every filter at once and shows the whole library. With no filter active the strip is not there at all.
+> - **Search terms never appear in the strip** — search keeps working exactly as it always did; the strip is about Browse filters only.
+> - **When the window is too narrow for all the chips**, the ones that don't fit collapse into a **+N** chip; opening it lists the hidden filters, and each can be removed there the same way.
+> - **The Browse menu is unchanged** — it remains where filters are chosen and checked. The strip is an additional, always-visible display of what's active, removable one at a time. Your filters are still restored when the app reopens.
+>
+> Everything else on this page is unchanged — multi-tag filtering, counts, combinations with search.

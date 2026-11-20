@@ -4,6 +4,16 @@
 // definition anywhere in the frontend — asserted against the source tree.
 // Comments about the removed v0.0.2 status chips use the plural; the patterns
 // below name the identifiers themselves.
+//
+// Re-anchored 2026-11-20 (v0.0.14 DR-435, the user's B decision): UI-02 and
+// UI-09 MODIFIED introduce tag/filter chips — the v0.0.14 spec's own design
+// language — whose components carry compound identifiers (`.tag-chip`,
+// `.strip-chip`, …). The claim AC-46 guards is the removed STATUS-CHIP
+// SURFACE, i.e. its identifiers: the patterns now name the identifiers at
+// identifier level — the bare `.chip` selector token, the bare `chip` class
+// token, `chip-accent`, `--radius-chip` — and not the word anywhere.
+// Compound identifiers and prose are not the status-chip surface; the
+// requirement text is enforced unchanged.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -30,7 +40,10 @@ function sources(dir: string): string[] {
 }
 
 const FORBIDDEN: Record<string, RegExp> = {
-  ".chip": /\bchip\b/,
+  // the bare selector token `.chip` — not `.chip-x`, not `.strip-chip`
+  ".chip": /\B\.chip(?![-\w])/,
+  // the bare `chip` class token in a class attribute — not `strip-chip`
+  'class="chip"': /class="[^"]*(?<![-\w])chip(?![-\w])/,
   ".chip-accent": /chip-accent/,
   "--radius-chip": /--radius-chip/,
 };

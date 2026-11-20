@@ -1,6 +1,6 @@
 # Tags
 
-> **Status: ✅ Shipped in v0.0.1 (as *Categories*), renamed to **Tags** in v0.0.8, updated in v0.0.12** — verified by running the app. The feature is the same one that shipped as Categories; since v0.0.8 the app calls these groups **tags** everywhere — in the Browse menu, the tags window, document actions, tooltips, messages, and this guide.
+> **Status: ✅ Shipped in v0.0.1 (as *Categories*), renamed to **Tags** in v0.0.8, updated in v0.0.12 and v0.0.14** — verified by running the app. The feature is the same one that shipped as Categories; since v0.0.8 the app calls these groups **tags** everywhere — in the Browse menu, the tags window, document actions, tooltips, messages, and this guide.
 
 ## Managing tags
 - Open **Browse ▸ Manage tags**: it lists every tag with its live count, has an always-available *New tag* field, and per-row **Rename** / **Delete** actions. Tag names are unique (case-insensitive); a duplicate name is refused with a clear message.
@@ -8,12 +8,12 @@
 
 ## Assigning documents
 - A document can belong to **any number of tags** (or none).
-- Single document: choose tags in its Details dialog.
+- Single document: use the tag picker in its Details dialog (chips you can remove, a searchable list, new tags created as you type — see the v0.0.14 amendment).
 - Many at once: select rows (checkboxes) → bulk bar → **Tags** → add and/or remove in one action.
 - Importing while one or more tags are active assigns all of them ([importing-files.md](importing-files.md)).
 
 ## Browsing
-**Browse ▸ Tags** lists your tags with live counts; its items are checkable and **multi-select** — filtering by several tags shows the documents in *any* of them (a document in two of them is listed once). The tag filter combines with search, Favorites, Reading and Missing. The Browse menu is also the only place that shows which tags you're currently filtering by ([browsing-and-filtering.md](browsing-and-filtering.md)).
+**Browse ▸ Tags** lists your tags with live counts; its items are checkable and **multi-select** — filtering by several tags shows the documents in *any* of them (a document in two of them is listed once). The tag filter combines with search, Favorites, Reading and Missing. The Browse menu shows which tags you're currently filtering by, and since v0.0.14 a strip above the document list repeats every active filter as removable chips ([browsing-and-filtering.md](browsing-and-filtering.md)).
 
 ## History (how this page got here)
 
@@ -33,3 +33,12 @@
 > - **Delete all tags** clears every tag in one action. A confirmation dialog asks first and says plainly that your documents are kept — nothing is deleted but the tags themselves. After it completes, a message reports how many tags were removed. If you were filtering by tags when you did it, that filter is cleared and your documents show unfiltered. The action is disabled while there are no tags. Like a single tag delete, there is no undo.
 >
 > Everything else on this page is unchanged — assigning tags, multi-select filtering, live counts, import assignment.
+
+> **Amendment (2026-11-20, v0.0.14): the tag picker in Details, a quicker tags window, counts that stay fresh** (verified by running the app).
+>
+> - **The tags section of the Details dialog is now a picker.** Your current tags show as **chips**, each with an × that removes it right away — the checkbox list is gone. Below the chips an *Add tag* button opens a searchable list of all your tags: tags the document already has are listed too, marked with a check; typing narrows the list and highlights the matching part of each name; clicking a row assigns or un-assigns that tag immediately. Arrow keys move a highlighted row through the list while you keep typing — Enter then assigns or un-assigns that row, just like clicking it. If nothing matches what you typed, a **Create "…"** row appears at the top of the list: pressing Enter or clicking it creates the tag and assigns it. Esc closes the tag list and leaves the Details dialog open. Nothing is stored until you save the dialog — and everything you changed is saved together.
+> - **Your edits are safe when a new tag is created on the spot.** A title you typed, notes you drafted, tags you picked — creating a new tag in the picker no longer resets them. (Before this update, starting a new tag from Details could silently discard changes you hadn't saved yet.)
+> - **The tags window opens with the cursor already in the *New tag* field** — you can start typing a name straight away.
+> - **Tag counts stay current.** After deleting a document — one or many — the counts in *Browse ▸ Tags* and in the tags window immediately match reality; before this update they could keep counting a deleted document until something else refreshed the list.
+>
+> Everything else on this page is unchanged — multi-select filtering, import assignment, the tags window's rename / delete / *Delete all tags*.

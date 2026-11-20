@@ -17,6 +17,7 @@
   import DocumentGrid from "./DocumentGrid.svelte";
   import BulkBar from "./BulkBar.svelte";
   import EmptyState from "./EmptyState.svelte";
+  import FilterStrip from "./FilterStrip.svelte";
   import SkeletonRows from "./SkeletonRows.svelte";
   import DetailsModal from "./DetailsModal.svelte";
   import TagPickerModal from "./TagPickerModal.svelte";
@@ -185,6 +186,10 @@
 </script>
 
 <main class="document-area">
+  <!-- UI-09 MODIFIED (SPEC-v0.0.14 §3.6): the active-filter strip rides the
+       top of the document area, above the scroller, only while a browse
+       filter is active. -->
+  <FilterStrip />
   <BulkBar host={bulkHost} />
 
   {#if showSkeleton}

@@ -10,6 +10,9 @@
   import DeleteDialog from "./DeleteDialog.svelte";
   import RenameDocumentDialog from "./RenameDocumentDialog.svelte";
   import StarButton from "./StarButton.svelte";
+  import TagPicker from "./TagPicker.svelte";
+  import Tooltip from "./Tooltip.svelte";
+  import Icon from "./Icon.svelte";
   import type { DocumentDto } from "$lib/types";
 
   // `onrenamed` is the parent's follow hook (DR-267): after a completed
@@ -28,9 +31,21 @@
   let discardBar = $state(false);
   let deleteOpen = $state(false);
   let renameOpen = $state(false);
+  let pickerOpen = $state(false);
 
-  // (Re)initialize whenever the target document changes.
+  // (Re)initialize when the target document's own stored values change.
+  // D39 (DR-438): the snapshot guard. The body reads the tag catalog (via
+  // idsForNames), so without the guard an inline tag creation from the picker
+  // re-runs this effect and silently discards the pending editor. Comparing
+  // the stored document values first keeps the rename-follow behavior (DR-267:
+  // the dialog re-reads the form from the renamed document) while external
+  // catalog writes leave the form untouched. A plain `let` (not `$state`):
+  // the guard must not make the effect depend on its own bookkeeping.
+  let storedSnapshot = "";
   $effect(() => {
+    const snapshot = JSON.stringify([doc.title, doc.author, doc.notes, doc.favorite, doc.tags]);
+    if (snapshot === storedSnapshot) return;
+    storedSnapshot = snapshot;
     title = doc.title;
     author = doc.author;
     notes = doc.notes;
@@ -82,12 +97,16 @@
     if (saved) ondone();
   }
 
-  function toggleTag(id: number) {
-    tagIds = tagIds.includes(id) ? tagIds.filter((x) => x !== id) : [...tagIds, id];
-  }
 </script>
 
 <Modal title={t("details.title")} width={560} bind:open onEscapeKeydown={(event) => {
+  // UI-02 MODIFIED (SPEC-v0.0.14 §3.2): Escape closes the add-picker first
+  // and keeps the modal open — the released override mechanism decides order.
+  if (pickerOpen) {
+    pickerOpen = false;
+    event.preventDefault();
+    return;
+  }
   if (dirty) {
     event.preventDefault();
     discardBar = true;
@@ -136,23 +155,37 @@
 
     <fieldset class="tags-field">
       <legend>{t("details.fieldTags")}</legend>
-      {#if library.tags.length === 0}
+      {#if library.tags.length === 0 && tagIds.length === 0}
         <p class="hint">{t("picker.noTags")}</p>
-      {:else}
-        <div class="tag-checks">
-          {#each library.tags as tag (tag.id)}
-            <label class="check-row">
-              <input type="checkbox" checked={tagIds.includes(tag.id)} onchange={() => toggleTag(tag.id)} />
-              <span>{tag.name}</span>
-            </label>
-          {/each}
-        </div>
       {/if}
+      <!-- UI-02 MODIFIED (SPEC-v0.0.14 §3.2): chips + searchable add-picker
+           replace the full checkbox list; the pending set stays owned here. -->
+      <TagPicker tagIds={tagIds} onchange={(ids) => (tagIds = ids)} bind:open={pickerOpen} />
     </fieldset>
 
     <p class="path-line">
       <span class="hint">{t("details.pathLabel")}</span>
-      <code>{doc.path}</code>
+      <span class="path-file">
+        <code>{doc.path}</code>
+        {#if !doc.missing}
+          <!-- UI-40 MODIFIED (SPEC-v0.0.14 §3.3): the reveal action rides the
+               path row as an icon button (the catalog folder glyph); the footer
+               text button is removed. Same visibility: only when the file exists. -->
+          <Tooltip text={t("details.openFolder")}>
+            {#snippet control({ props })}
+              <button
+                {...props}
+                class="control icon-button"
+                type="button"
+                aria-label={t("details.openFolder")}
+                onclick={() => library.revealInFolder(doc.id)}
+              >
+                <Icon name="folder" />
+              </button>
+            {/snippet}
+          </Tooltip>
+        {/if}
+      </span>
     </p>
 
     <div class="dialog-actions">
@@ -171,11 +204,6 @@
         </button>
       {/if}
       {#if !doc.missing}
-        <!-- UI-40 (AC-111): reveal the file in the system file manager,
-             beside the other file actions, only when the file exists. -->
-        <button class="control" type="button" onclick={() => library.revealInFolder(doc.id)}>
-          {t("details.openFolder")}
-        </button>
         <!-- FR-21 (DR-267): the rename action, beside the existing footer
              actions, only when the file exists. The editor stays open — the
              rename dialog is an overlay and the follow hook re-reads this
@@ -259,29 +287,6 @@
     padding: 0;
   }
 
-  .tag-checks {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 4px 12px;
-    margin-top: 6px;
-    max-height: 160px;
-    overflow: auto;
-  }
-
-  .check-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: var(--text-13);
-    min-width: 0;
-  }
-
-  .check-row > span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .path-line {
     display: flex;
     flex-direction: column;
@@ -289,7 +294,15 @@
     margin: 0;
   }
 
-  .path-line code {
+  .path-file {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .path-file code {
+    flex: 1;
+    min-width: 0;
     font-family: var(--font-mono);
     font-size: var(--text-12);
     color: var(--text-tertiary);

@@ -8,6 +8,15 @@
 
   let value = $state("");
   let error = $state<string | null>(null);
+  let inputEl = $state<HTMLInputElement | null>(null);
+
+  // UI-58 (SPEC-v0.0.14 §3.4): the Tags manager opens focused on this field —
+  // typing starts immediately. The rAF defers past the kit dialog's own
+  // initial-focus pass so this focus wins; the released trap then holds focus
+  // inside the dialog unchanged.
+  $effect(() => {
+    requestAnimationFrame(() => inputEl?.focus());
+  });
 
   async function create() {
     const trimmed = value.trim();
@@ -28,6 +37,7 @@
     <input
       class="field"
       class:field-error={error !== null}
+      bind:this={inputEl}
       type="text"
       maxlength="120"
       placeholder={t("tagsDialog.newPlaceholder")}

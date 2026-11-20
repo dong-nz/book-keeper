@@ -40,6 +40,10 @@ const en = {
   "toolbar.importFiles.keys": "Ctrl+I",
   "toolbar.importFolder.keys": "Ctrl+O",
   "toolbar.select": "Select mode · Shift-click to select a range",
+  // Active-filter strip (UI-09 MODIFIED, SPEC-v0.0.14 §3.6)
+  "filterStrip.clearAll": "Clear all",
+  "filterStrip.remove": "Remove {name}",
+  "filterStrip.more": "+{count} more filters",
   "toolbar.sort.title": "Title",
   "toolbar.sort.date_added": "Date added",
   "toolbar.sort.size": "Size",
@@ -216,6 +220,11 @@ const en = {
   "details.openFolder": "Open containing folder",
   "details.delete": "Delete",
   "details.pathLabel": "File",
+  // UI-02 MODIFIED (SPEC-v0.0.14 §3.2): the tags picker controls.
+  "details.tagAdd": "Add tag",
+  "details.tagRemove": "Remove {name}",
+  "details.tagFilter": "Filter tags",
+  "details.tagCreate": 'Create "{name}"',
 
   // Tag picker (bulk)
   "picker.title": "Tags for {count} documents",

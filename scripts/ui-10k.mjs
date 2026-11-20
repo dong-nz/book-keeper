@@ -60,24 +60,9 @@ async function flowImport10k(dropOk) {
   // The count claim is derived, not hard-coded: the batch must add exactly
   // the corpus size to whatever the library held before (a fresh library in
   // this runner — prepareEnvironment wiped it).
-  const before = await docCount();
-  if (!Number.isFinite(before)) throw new Error(`flowImport10k could not read the library count: ${before}`);
-  const target = (before + paths.length).toLocaleString("en-US");
-  const started = Date.now();
-  if (dropOk) {
-    await execute(EVAL.emitDragDrop, [paths]);
-  } else {
-    // Fallback: the same command the drop handler calls, so the pipeline and
-    // UI update are still exercised end-to-end.
-    await execute(
-      `window.__TAURI_INTERNALS__.invoke('library_import_paths', { paths: arguments[0], tagIds: [] }); return true;`,
-      [paths],
-    );
-  }
-  // While the batch is still arriving the status bar shows the job progress
-  // (UI-15 as extended by AC-22's job half); the count is the library total.
   // The same poll is the AC-57 throughput sampler: every status-bar sample of
-  // the cover job is one measurement point (measured from the run log).
+  // the cover job is one measurement point (measured from the run log). The
+  // samples belong to the measured run — a re-measure (below) resets them.
   const coverSamples = [];
   const sampleCovers = async () => {
     const s = await execute(`
@@ -89,21 +74,84 @@ async function flowImport10k(dropOk) {
     `);
     if (s) coverSamples.push(s);
   };
-  let total = null;
-  let progressSeen = false;
-  for (;;) {
-    total = await execute(EVAL.docTotal);
-    if (total === target) break;
-    if (!progressSeen) progressSeen = !!(await execute(`return !!document.querySelector('.status-bar .progress-wrap');`));
-    await sampleCovers();
-    if (Date.now() - started > 45000) break;
-    await sleep(250);
+
+  async function measureImport() {
+    // The count claim is derived, not hard-coded: the batch must add exactly
+    // the corpus size to whatever the library held before.
+    const before = await docCount();
+    if (!Number.isFinite(before)) throw new Error(`flowImport10k could not read the library count: ${before}`);
+    const target = (before + paths.length).toLocaleString("en-US");
+    coverSamples.length = 0;
+    const started = Date.now();
+    if (dropOk) {
+      await execute(EVAL.emitDragDrop, [paths]);
+    } else {
+      // Fallback: the same command the drop handler calls, so the pipeline and
+      // UI update are still exercised end-to-end.
+      await execute(
+        `window.__TAURI_INTERNALS__.invoke('library_import_paths', { paths: arguments[0], tagIds: [] }); return true;`,
+        [paths],
+      );
+    }
+    // While the batch is still arriving the status bar shows the job progress
+    // (UI-15 as extended by AC-22's job half); the count is the library total.
+    let total = null;
+    let progressSeen = false;
+    for (;;) {
+      total = await execute(EVAL.docTotal);
+      if (total === target) break;
+      if (!progressSeen) progressSeen = !!(await execute(`return !!document.querySelector('.status-bar .progress-wrap');`));
+      await sampleCovers();
+      if (Date.now() - started > 45000) break;
+      await sleep(250);
+    }
+    return { total, target, elapsed: Date.now() - started, progressSeen };
   }
-  const elapsed = Date.now() - started;
+
+  // The re-measure's reset: every document id removed through the released
+  // delete command (rows only — the files stay, the re-import re-reads them),
+  // in bounded chunks, then a wait for the library to report empty.
+  async function clearLibrary() {
+    const ids = await execute(`
+      return window.__TAURI_INTERNALS__.invoke('library_ids', {
+        query: '', tagIds: [], favoritesOnly: false, missingOnly: false, readingOnly: false,
+        sort: 'title', dir: 'asc', sortSecondary: 'none',
+      });
+    `);
+    for (let i = 0; i < ids.length; i += 1000) {
+      await execute(
+        `window.__TAURI_INTERNALS__.invoke('library_delete_document', { ids: arguments[0] }); return true;`,
+        [ids.slice(i, i + 1000)],
+      );
+    }
+    const deadline = Date.now() + 30000;
+    for (;;) {
+      if ((await execute(EVAL.docTotal)) === "0") break;
+      if (Date.now() > deadline) break;
+      await sleep(250);
+    }
+  }
+
+  // AC-01 robustness (SPEC-v0.0.14 §3.10, OQ-83 closed as A): the D28/D30
+  // recipe applied at its measurement point — a first result at or over the
+  // ceiling while the machine is loaded is re-measured ONCE on a library
+  // emptied back to its start state; the second measurement is the checked
+  // value and both are recorded. One re-measure maximum, unconditional on
+  // cause; the 30 s ceiling itself is unchanged (NFR-02).
+  let firstElapsed = null;
+  let run = await measureImport();
+  if (run.total === run.target && run.elapsed >= 30000) {
+    firstElapsed = run.elapsed;
+    console.log(`[10k] AC-01 first measurement ${firstElapsed} ms at/over the 30 000 ms ceiling — bounded re-measure (one)`);
+    await clearLibrary();
+    run = await measureImport();
+  }
+  const { total, target, elapsed, progressSeen } = run;
+  const measuredNote = firstElapsed === null ? "" : ` (re-measured; first ${firstElapsed} ms under load)`;
   importCompleted = total === target;
-  check("AC-01 UI: 10,000 documents listed via the app", total === target, `status bar count: ${total}, ${elapsed} ms`);
+  check("AC-01 UI: 10,000 documents listed via the app", total === target, `status bar count: ${total}, ${elapsed} ms${measuredNote}`);
   check("AC-22: the status bar shows the progress bar while a job runs", progressSeen, `progress bar seen during the import: ${progressSeen}`);
-  check("AC-01 UI: whole import completes < 30 s (NFR-02)", elapsed < 30000, `${elapsed} ms`);
+  check("AC-01 UI: whole import completes < 30 s (NFR-02)", elapsed < 30000, `${elapsed} ms${measuredNote}`);
   const toast = await toastContains("Imported 10,000 files");
   check("import result toast reports the batch (FR-15)", !!toast);
 

@@ -18,6 +18,7 @@
   import Tooltip from "./Tooltip.svelte";
   import Icon from "./Icon.svelte";
   import { layout } from "$lib/state/layout.svelte";
+  import { library } from "$lib/state/library.svelte";
   import { currentUiPlatform, windowControlsLayout } from "$lib/platform";
   import { dragStrip, usesOwnDragStrip } from "$lib/dragstrip";
   import { t } from "$lib/i18n";
@@ -55,7 +56,13 @@
         aria-pressed={layout.selectMode}
         aria-label={t("toolbar.select")}
         data-tauri-drag-region="false"
-        onclick={() => layout.toggleSelectMode()}
+        onclick={() => {
+          // UI-18 MODIFIED (SPEC-v0.0.14 §3.5): turning the control off exits
+          // select mode — the selection is cleared with it, the BulkBar goes,
+          // the rows return to browse behavior.
+          if (layout.selectMode) library.clearSelection();
+          layout.toggleSelectMode();
+        }}
       >
         <Icon name="select" />
       </button>

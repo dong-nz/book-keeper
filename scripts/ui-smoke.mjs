@@ -931,6 +931,8 @@ const BOUNDARY_SCRIPT = `
     internals.__smokeAbout = null;
     internals.__smokeWindow = {};
     internals.__smokeDialog = null;
+    internals.__smokeUpdate = null;
+    internals.__smokeUpdateRequest = null;
     internals.__openCalls = 0;
     internals.__readerOpenCalls = 0;
     internals.__openDataDirCalls = 0;
@@ -970,6 +972,11 @@ const BOUNDARY_SCRIPT = `
         // FR-21 (MODIFIED, AC-124): the rename's typed answer — the accepted
         // half and the rejected half (the error payload carries the kind).
         internals.__smokeRename = { args, value };
+      } else if (cmd === 'library_update_document') {
+        // UI-02 MODIFIED (AC-194, SPEC-v0.0.14 §3.2): the Details Save's
+        // document-update call — the picker's pending set leaves through
+        // this unchanged command, and the lane reads what it carried.
+        internals.__smokeUpdate = { args, value };
       } else if (cmd === 'plugin:dialog|open') {
         // The pickers the search field's import control and Ctrl+I open: the
         // request is observable, the dialog itself belongs to the OS.
@@ -1001,6 +1008,11 @@ const BOUNDARY_SCRIPT = `
           // manager's window itself belongs to the OS.
           internals.__openFolderCalls = (internals.__openFolderCalls ?? 0) + 1;
           internals.__openFolderLast = message.payload;
+        }
+        if (message.cmd === 'library_update_document') {
+          // UI-02 MODIFIED (AC-194): the request side of the Save — the tag
+          // id set exactly as the app posted it.
+          internals.__smokeUpdateRequest = message.payload;
         }
         if (message.cmd === 'app_pdf_page') {
           internals.__pageServeCalls++;
@@ -2800,6 +2812,15 @@ async function flowDelete() {
     return c && c.textContent === '3 shown' ? c.textContent : null;
   `, { timeout: 10000 });
   if (!filtered) throw new Error(`the delete case needs exactly 3 filtered rows (status: ${filtered})`);
+  // AC-201 (D38): the number the deletion must move — the Browse-menu count
+  // for this tag reads 3 while its three documents are in the library.
+  const browseCountBefore = await execute(`
+    const item = Array.from(document.querySelectorAll('.menu.browse-sub .menu-item'))
+      .find((i) => i.querySelector('.item-label')?.textContent.trim() === 'Delete Probe');
+    return item ? item.querySelector('.item-count')?.textContent?.trim() ?? null : null;
+  `);
+  check("D38 setup: the Browse-menu count for the probe tag reads 3 before the deletion",
+    browseCountBefore === "3", `browse count: ${JSON.stringify(browseCountBefore)}`);
   await keys("Escape");
   await menuClosed(".menu.browse-menu");
   const before = await docCount();
@@ -2839,6 +2860,35 @@ async function flowDelete() {
     return t === ${JSON.stringify(grouped(before - 3))} ? t : null;
   `, { timeout: 10000 });
   check("library count reflects the deletion", !!allBack);
+
+  // AC-201 (D38, SPEC-v0.0.14 §3.7): tag counts follow a document deletion.
+  // The store re-reads the tag list after a successful delete; both surfaces
+  // that render tag counts — the Browse menu and the Tags manager — must now
+  // read 0 for the tag whose three documents were just deleted.
+  await openMenuSure('.browse-trigger', '.menu.browse-menu');
+  await clickMenuItem('.menu.browse-menu', "Tags");
+  if (!(await waitForEval(`return document.querySelector('.menu.browse-sub .menu-item') ? true : null;`, { timeout: 5000 })))
+    throw new Error("the Tags submenu did not open for the count re-read");
+  const browseCountAfter = await waitForEval(`
+    const item = Array.from(document.querySelectorAll('.menu.browse-sub .menu-item'))
+      .find((i) => i.querySelector('.item-label')?.textContent.trim() === 'Delete Probe');
+    if (!item) return null;
+    return item.querySelector('.item-count')?.textContent?.trim() === '0' ? '0' : null;
+  `, { timeout: 10000 });
+  check("AC-201: the Browse-menu tag count decrements to 0 after the deletion",
+    browseCountAfter === "0", `browse count after: ${JSON.stringify(browseCountAfter)}`);
+  await keys("Escape");
+  await menuClosed(".menu.browse-menu");
+  await openTagsManager();
+  const managerCount = await waitForEval(`
+    const row = Array.from(document.querySelectorAll('.modal .tag-row'))
+      .find((r) => r.querySelector('.tag-name')?.textContent.trim() === 'Delete Probe');
+    if (!row) return null;
+    return row.querySelector('.cat-count')?.textContent?.trim() === '0' ? '0' : null;
+  `, { timeout: 10000 });
+  check("AC-201: the Tags-manager count for the same tag reads 0",
+    managerCount === "0", `manager count: ${JSON.stringify(managerCount)}`);
+  await closeDialog("the tags manager");
 }
 
 async function flowFavorites() {
@@ -4689,10 +4739,14 @@ async function flowTagsMulti() {
   check("AC-13 / UI-09: the active tags appear as exactly one checked item each",
     activeNames.includes(NAME_A) && activeNames.includes(NAME_B) && activeNames.length === 2, JSON.stringify(activeNames));
 
+  // The removed v0.0.3 chip surface (DR-435 re-anchor): none of its
+  // identifiers may come back. The v0.0.14 active-filter strip is UI-09's
+  // new surface — compound identifiers, guarded by AC-199/AC-200 in
+  // flowFilterStrip, not by this check.
   const chips = await execute(`
     return document.querySelectorAll('.filter-chips, .chip, .count-chip, [data-chip]').length;
   `);
-  check("AC-23: no filter chip renders anywhere while a filter is active", chips === 0, `chip elements: ${chips}`);
+  check("AC-23: no legacy filter chip element renders anywhere while a filter is active", chips === 0, `chip elements: ${chips}`);
 
   await browseToggleTag(NAME_A);
   const onlyB = await capturedSearch(`(s) => ${askedFor([idB])}`);
@@ -4755,8 +4809,234 @@ async function flowTagsMulti() {
     empty.total > pageAB.total && shownEmpty === null && (await activeTagNames()).length === 0,
     `total: ${total}`);
 
+  // ---- UI-02 MODIFIED (SPEC-v0.0.14 §3.2, AC-194): the tags picker in
+  // Details. The subject is the overlap document of both tags — the state
+  // where the picker is visible (two chips) and has room to add. The half
+  // cleans up after itself (D14): the subject returns to its original tag
+  // set and the created tag is deleted before the restart halves run.
+  const CREATED = "Picker Probe";
+  const CREATED2 = "Picker Probe Click";
+  await searchFor("doc00100");
+  const overlapId = await waitForEval(`
+    const row = Array.from(document.querySelectorAll('[data-row-id]')).find((r) =>
+      (r.querySelector('.title-line')?.textContent ?? "").includes("doc00100"));
+    if (!row) return null;
+    return Number(row.getAttribute('data-row-id'));
+  `, { timeout: 15000 });
+  if (!overlapId) throw new Error("the picker half needs the doc00100 overlap row");
+  await rightClick(`[data-row-id="${overlapId}"]`);
+  await clickMenuItem('.menu', "Details");
+  if (!(await waitForEval(`return document.querySelector('.modal .tag-picker') ? true : null;`, { timeout: 8000 })))
+    throw new Error("the Details dialog did not render the tags picker");
+
+  const rendered = await execute(`
+    const picker = document.querySelector('.modal .tag-picker');
+    return {
+      chips: Array.from(picker.querySelectorAll('.tag-chip .tag-chip-name')).map((s) => s.textContent.trim()).sort(),
+      checkboxesClosed: picker.querySelectorAll('input[type="checkbox"]').length,
+      oldList: !!document.querySelector('.modal .check-row, .modal .tag-checks'),
+    };
+  `);
+  check("AC-194: the tags section renders the current tags as chips — no checkbox list remains",
+    sameSet(rendered.chips, [NAME_A, NAME_B]) && rendered.checkboxesClosed === 0 && !rendered.oldList,
+    JSON.stringify(rendered));
+
+  // × removes immediately — the pending set, before any Save.
+  await click(`(//div[contains(@class,"tag-picker")]//span[contains(@class,"tag-chip")][.//span[normalize-space()="${NAME_B}"]]//button[contains(@class,"tag-chip-x")])`, "xpath");
+  const afterX = await waitForEval(`
+    const names = Array.from(document.querySelectorAll('.modal .tag-picker .tag-chip .tag-chip-name')).map((s) => s.textContent.trim()).sort();
+    return JSON.stringify(names) === JSON.stringify(${JSON.stringify([NAME_A])}) ? names : null;
+  `, { timeout: 5000 });
+  check("AC-194: the chip × removes that tag from the pending set immediately", !!afterX, JSON.stringify(afterX));
+
+  // The add-picker: filter field with the search affordance, the list as
+  // rows whose active state is the pending set (AC-194 as revised by DR-437).
+  await clickStable(`() => document.querySelector('.modal .tag-picker button.add-tag')`);
+  const pickerState = await waitForEval(`
+    const panel = document.querySelector('.modal .picker');
+    if (!panel) return null;
+    const rows = Array.from(panel.querySelectorAll('.picker-list .pick-row')).map((r) => ({
+      name: r.querySelector('.row-name')?.textContent.trim(),
+      assigned: r.hasAttribute('data-assigned'),
+    }));
+    return {
+      field: !!panel.querySelector('input[aria-label="Filter tags"]'),
+      glyph: !!panel.querySelector('.picker-field svg'),
+      checkboxes: panel.querySelectorAll('input[type="checkbox"]').length,
+      rows,
+    };
+  `, { timeout: 5000 });
+  const rowA = pickerState?.rows.find((r) => r.name === NAME_A);
+  const rowB = pickerState?.rows.find((r) => r.name === NAME_B);
+  check("AC-194: the add-picker opens with the filter field (search affordance) and the rows' active state on the pending set — no checkboxes",
+    !!pickerState && pickerState.field && pickerState.glyph && pickerState.checkboxes === 0 &&
+      rowA?.assigned === true && rowB?.assigned === false,
+    JSON.stringify(pickerState));
+
+  // The filter field narrows the list as typed, and marks the match.
+  await typeInto('.modal .picker input[aria-label="Filter tags"]', "Union");
+  const narrowed = await waitForEval(`
+    const rows = Array.from(document.querySelectorAll('.modal .picker .pick-row')).map((r) => r.querySelector('.row-name')?.textContent.trim()).sort();
+    return JSON.stringify(rows) === JSON.stringify(${JSON.stringify([NAME_A, NAME_B].sort())}) ? rows : null;
+  `, { timeout: 5000 });
+  check("AC-194: the filter field narrows the list to the matching tags", !!narrowed, JSON.stringify(narrowed));
+  const marked = await execute(`
+    return Array.from(document.querySelectorAll('.modal .picker .pick-row .row-name .matched')).map((s) => s.textContent.toLowerCase());
+  `);
+  check("AC-194: the filter marks the matched substring in the listed names",
+    marked.length === 2 && marked.every((m) => m === "union"), JSON.stringify(marked));
+
+  // AC-205 (DR-437): arrows steer a cursor row while the field keeps focus,
+  // typing resets it, Enter activates the cursor row.
+  await keys("ArrowDown");
+  const cursorState = await waitForEval(`
+    const row = document.querySelector('.modal .picker .pick-row[data-cursor]');
+    return {
+      cursor: row ? row.querySelector('.row-name')?.textContent.trim() : null,
+      fieldFocused: document.activeElement?.getAttribute('aria-label') === 'Filter tags',
+    };
+  `, { timeout: 5000 });
+  check("AC-205: ArrowDown moves the cursor row while the field keeps typing focus",
+    !!cursorState?.cursor && cursorState.fieldFocused === true, JSON.stringify(cursorState));
+  await typeInto('.modal .picker input[aria-label="Filter tags"]', "Union B");
+  const reset = await waitForEval(`
+    return document.querySelector('.modal .picker .pick-row[data-cursor]') ? null : true;
+  `, { timeout: 5000 });
+  check("AC-205: typing resets the cursor", !!reset);
+  await keys("ArrowDown");
+  const cursorOnB = await waitForEval(`
+    const row = document.querySelector('.modal .picker .pick-row[data-cursor]');
+    return row && row.querySelector('.row-name')?.textContent.trim() === ${JSON.stringify(NAME_B)} ? true : null;
+  `, { timeout: 5000 });
+  if (!cursorOnB) throw new Error("the cursor did not land on the single listed row");
+  await keys("Enter");
+  const cursorAdded = await waitForEval(`
+    const names = Array.from(document.querySelectorAll('.modal .tag-picker .tag-chip .tag-chip-name')).map((s) => s.textContent.trim()).sort();
+    return JSON.stringify(names) === JSON.stringify(${JSON.stringify([NAME_A, NAME_B].sort())}) ? names : null;
+  `, { timeout: 5000 });
+  check("AC-205: Enter with a cursor active toggles the cursor row into the pending set", !!cursorAdded, JSON.stringify(cursorAdded));
+  await keys("Enter"); // and out again — the cursor toggle works both ways
+  const cursorRemoved = await waitForEval(`
+    const names = Array.from(document.querySelectorAll('.modal .tag-picker .tag-chip .tag-chip-name')).map((s) => s.textContent.trim()).sort();
+    return JSON.stringify(names) === JSON.stringify(${JSON.stringify([NAME_A])}) ? names : null;
+  `, { timeout: 5000 });
+  if (!cursorRemoved) throw new Error("the cursor Enter did not remove the tag — the later halves start from one chip");
+
+  // A list row click toggles the pending set immediately (in, out, back in).
+  const rowXpath = `(//button[contains(@class,"pick-row")][.//span[contains(@class,"row-name")][normalize-space()="${NAME_B}"]])`;
+  await click(rowXpath, "xpath");
+  const inChip = await waitForEval(`
+    const names = Array.from(document.querySelectorAll('.modal .tag-picker .tag-chip .tag-chip-name')).map((s) => s.textContent.trim()).sort();
+    return JSON.stringify(names) === JSON.stringify(${JSON.stringify([NAME_A, NAME_B].sort())}) ? names : null;
+  `, { timeout: 5000 });
+  await click(rowXpath, "xpath");
+  const outChip = await waitForEval(`
+    const names = Array.from(document.querySelectorAll('.modal .tag-picker .tag-chip .tag-chip-name')).map((s) => s.textContent.trim()).sort();
+    return JSON.stringify(names) === JSON.stringify(${JSON.stringify([NAME_A])}) ? names : null;
+  `, { timeout: 5000 });
+  await click(rowXpath, "xpath");
+  const reChipped = await waitForEval(`
+    const names = Array.from(document.querySelectorAll('.modal .tag-picker .tag-chip .tag-chip-name')).map((s) => s.textContent.trim()).sort();
+    return JSON.stringify(names) === JSON.stringify(${JSON.stringify([NAME_A, NAME_B].sort())}) ? names : null;
+  `, { timeout: 5000 });
+  check("AC-194: activating a list row toggles that tag into and out of the pending set immediately",
+    !!inChip && !!outChip && !!reChipped, JSON.stringify({ inChip, outChip, reChipped }));
+
+  // AC-206 (D39, DR-438): draft an edit to another field first. The inline
+  // creations below write the tag catalog; without the re-init snapshot guard
+  // that write re-runs the re-init effect and resets the whole pending editor
+  // to the stored document — the draft and any already-joined tag would vanish.
+  const TITLE_DRAFT = "Fixture Doc doc00100 (draft)";
+  await typeInto('.modal input.field', TITLE_DRAFT);
+
+  // Inline creation, both affordances (AC-194): a text with no exact match
+  // pins the Create row; Enter takes it; the row itself is activatable.
+  await typeInto('.modal .picker input[aria-label="Filter tags"]', CREATED);
+  const createRow = await waitForEval(`
+    const row = document.querySelector('.modal .picker .create-row');
+    return row ? row.textContent.trim() : null;
+  `, { timeout: 5000 });
+  check("AC-194: a text with no exact match pins a Create row carrying the typed name",
+    !!createRow && createRow.includes(CREATED), JSON.stringify(createRow));
+  await keys("Enter");
+  const createdChips = await waitForEval(`
+    const names = Array.from(document.querySelectorAll('.modal .tag-picker .tag-chip .tag-chip-name')).map((s) => s.textContent.trim());
+    return names.includes(${JSON.stringify(CREATED)}) && names.length === 3 ? names.sort() : null;
+  `, { timeout: 8000 });
+  check("AC-194: Enter on a name matching no tag creates the tag and joins it to the pending set",
+    !!createdChips, JSON.stringify(createdChips));
+  await typeInto('.modal .picker input[aria-label="Filter tags"]', CREATED2);
+  const createRow2 = await waitForEval(`
+    return document.querySelector('.modal .picker .create-row') ? true : null;
+  `, { timeout: 5000 });
+  if (!createRow2) throw new Error("the second Create row never appeared");
+  await click('.modal .picker .create-row');
+  const clickedChips = await waitForEval(`
+    const names = Array.from(document.querySelectorAll('.modal .tag-picker .tag-chip .tag-chip-name')).map((s) => s.textContent.trim());
+    return names.includes(${JSON.stringify(CREATED2)}) && names.length === 4 ? names.sort() : null;
+  `, { timeout: 8000 });
+  check("AC-205: the Create row is activatable by click and creates the same way",
+    !!clickedChips, JSON.stringify(clickedChips));
+  const survived = await execute(`
+    return {
+      title: document.querySelector('.modal input.field')?.value,
+      chips: Array.from(document.querySelectorAll('.modal .tag-picker .tag-chip .tag-chip-name')).map((s) => s.textContent.trim()).sort(),
+    };
+  `);
+  check("AC-206: the drafted title edit and the tag joined before the second inline creation survive both creations",
+    survived?.title === TITLE_DRAFT && sameSet(survived?.chips ?? [], [NAME_A, NAME_B, CREATED, CREATED2]),
+    JSON.stringify(survived));
+
+  // Escape closes the picker only — the editor stays open (UI-02's Esc rule).
+  await keys("Escape");
+  const escHalf = await execute(`
+    return {
+      picker: !!document.querySelector('.modal .picker'),
+      details: !!document.querySelector('.modal .dialog-actions'),
+    };
+  `);
+  check("AC-194: Escape closes the picker only — the Details editor stays open",
+    !!escHalf && !escHalf.picker && escHalf.details, JSON.stringify(escHalf));
+
+  // Save sends the full pending set through the unchanged update command.
+  await click('(//div[contains(@class,"modal")]//button[normalize-space()="Save"])', "xpath");
+  if (!(await waitForEval(`return document.querySelector('.modal') ? null : true;`, { timeout: 8000 })))
+    throw new Error("the Details editor stayed open after Save");
+  const upd = await waitForEval(`
+    const r = window.__TAURI_INTERNALS__.__smokeUpdateRequest;
+    return r && r.id === ${overlapId} ? r : null;
+  `, { timeout: 10000 });
+  await execute(`window.__tagsProbe = null;
+    window.__TAURI_INTERNALS__.invoke('tags_list').then((r) => { window.__tagsProbe = r; });
+    return true;`);
+  const catalog = (await waitForEval(`return window.__tagsProbe ?? null;`, { timeout: 10000 })) ?? [];
+  const createdTag = catalog.find((t) => t.name === CREATED);
+  const createdTag2 = catalog.find((t) => t.name === CREATED2);
+  if (!createdTag || !createdTag2) throw new Error("an inline-created tag never landed in the catalog");
+  const sentIds = (upd?.tagIds ?? []).slice().sort((a, b) => a - b);
+  const wantIds = [idA, idB, createdTag.id, createdTag2.id].sort((a, b) => a - b);
+  check("AC-194: Save sends the full pending set through the unchanged library_update_document command",
+    JSON.stringify(sentIds) === JSON.stringify(wantIds),
+    `sent: ${JSON.stringify(sentIds)}, expected: ${JSON.stringify(wantIds)}`);
+  check("AC-206: Save carries the pending title edit through the same unchanged command",
+    upd?.title === TITLE_DRAFT, `sent title: ${JSON.stringify(upd?.title)}`);
+
+  // Cleanup (D14): the subject returns to its original tags, the created
+  // tags leave the catalog — the restart halves run on the same library.
+  await execute(`
+    return window.__TAURI_INTERNALS__.invoke('library_update_document', {
+      id: ${overlapId}, title: 'Fixture Doc doc00100', author: '', notes: '', favorite: false,
+      tagIds: [${idA}, ${idB}],
+    });
+  `);
+  await execute(`return window.__TAURI_INTERNALS__.invoke('tags_delete', { id: ${createdTag.id} });`);
+  await execute(`return window.__TAURI_INTERNALS__.invoke('tags_delete', { id: ${createdTag2.id} });`);
+  await clearSearch();
+
   // The active set is a stored preference: after a relaunch the Browse menu
-  // shows it as checked items (UI-09 — the only place a filter is displayed).
+  // shows it as checked items (UI-09 MODIFIED — the Browse menu stays the
+  // control that displays and chooses filters; the strip added in v0.0.14
+  // displays them too, guarded by flowFilterStrip).
   await setActiveTags([NAME_A, NAME_B]);
   await capturedSearch(`(s) => ${askedFor([idA, idB])}`);
   await restartApp();
@@ -5024,6 +5304,14 @@ async function flowTagCrud() {
   // deletes; the union flows create the same names, ensure is idempotent.
   await ensureTagNames(["Union A", "Union B"]);
   await openTagsManager();
+
+  // UI-58 (SPEC-v0.0.14 §3.4, AC-196): the manager opens with focus in the
+  // new-tag field — the next keystrokes are the field's, no click needed.
+  const openFocused = await waitForEval(`
+    const field = document.querySelector('.modal input[aria-label="Add tag"]');
+    return field && document.activeElement === field ? true : null;
+  `, { timeout: 5000 });
+  check("AC-196: the Tags manager opens with focus in the new-tag field", !!openFocused);
 
   // UI-10 (DR-414): the Tags manager is a toolbar dialog — title, close and
   // *Delete all tags* on the bar, content in the variant's area; and the
@@ -5414,13 +5702,17 @@ async function flowAbout() {
     !!reported && !!shown && shown.includes(reported.name) && shown.includes(reported.version) && reported.version === packaged,
     `app_about: ${JSON.stringify(reported)}, packaged version: ${packaged}`);
 
+  // D37 re-anchor (SPEC-v0.0.14 §3.9): the scan covers the claim AC-16
+  // guards — the frontend PRODUCT sources never hardcode a version, they read
+  // `app_about`. Test files carry deliberate version fixtures and are not
+  // product sources; the walker skips them.
   const quoted = [];
   for (const file of sourceFiles(join(root, "ui", "src"))) {
     const text = readFileSync(file, "utf8");
     const match = text.match(/["'`]\s*\d+\.\d+\.\d+\s*["'`]/);
     if (match) quoted.push(`${file}: ${match[0]}`);
   }
-  check("AC-16: no version string exists in the frontend sources", quoted.length === 0, quoted.join(" | "));
+  check("AC-16: no version string exists in the frontend product sources", quoted.length === 0, quoted.join(" | "));
 
   // AC-49 (UI-27): the About dialog's vertical rhythm on the 4 px scale.
   const aboutGap = await execute(`
@@ -5439,6 +5731,9 @@ function sourceFiles(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) out.push(...sourceFiles(path));
+    // D37 (SPEC-v0.0.14 §3.9): product sources only — test files are not
+    // product sources (they carry deliberate version fixtures).
+    else if (entry.name.endsWith(".test.ts")) continue;
     else if (entry.name.endsWith(".ts") || entry.name.endsWith(".svelte")) out.push(path);
   }
   return out;
@@ -6679,17 +6974,22 @@ async function flowOpenFolder() {
   );
   await expectNoErrorToast("AC-111: the reveal surfaces no failure");
 
-  // Details half: the same action in the editor's footer; the editor stays
+  // Details half (UI-40 MODIFIED, SPEC-v0.0.14 §3.3): the reveal action now
+  // rides the path row as an icon button — the footer text button is gone.
+  // The same `__openFolderCalls` probe proves the reveal; the editor stays
   // open after it (a reveal is not a mutation).
   await execute(`window.__TAURI_INTERNALS__.__openFolderCalls = 0; return true;`);
   await rightClick(`[data-row-id="${subject}"]`);
   await clickMenuItem('.menu', "Details");
-  const footerItem = await waitForEval(`
-    const buttons = Array.from(document.querySelectorAll('.modal .dialog-actions .control'));
-    return buttons.some((b) => b.textContent.trim() === 'Open containing folder') ? true : null;
+  const pathControl = await waitForEval(`
+    const btn = document.querySelector('.modal .path-line button.icon-button[aria-label="Open containing folder"]');
+    if (!btn || !btn.querySelector('svg')) return null;
+    const footerText = Array.from(document.querySelectorAll('.modal .dialog-actions .control'))
+      .some((b) => b.textContent.trim() === 'Open containing folder');
+    return footerText ? null : true;
   `, { timeout: 8000 });
-  check("AC-111: the Details dialog carries Open containing folder", !!footerItem);
-  await click('(//div[contains(@class,"modal")]//button[normalize-space()="Open containing folder"])', "xpath");
+  check("AC-195: the Details path row carries the folder icon button and no text button remains", !!pathControl);
+  await click('(//div[contains(@class,"modal")]//p[contains(@class,"path-line")]//button[contains(@class,"icon-button")])', "xpath");
   const revealedAgain = await waitForEval(`
     const internals = window.__TAURI_INTERNALS__;
     if ((internals.__openFolderCalls ?? 0) < 1) return null;
@@ -6697,7 +6997,7 @@ async function flowOpenFolder() {
     return { calls: internals.__openFolderCalls, last: internals.__openFolderLast, editorOpen: !!editor };
   `, { timeout: 8000 });
   check(
-    "AC-111: the Details action reveals the same file and the editor stays open",
+    "AC-195: the path-row icon button reveals the same file and the editor stays open",
     !!revealedAgain && revealedAgain.last?.id === subject && revealedAgain.editorOpen,
     JSON.stringify(revealedAgain),
   );
@@ -6750,6 +7050,19 @@ async function flowOpenFolder() {
   );
   await keys("Escape");
   await menuClosed(".menu");
+
+  // UI-40 MODIFIED (AC-195): a missing document shows no reveal icon either —
+  // the Details path row carries the control only when the file exists.
+  await rightClick(`[data-row-id="${missingId}"]`);
+  await clickMenuItem('.menu', "Details");
+  const noIcon = await waitForEval(`
+    if (!document.querySelector('.modal .dialog-actions')) return null;
+    return document.querySelector('.modal .path-line button[aria-label="Open containing folder"]') ? null : true;
+  `, { timeout: 8000 });
+  check("AC-195: a missing document's Details path row shows no reveal icon", !!noIcon);
+  await keys("Escape");
+  const missingClosed = await waitForEval(`return document.querySelector('.modal') ? null : true;`, { timeout: 8000 });
+  if (!missingClosed) throw new Error("the missing document's Details stayed open after Escape");
 
   // D14: both probe records leave the library again (the missing one's file
   // is already gone; the present one's file stays under tmp/ until the next
@@ -8161,6 +8474,24 @@ async function flowSelectMode() {
   const off = await execute(`return document.querySelector('.select-toggle')?.getAttribute('aria-pressed') ?? null;`);
   check("AC-30: Select mode is off at startup", off === "false", `aria-pressed: ${off}`);
 
+  // AC-197 (UI-18 MODIFIED, SPEC-v0.0.14 §3.5): the control renders the
+  // marquee glyph — four corner brackets plus four filled handles — in the
+  // normal state and (re-checked below) the pressed state.
+  const marqueeGlyph = async () =>
+    execute(`
+      const svg = document.querySelector('.select-toggle svg');
+      if (!svg) return null;
+      const ds = Array.from(svg.querySelectorAll('path')).map((p) => p.getAttribute('d'));
+      return {
+        corners: ["M4 8V4h4", "M16 4h4v4", "M20 16v4h-4", "M8 20H4v-4"].every((d) => ds.includes(d)),
+        handles: ds.some((d) => d === "M2.5 2.5h3v3h-3z M18.5 2.5h3v3h-3z M18.5 18.5h3v3h-3z M2.5 18.5h3v3h-3z"),
+        pressed: document.querySelector('.select-toggle')?.getAttribute('aria-pressed') ?? null,
+      };
+    `);
+  const glyphOff = await marqueeGlyph();
+  check("AC-197: the select control renders the marquee glyph in its normal state",
+    !!glyphOff && glyphOff.corners && glyphOff.handles && glyphOff.pressed === "false", JSON.stringify(glyphOff));
+
   const ids = await execute(`
     return Array.from(document.querySelectorAll('[data-row-id]')).slice(0, 3).map((el) => el.getAttribute('data-row-id'));
   `);
@@ -8201,6 +8532,9 @@ async function flowSelectMode() {
   await click('.select-toggle');
   const on = await execute(`return document.querySelector('.select-toggle')?.getAttribute('aria-pressed') ?? null;`);
   check("AC-30: the toolbar toggle turns Select mode on", on === "true", `aria-pressed: ${on}`);
+  const glyphOn = await marqueeGlyph();
+  check("AC-197: the same marquee glyph renders in the pressed state",
+    !!glyphOn && glyphOn.corners && glyphOn.handles && glyphOn.pressed === "true", JSON.stringify(glyphOn));
   await resetOpenCounter();
   await clickAtStable(`[data-row-id="${ids[0]}"]`);
   const selectedByClick = await selectionState();
@@ -8221,6 +8555,27 @@ async function flowSelectMode() {
   check("AC-30 (on): the BulkBar's favorite action also lifts it again",
     unstarred.every((s) => s.checked === "false"), JSON.stringify(unstarred));
   await clearSelectionIfAny();
+
+  // AC-198 (UI-18 MODIFIED, SPEC-v0.0.14 §3.5): the toggle is the exit.
+  // Turning it off while a selection exists clears the selection — the
+  // BulkBar goes and browse behavior returns; turning it on re-enters with
+  // an empty selection.
+  await clickAtStable(`[data-row-id="${ids[0]}"]`);
+  const beforeExit = await selectionState();
+  await click('.select-toggle');
+  const afterExit = await selectionState();
+  check("AC-198: toggling Select mode off clears the selection and the BulkBar is gone",
+    beforeExit.count === 1 && afterExit.count === 0 && !afterExit.bulk,
+    `before: ${beforeExit.count} selected, after: ${JSON.stringify(afterExit)}`);
+  const offAgain = await execute(`return document.querySelector('.select-toggle')?.getAttribute('aria-pressed') ?? null;`);
+  await clickAtStable(`[data-row-id="${ids[0]}"]`);
+  const browseAgain = await selectionState();
+  check("AC-198: with the mode off, a row click is browse behavior again",
+    offAgain === "false" && browseAgain.count === 0, JSON.stringify(browseAgain));
+  await click('.select-toggle');
+  const reentered = await selectionState();
+  check("AC-198: toggling on re-enters select mode with an empty selection",
+    reentered.count === 0 && !reentered.bulk, JSON.stringify(reentered));
 
   // Grid: the same semantics on cards.
   await setViewMode("grid");
@@ -8264,6 +8619,252 @@ async function flowSelectMode() {
     return document.querySelector('.select-toggle')?.getAttribute('aria-pressed') ?? null;
   `);
   check("AC-30: Select mode is off again after a restart", afterRestart === "false", `aria-pressed: ${afterRestart}`);
+}
+
+// AC-199 / AC-200 (UI-09 MODIFIED, SPEC-v0.0.14 §3.6): the active-filter
+// strip. Present only with a browse filter active, one chip per active
+// element, × removes only its own, *Clear all* resets the browse filter,
+// search is never in the strip nor touched by it, and a narrow width
+// collapses the overflow into a `+N` popover with working removal.
+async function flowFilterStrip() {
+  await setupListView(1);
+  await ensureTagNames(["Strip A", "Strip B"]);
+
+  // The Favorites half needs a starred document: no other area in a named-set
+  // run (or in the full sequence — the favorites flow unstars its own) leaves
+  // one, and an empty Favorites view mounts the empty state instead of the
+  // scroller, so the "above the scroller" geometry would have nothing to
+  // measure. Self-sufficient (D14): star here, unstar in the cleanup.
+  const starredId = await waitForEval(`
+    const rows = document.querySelectorAll('.row[data-row-id]');
+    if (!rows.length) return null;
+    const r = rows[0];
+    r.focus();
+    return r.getAttribute('data-row-id');
+  `, { timeout: 15000 });
+  if (!starredId) throw new Error("flowFilterStrip: no row available to star");
+  await click(`//div[@data-row-id="${starredId}"]//button[contains(@class,"star")]`, "xpath");
+  const starOn = await waitForEval(`
+    const b = document.querySelector('[data-row-id="${starredId}"] .star');
+    return b && (b.getAttribute('aria-label') ?? "").startsWith("Remove") ? true : null;
+  `, { timeout: 10000 });
+  if (!starOn) throw new Error("flowFilterStrip: the star did not apply");
+
+  // The search half needs a document that carries the tag the strip filters
+  // on: the app's filter is (tags OR) AND search AND mode, so with no
+  // assigned document every combined query renders the empty state and the
+  // search helper has no rows to wait on. Assign Strip B to the first row
+  // through the command boundary (setup, like the flow's own cleanup uses
+  // raw commands) and search by that document's own title token.
+  const host = await waitForEval(`
+    const r = document.querySelector('.row[data-row-id]');
+    if (!r) return null;
+    return {
+      id: Number(r.getAttribute('data-row-id')),
+      title: (r.querySelector('.title-line, .title')?.textContent ?? "").trim(),
+    };
+  `, { timeout: 15000 });
+  if (!host || !host.title) throw new Error("flowFilterStrip: no host row for the tag assignment");
+  const searchTerm = host.title.split(/\s+/)[0];
+  await execute(`
+    window.__stripTags = null;
+    window.__TAURI_INTERNALS__.invoke('tags_list').then((r) => { window.__stripTags = r; });
+    return true;
+  `);
+  const setupCatalog = (await waitForEval(`return window.__stripTags ?? null;`, { timeout: 10000 })) ?? [];
+  const stripB = setupCatalog.find((tag) => tag.name === "Strip B");
+  if (!stripB) throw new Error("flowFilterStrip: Strip B is not in the catalog after creation");
+  await execute(`return window.__TAURI_INTERNALS__.invoke('library_bulk_tags', { documentIds: [${host.id}], add: [${stripB.id}], remove: [] });`);
+
+  const readStrip = async () =>
+    execute(`
+      const strip = document.querySelector('.filter-strip');
+      if (!strip) return null;
+      const row = strip.querySelector('.strip-row');
+      const scroller = document.querySelector('.document-area .scroller');
+      const stripRect = strip.getBoundingClientRect();
+      const scrollerRect = scroller?.getBoundingClientRect();
+      return {
+        labels: Array.from(row.querySelectorAll('.strip-chip .strip-chip-name')).map((s) => s.textContent.trim()),
+        xLabels: Array.from(row.querySelectorAll('.strip-chip .strip-chip-x')).map((b) => b.getAttribute('aria-label')),
+        clearAll: row.querySelector('.strip-clear')?.textContent.trim() ?? null,
+        moreLabel: row.querySelector('.strip-more')?.getAttribute('aria-label') ?? null,
+        aboveScroller: !!scrollerRect && stripRect.bottom <= scrollerRect.top + 2,
+      };
+    `);
+  const removeChipX = async (label) => {
+    // clickStable throws when the control is absent or occluded and returns
+    // nothing on success — there is no result to check here.
+    await clickStable(`() => {
+      const chip = Array.from(document.querySelectorAll('.filter-strip .strip-row .strip-chip'))
+        .find((c) => c.querySelector('.strip-chip-name')?.textContent.trim() === ${JSON.stringify(label)});
+      return chip?.querySelector('.strip-chip-x') ?? null;
+    }`);
+  };
+
+  // No filter → no strip.
+  check("AC-199: the strip is absent when no browse filter is active", !(await readStrip()));
+
+  // A mode filter renders exactly one chip, carrying the Browse menu's own
+  // label, its ×, and the Clear-all control; the strip rides above the
+  // document area, above the scroller.
+  await browseSelect("Favorites");
+  const modeStrip = await waitForEval(
+    `return document.querySelector('.filter-strip .strip-row .strip-chip') ? true : null;`, { timeout: 5000 },
+  );
+  const s1 = await readStrip();
+  check("AC-199: a mode filter renders one chip with the menu's label, its × and Clear all, above the scroller",
+    !!modeStrip && s1?.labels.join() === "Favorites" && s1.xLabels.join() === "Remove Favorites" &&
+      s1.clearAll === "Clear all" && s1.aboveScroller,
+    JSON.stringify(s1));
+
+  // Mode + tags: one chip per active element, the mode first.
+  await setActiveTags(["Strip A", "Strip B"]);
+  const combined = await waitForEval(`
+    const row = document.querySelector('.filter-strip .strip-row');
+    if (!row) return null;
+    const got = Array.from(row.querySelectorAll('.strip-chip .strip-chip-name')).map((s) => s.textContent.trim());
+    return JSON.stringify(got) === JSON.stringify(["Favorites", "Strip A", "Strip B"]) ? got : null;
+  `, { timeout: 8000 });
+  check("AC-199: mode and tag filters render one chip per active element, the mode first",
+    !!combined, JSON.stringify(combined));
+
+  // × removes only its own element: the tag chips' removal leaves the mode.
+  await removeChipX("Strip A");
+  const afterTagX = await waitForEval(`
+    const row = document.querySelector('.filter-strip .strip-row');
+    if (!row) return null;
+    const got = Array.from(row.querySelectorAll('.strip-chip .strip-chip-name')).map((s) => s.textContent.trim());
+    return JSON.stringify(got) === JSON.stringify(["Favorites", "Strip B"]) ? got : null;
+  `, { timeout: 8000 });
+  check("AC-199: a tag chip's × removes only that tag — the mode and the other tag stay",
+    !!afterTagX, JSON.stringify(afterTagX));
+
+  // The mode chip's × resets the mode and leaves the tag filters.
+  await removeChipX("Favorites");
+  const afterModeX = await waitForEval(`
+    const row = document.querySelector('.filter-strip .strip-row');
+    if (!row) return null;
+    const got = Array.from(row.querySelectorAll('.strip-chip .strip-chip-name')).map((s) => s.textContent.trim());
+    return JSON.stringify(got) === JSON.stringify(["Strip B"]) ? got : null;
+  `, { timeout: 8000 });
+  check("AC-199: the mode chip's × resets the mode and leaves the tag filter",
+    !!afterModeX, JSON.stringify(afterModeX));
+
+  // Search is never in the strip and never touched by it: typing a term
+  // while a tag filter is active changes nothing about the strip; clearing
+  // it leaves the filter (and the strip) exactly as they were.
+  await searchFor(searchTerm);
+  const withSearch = await readStrip();
+  check("AC-199: a search term is never a chip and leaves the strip unchanged",
+    withSearch?.labels.join() === "Strip B" && !withSearch.labels.some((l) => l.includes("doc0010")),
+    JSON.stringify(withSearch));
+  await clearSearch();
+  const afterClear = await readStrip();
+  const searchValue = await execute(`return document.querySelector('.search-input')?.value ?? null;`);
+  check("AC-199: clearing the search leaves the filter, the strip and the empty search field as they were",
+    afterClear?.labels.join() === "Strip B" && searchValue === "", JSON.stringify(afterClear));
+
+  // Clear all: every browse filter element gone, the strip with them; the
+  // search field was never written.
+  await clickStable(`() => document.querySelector('.filter-strip .strip-clear')`);
+  const gone = await waitForEval(`return document.querySelector('.filter-strip') ? null : true;`, { timeout: 8000 });
+  check("AC-199: Clear all removes every filter element and the strip with them",
+    !!gone && (await resultCount()) === null);
+
+  // Search alone is not a browse filter: the strip stays absent.
+  await searchFor(searchTerm);
+  const searchOnly = await readStrip();
+  check("AC-199: search alone renders no strip", !searchOnly);
+  await clearSearch();
+
+  // AC-200 (DR-434): at the narrowest legal window the chips that do not
+  // fit collapse into the `+N` control; its popover lists the hidden
+  // filters with working removal.
+  const OVER = ["Overflow Probe Alpha", "Overflow Probe Bravo", "Overflow Probe Charlie", "Overflow Probe Delta", "Overflow Probe Echo", "Overflow Probe Foxtrot", "Overflow Probe Golf"];
+  await ensureTagNames(OVER);
+  await setWindowSize(900);
+  await setActiveTags(OVER);
+  const narrow = await waitForEval(`
+    const row = document.querySelector('.filter-strip .strip-row');
+    if (!row) return null;
+    const inline = Array.from(row.querySelectorAll('.strip-chip .strip-chip-name')).map((s) => s.textContent.trim());
+    const more = row.querySelector('.strip-more');
+    const m = more?.getAttribute('aria-label')?.match(/^\\+([0-9]+) more filters$/);
+    if (!m) return null;
+    return { inline, overflow: Number(m[1]), total: ${OVER.length} };
+  `, { timeout: 12000 });
+  const collapsed = !!narrow && narrow.inline.length < narrow.total && narrow.overflow > 0 &&
+    narrow.inline.length + narrow.overflow === narrow.total;
+  check("AC-200: chips beyond the available width collapse into +N naming the hidden count",
+    collapsed, JSON.stringify(narrow));
+
+  if (collapsed) {
+    await clickStable(`() => document.querySelector('.filter-strip .strip-more')`);
+    const hidden = await waitForEval(`
+      const menu = document.querySelector('.menu.strip-more-menu');
+      if (!menu) return null;
+      const rows = Array.from(menu.querySelectorAll('.strip-more-row')).map((r) => ({
+        label: r.querySelector('.item-label')?.textContent.trim(),
+        hasX: !!r.querySelector('.strip-chip-x'),
+      }));
+      return rows.length > 0 && rows.every((r) => r.label && r.hasX) ? rows : null;
+    `, { timeout: 8000 });
+    check("AC-200: the +N popover lists exactly the hidden filters, each with a removal control",
+      !!hidden && hidden.length === narrow.overflow &&
+        hidden.every((r) => !narrow.inline.includes(r.label)),
+      JSON.stringify(hidden));
+    const removedLabel = hidden?.[0]?.label;
+    await clickStable(`() => {
+      const row = Array.from(document.querySelectorAll('.menu.strip-more-menu .strip-more-row'))
+        .find((r) => r.querySelector('.item-label')?.textContent.trim() === ${JSON.stringify(removedLabel)});
+      return row?.querySelector('.strip-chip-x') ?? null;
+    }`);
+    const afterHiddenRemove = await waitForEval(`
+      const names = ${JSON.stringify(OVER)};
+      const removed = ${JSON.stringify(removedLabel)};
+      const row = document.querySelector('.filter-strip .strip-row');
+      if (!row) return null;
+      const inline = Array.from(row.querySelectorAll('.strip-chip .strip-chip-name')).map((s) => s.textContent.trim());
+      const m = row.querySelector('.strip-more')?.getAttribute('aria-label')?.match(/^\\+([0-9]+) more filters$/);
+      const overflow = m ? Number(m[1]) : 0;
+      return !inline.includes(removed) && inline.length + overflow === names.length - 1 ? { inline, overflow } : null;
+    `, { timeout: 8000 });
+    check("AC-200: removal from the +N popover works — only that filter is dropped",
+      !!afterHiddenRemove, JSON.stringify(afterHiddenRemove));
+    await keys("Escape");
+    await menuClosed(".menu.strip-more-menu");
+  }
+
+  // Cleanup (D14): the starred row unstarred, no browse filter left, the
+  // probe tags gone, the window back at the run's default width.
+  await clearTagFilter();
+  await browseSelect("All documents");
+  const unstarReady = await waitForEval(`
+    const r = document.querySelector('[data-row-id="${starredId}"]');
+    if (!r) return null;
+    r.focus();
+    const b = r.querySelector('.star');
+    return b && (b.getAttribute('aria-label') ?? "").startsWith("Remove") ? true : null;
+  `, { timeout: 10000 });
+  if (!unstarReady) throw new Error("flowFilterStrip: the starred row is gone before cleanup");
+  await click(`//div[@data-row-id="${starredId}"]//button[contains(@class,"star")]`, "xpath");
+  const starOff = await waitForEval(`
+    const b = document.querySelector('[data-row-id="${starredId}"] .star');
+    return b && (b.getAttribute('aria-label') ?? "").startsWith("Add") ? true : null;
+  `, { timeout: 10000 });
+  if (!starOff) throw new Error("flowFilterStrip: the star did not clear");
+  await execute(`
+    window.__stripTags = null;
+    window.__TAURI_INTERNALS__.invoke('tags_list').then((r) => { window.__stripTags = r; });
+    return true;
+  `);
+  const catalog = (await waitForEval(`return window.__stripTags ?? null;`, { timeout: 10000 })) ?? [];
+  for (const name of [...OVER, "Strip A", "Strip B"]) {
+    const tag = catalog.find((t) => t.name === name);
+    if (tag) await execute(`return window.__TAURI_INTERNALS__.invoke('tags_delete', { id: ${tag.id} });`);
+  }
+  await setWindowSize(1280);
 }
 
 async function selectionState() {
@@ -15201,7 +15802,7 @@ const AREAS = {
   "getting-started": ["flowStartup", "flowDropAndSkip"], // the bulk empty/skeleton case: scripts/ui-10k.mjs (DR-161)
   "importing-pdfs": ["flowImportAssign", "flowMetaColumn", "flowImportProgress"], // the 10 000-document suite: scripts/ui-10k.mjs (DR-159, DR-161)
   searching: ["flowSearchDebounce", "flowSearchField"],
-  "browsing-and-filtering": ["flowTags", "flowTagsMulti", "flowBrowseIcons", "flowMenuBounds", "flowQuietCounts"],
+  "browsing-and-filtering": ["flowTags", "flowTagsMulti", "flowBrowseIcons", "flowMenuBounds", "flowQuietCounts", "flowFilterStrip"],
   tags: ["flowTags", "flowTagsMulti", "flowTagCrud", "flowMenuBounds", "flowQuietCounts"],
   favorites: ["flowFavorites"],
   // v0.0.8 (FR-19 / UI-43): the Reading collection.
@@ -15324,6 +15925,8 @@ const FUNCTIONAL_SEQUENCE = [
   // exercised: this flow picks Light, then Dark, and restores the default.
   ["flowTooltipSurfaces", flowTooltipSurfaces],
   ["flowSelectMode", flowSelectMode],
+  // UI-09 MODIFIED (SPEC-v0.0.14 §3.6, AC-199/AC-200): the active-filter strip.
+  ["flowFilterStrip", flowFilterStrip],
   // UI-41 / AC-112: the bulk bar's state-following favorite toggle.
   ["flowBulkFavorite", flowBulkFavorite],
   ["flowAbout", flowAbout],

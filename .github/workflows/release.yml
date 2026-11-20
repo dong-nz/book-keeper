@@ -189,6 +189,21 @@ jobs:
             --notes "docs/release/notes/v${version}.md" \
             --out tmp/release/latest.json
 
+      # NFR-11 MODIFIED (SPEC-v0.0.14 §3.8): the release page carries the
+      # version's notes page (Markdown as written) as its body. A pre-flight
+      # tag whose version has no notes page yet gets a short pre-release line.
+      - name: Prepare the release body
+        run: |
+          mkdir -p tmp/release
+          version="${GITHUB_REF_NAME#v}"
+          version="${version%%-*}"
+          notes="docs/release/notes/v${version}.md"
+          if [ -f "$notes" ]; then
+            cat "$notes" > tmp/release/RELEASE_BODY.md
+          else
+            printf 'Pre-flight build %s — release artifacts from the tagged commit, published as a draft for pipeline verification.\n' "$GITHUB_REF_NAME" > tmp/release/RELEASE_BODY.md
+          fi
+
       # The Release itself: the real artifacts only (the filtered flat
       # directory — not the raw bundle tree, DR-387) plus the manifest, on
       # the same tag the app's update endpoint reads (M3); the manifest
@@ -201,4 +216,5 @@ jobs:
           files: |
             tmp/release/latest.json
             tmp/release/flat/*
+          body_path: tmp/release/RELEASE_BODY.md
           draft: ${{ contains(github.ref_name, '-') }}

@@ -1,6 +1,6 @@
 # Selecting documents
 
-> **Status: ✅ Shipped in v0.0.3, updated in v0.0.4, v0.0.7 and v0.0.8** — verified by running the app, in both list and grid, with the mode on and off.
+> **Status: ✅ Shipped in v0.0.3, updated in v0.0.4, v0.0.7, v0.0.8 and v0.0.14** — verified by running the app, in both list and grid, with the mode on and off.
 
 Book Keeper has two ways to use a click, and one button in the top bar decides which one you get.
 
@@ -41,3 +41,9 @@ Whenever one or more documents are selected — in either mode — a bar appears
 > - The favorite control is **one button** instead of two: it stars all selected documents, or clears the star from all of them, depending on what the selection needs ([favorites.md](favorites.md)).
 >
 > Selection mechanics, the bar's appearance, *select all N matching*, and `Esc` are unchanged.
+
+> **Amendment (2026-11-20, v0.0.14): the Select switch — new icon, and switching off now clears the selection** (verified in the running app, list and grid).
+>
+> - **The Select button shows a selection-box icon** — corner brackets with filled handles — instead of the old checked-square. Its name, tooltip, keyboard path (Tab / Enter / Space) and pressed look are unchanged.
+> - **Switching the mode off ends the selection**: whatever you had selected is released, the actions bar disappears, and the rows return to ordinary browsing. Switching the mode back on starts with nothing selected. (Before this update, a selection made in selecting mode could stay selected after the mode was switched off.)
+> - Browsing-mode selecting — `Space`, `Ctrl`-click, `Shift`-click — and the actions bar itself are unchanged.

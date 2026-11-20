@@ -1,6 +1,6 @@
 # Editing metadata
 
-> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4 and v0.0.8** — verified by running the app.
+> **Status: ✅ Shipped in v0.0.1, updated in v0.0.2, v0.0.3, v0.0.4, v0.0.8 and v0.0.14** — verified by running the app.
 
 ## The editor
 Open via the Details action on a row/card, or its context menu. The editor lets you change:
@@ -31,3 +31,10 @@ Title, author, and notes feed the search index ([searching.md](searching.md)). R
 > When a document's title was taken from its filename, the dialog now says so, quietly, under the title field — and a file rename updates such a title to the new name. A title you edited yourself is never rewritten by a rename. Title, author, notes, the favorite toggle, the *Discard changes?* step and the delete actions are unchanged.
 
 > **Amendment (2026-11-12, v0.0.9): the same automatic metadata now reads books.** For an EPUB, the app reads the book's own properties for title and author at import — the same rule as a PDF's internal properties — with the same fallback to the filename when the book declares nothing. Everything the editor does for a PDF does for a book: title, author, notes, tags, favorite, Rename, Relink, delete. Books carry no page count or file-format field; nothing new appears in the dialog.
+
+> **Amendment (2026-11-20, v0.0.14): two changes inside the editor** (verified by running the app).
+>
+> - **The tags field is now a picker** — your current tags as removable chips, and an *Add tag* list you can search, toggle through, and create new tags in. The full description is on the tags page ([tags.md](tags.md)); the editor's save behavior is unchanged — everything you changed is saved together, and the *Discard changes?* step still protects unsaved edits.
+> - **The path row carries the folder action as an icon button** at the end of the shown path, replacing the text button — same action, same rule (it appears only when the file is present). The context-menu item is unchanged ([finding-a-documents-file.md](finding-a-documents-file.md)).
+>
+> Title, author, notes, the favorite toggle, Rename, Relink, delete, and the provenance hint are unchanged.
