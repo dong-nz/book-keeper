@@ -22,6 +22,9 @@
   import EpubReaderView from "./components/EpubReaderView.svelte";
   import TocDocked from "./components/TocDocked.svelte";
   import ToastStack from "./components/ToastStack.svelte";
+  import UpdateModal from "./components/UpdateModal.svelte";
+  import { appinfo } from "$lib/state/appinfo.svelte";
+  import { dragStrip, usesOwnDragStrip } from "$lib/dragstrip";
   import Icon from "./components/Icon.svelte";
   import Tooltip from "./components/Tooltip.svelte";
   import { ReaderStore, SCROLL_NOTCH } from "$lib/state/reader.svelte";
@@ -78,6 +81,10 @@
     void (async () => {
       await settings.initEvents();
       await settings.load();
+      // UI-57 (SPEC-v0.0.13 §3.4): the reader window's settings menu can run
+      // a manual update check (UI-50, DR-344), and the update modal shows the
+      // current version — the same one fetch as the main window, per window.
+      appinfo.ensure();
       await (epubStore ?? pdfStore)?.load();
     })();
   });
@@ -290,6 +297,10 @@
   // control (UI-50) keeps its released right end — its adjacency to the
   // controls is a Windows/Linux fact. The Windows/Linux mount is unchanged.
   const controlsLayout = windowControlsLayout(currentUiPlatform());
+  // D35 repair (SPEC-v0.0.13 §3.6): on macOS the chrome strip renders no
+  // drag-region attribute and `use:dragStrip` owns it; the Windows/Linux
+  // mount keeps the released attribute byte-for-byte.
+  const ownDragStrip = usesOwnDragStrip();
 </script>
 
 <svelte:window onkeydown={onKeydown} oncontextmenu={guardContextMenu} />
@@ -298,7 +309,7 @@
      is its own app root, and the reader's control strip uses Tooltips. -->
 <TooltipKit.Provider delayDuration={300}>
 <div class="reader" class:pinned={dockedOpen}>
-  <header class="chrome" data-tauri-drag-region="deep">
+  <header class="chrome" data-tauri-drag-region={ownDragStrip ? undefined : "deep"} use:dragStrip>
     {#if controlsLayout.side === "left"}
       <WindowControls />
     {/if}
@@ -421,6 +432,11 @@
      rejecting after the window was already open). The mechanism is the
      released one, not a reader variant. -->
 <ToastStack />
+
+<!-- UI-56 (SPEC-v0.0.13 §3.2): the update modal in the reader window too —
+     the settings menu's manual check arms it here exactly as in the main
+     window (the released reader-surface pattern, DR-344). -->
+<UpdateModal />
 
 <style>
   .reader {

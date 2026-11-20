@@ -53,7 +53,11 @@ if (!new RegExp(`^v${versionEsc}(-[0-9A-Za-z.-]+)?$`).test(tag)) {
 // The notes page's first section: the body under the first `## ` heading up
 // to the next one (or EOF) — the heading itself is page furniture, not
 // release notes. The page is the plain-language summary; the manifest carries
-// its body, which is what the in-app *Release notes* shows (UI-52).
+// its body, which is what the in-app update modal shows (UI-56).
+// OQ-74 closed A (SPEC-v0.0.13 §3.2, DR-422): the modal renders plain
+// text, so the pipeline publishes plain text — the Markdown markup of the
+// notes page is converted here, deterministically, before the manifest is
+// written.
 function notesText() {
   const page = readFileSync(notesPath, "utf8");
   const start = page.search(/^## /m);
@@ -63,7 +67,27 @@ function notesText() {
   }
   const body = page.slice(page.indexOf("\n", start) + 1);
   const next = body.search(/^## /m);
-  return (next === -1 ? body : body.slice(0, next)).trim();
+  return plainText((next === -1 ? body : body.slice(0, next)).trim());
+}
+
+/** Markdown → plain text: headings lose their hashes, emphasis and code
+ *  markers are stripped, links become `text (url)`, bullet markers unify
+ *  to "-". Structure (line breaks, lists) is the notes' own layout and
+ *  stays; only the markup goes. */
+function plainText(markdown) {
+  return markdown
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/^#{1,6}\s+/, "")
+        .replace(/^(\s*)\*\s+/, "$1- ")
+        .replace(/\[([^\]]*)\]\(([^)]*)\)/g, "$1 ($2)")
+        .replace(/\*\*|__/g, "")
+        .replace(/`/g, ""),
+    )
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // Updater artifacts per manifest key (DR-358 a): the NSIS setup exe (Windows),

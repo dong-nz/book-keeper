@@ -280,6 +280,12 @@ pub fn run() {
         // plugin's Rust side (§3.11). The `plugins.updater` config carries the
         // GitHub Releases endpoint and the minisign public key.
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // FR-25 (DR-418/DR-422, SPEC-v0.0.13 §3.3): `relaunch()` for the
+        // self-restart after a completed in-app update on macOS/Linux. The
+        // capability grants `process:allow-relaunch` to both the main and
+        // the reader windows (the manual check may complete in a reader
+        // window, UI-52/AC-149).
+        .plugin(tauri_plugin_process::init())
         // The EPUB content protocol (§3.10 option A; the probe confirmed this
         // exact async shape, DR-297). The handler is a thin wrapper (R1.2
         // discipline applied to the protocol, DR-302 item 6): parse the URI,

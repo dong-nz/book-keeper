@@ -111,6 +111,11 @@ pub struct SettingsDto {
     /// NOT part of this DTO (no bloat, §3.3): positions live under
     /// `reader.pos.<id>` keys and travel only through their own commands.
     pub view_mode: String,
+    /// Skipped update version (FR-25, SPEC-v0.0.13 §3.2): a version string
+    /// the user chose to skip, or `""` when nothing is skipped. The startup
+    /// update check stays silent for exactly this version; a manual check
+    /// ignores it. Validated as a canonical `x.y.z` version or empty.
+    pub update_skipped_version: String,
 }
 
 /// Backend → UI events (`status_updated`, `library_job_progress`,
@@ -137,7 +142,7 @@ pub struct SettingsChanged {
 /// Per-document reader positions (`reader.pos.<id>`, positions module) are
 /// deliberately not settings-store keys of this pair (FR-28, §3.3 no-bloat
 /// rule): they never appear here or in `SettingsDto`.
-pub const SETTINGS_KEYS: [&str; 10] = [
+pub const SETTINGS_KEYS: [&str; 11] = [
     "view",
     "sort",
     "dir",
@@ -148,6 +153,7 @@ pub const SETTINGS_KEYS: [&str; 10] = [
     "epub_text_size",
     "log_level",
     "view_mode",
+    "update_skipped_version",
 ];
 
 /// Absolute + lexically normalized path (RULES R2.5). Never touches the

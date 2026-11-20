@@ -19,6 +19,7 @@
   import Icon from "./Icon.svelte";
   import { layout } from "$lib/state/layout.svelte";
   import { currentUiPlatform, windowControlsLayout } from "$lib/platform";
+  import { dragStrip, usesOwnDragStrip } from "$lib/dragstrip";
   import { t } from "$lib/i18n";
 
   // UI-07 MODIFIED (SPEC-v0.0.12 §3.7): on macOS the window-controls cluster
@@ -27,9 +28,15 @@
   // right end — the adjacency fact stands only on Windows/Linux. The
   // Windows/Linux mount is byte-for-byte the released one.
   const controlsLayout = windowControlsLayout(currentUiPlatform());
+  // D35 repair (SPEC-v0.0.13 §3.6): on macOS the strip renders no drag-region
+  // attribute and `use:dragStrip` owns it — press 1 drags, press 2 of a
+  // double-click maximizes, no coordinate-exactness requirement. The
+  // Windows/Linux mount keeps the released attribute and the built-in
+  // behavior byte-for-byte.
+  const ownDragStrip = usesOwnDragStrip();
 </script>
 
-<header class="toolbar" data-tauri-drag-region="deep">
+<header class="toolbar" data-tauri-drag-region={ownDragStrip ? undefined : "deep"} use:dragStrip>
   {#if controlsLayout.side === "left"}
     <WindowControls />
   {/if}

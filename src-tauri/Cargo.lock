@@ -332,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "bookkeeper"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "image",
  "log",
@@ -346,6 +346,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tauri-plugin-process",
  "tauri-plugin-updater",
  "thiserror 2.0.21",
  "zip",
@@ -4407,6 +4408,16 @@ dependencies = [
  "url",
  "windows",
  "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-process"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74ae3d8549ae564c0397377373e262f340908eb23a5b9fbe03f2a00007dc0038"
+dependencies = [
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

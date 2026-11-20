@@ -1355,6 +1355,9 @@ pub fn get_settings(conn: &Connection) -> Result<SettingsDto, AppError> {
         view_mode: db::get_setting(conn, "view_mode")?
             .filter(|v| matches!(v.as_str(), "single" | "continuous" | "facing" | "horizontal"))
             .unwrap_or_else(|| "continuous".into()),
+        update_skipped_version: db::get_setting(conn, "update_skipped_version")?
+            .filter(|v| is_valid_skipped_version(v))
+            .unwrap_or_default(),
     })
 }
 
@@ -1415,6 +1418,20 @@ fn is_valid_text_size(value: &str) -> bool {
     value.parse::<u32>().is_ok_and(|v| TEXT_SIZE_STEPS.contains(&v))
 }
 
+/// Skipped update version (FR-25, SPEC-v0.0.13 §3.2): `""` (nothing skipped —
+/// the default) or a canonical three-segment `x.y.z` version, the shape the
+/// update manifest and the plugin's `Version` use. Anything else is a corrupt
+/// row, never a version — the same pattern as the other value validators.
+/// The comparison the UI performs is a plain equality against the manifest
+/// version (the plugin only reports strictly newer versions, spec F13).
+fn is_valid_skipped_version(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    let parts: Vec<&str> = value.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
 pub fn set_setting(
     conn: &Connection,
     sink: &dyn EventSink,
@@ -1435,6 +1452,7 @@ pub fn set_setting(
         "epub_text_size" => is_valid_text_size(value),
         "log_level" => matches!(value, "error" | "info"),
         "view_mode" => matches!(value, "single" | "continuous" | "facing" | "horizontal"),
+        "update_skipped_version" => is_valid_skipped_version(value),
         _ => false,
     };
     if !valid {
@@ -3169,6 +3187,63 @@ mod tests {
                 .iter()
                 .any(|(key, value)| key == "view_mode" && value == "facing"),
             "every window learns the new mode through settings_changed"
+        );
+    }
+
+    /// AC-193 (FR-25, SPEC-v0.0.13 §3.2): the Skip key round-trips, is
+    /// validated as a canonical version or empty, corrupt rows fall back to
+    /// "nothing skipped", and the change reaches every window through the
+    /// DR-230 event path.
+    #[test]
+    fn update_skipped_version_setting_round_trips_and_validates_versions() {
+        let conn = open_in_memory().unwrap();
+        let sink = RecordingSink::default();
+        assert_eq!(
+            get_settings(&conn).unwrap().update_skipped_version,
+            "",
+            "nothing is skipped by default"
+        );
+
+        for value in ["99.0.0", "0.0.13", "1.2.3456"] {
+            set_setting(&conn, &sink, "update_skipped_version", value).unwrap();
+            assert_eq!(get_settings(&conn).unwrap().update_skipped_version, value);
+        }
+        // The empty value is the clear path: it is a valid value, not a gap.
+        set_setting(&conn, &sink, "update_skipped_version", "").unwrap();
+        assert_eq!(get_settings(&conn).unwrap().update_skipped_version, "");
+
+        for value in ["bogus", "1.2", "1.2.3.4", "1..2", "v1.2.3", " 1.2.3", "1.2.3 "] {
+            assert!(
+                matches!(
+                    set_setting(&conn, &sink, "update_skipped_version", value),
+                    Err(AppError::Validation(_))
+                ),
+                "update_skipped_version={value} should be rejected"
+            );
+        }
+        assert!(
+            matches!(
+                set_setting(&conn, &sink, "update_skipped_ver", "1.2.3"),
+                Err(AppError::Validation(_))
+            ),
+            "unknown keys stay rejected"
+        );
+
+        db::set_setting(&conn, "update_skipped_version", "garbage").unwrap();
+        assert_eq!(
+            get_settings(&conn).unwrap().update_skipped_version,
+            "",
+            "a corrupt row is never a version"
+        );
+
+        // DR-230 event path: the change is announced after the durable write.
+        set_setting(&conn, &sink, "update_skipped_version", "99.0.0").unwrap();
+        assert!(
+            sink
+                .settings()
+                .iter()
+                .any(|(key, value)| key == "update_skipped_version" && value == "99.0.0"),
+            "every window learns the skip through settings_changed"
         );
     }
 

@@ -56,14 +56,6 @@ class FeedbackStore {
     this.#push({ message, kind: "info" });
   }
 
-  /** An info toast carrying an action (UI-52's availability affordance): it
-   *  waits for the person, like an error toast — the action is the point of
-   *  showing it (DR-332 item 1). Returns the toast id so the caller can
-   *  recognize its own affordance while it is open. */
-  notifyWithAction(key: MsgKey, params: MsgParams, action: ToastAction): number {
-    return this.#push({ message: t(key, params), kind: "info", action });
-  }
-
   reportError(payload: AppErrorPayload, action?: ToastAction): void {
     this.#push({ message: describeError(payload), kind: "error", action, detail: payload });
   }

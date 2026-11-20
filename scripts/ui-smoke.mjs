@@ -6068,9 +6068,9 @@ async function flowStatusBar() {
     JSON.stringify({ ...after, quietReads }));
 
   const clean = await readStatusBar();
-  check("AC-22: with nothing to say the status bar shows only the document count",
+  check("AC-22: with nothing to say the status bar shows only the document count (plus the version label, UI-57)",
     clean.docCount !== null && clean.resultCount === null && clean.missingWarning === null &&
-      clean.progress === false && clean.buttons === 0 && clean.chips === 0,
+      clean.progress === false && clean.buttons === 0 && clean.chips === 0 && clean.version !== null,
       JSON.stringify(clean));
 
   // AC-91 (UI-15 as modified by DR-210): the count carries its unit label —
@@ -6092,6 +6092,29 @@ async function flowStatusBar() {
   check("AC-91: the document count is labeled with its unit, same tertiary tabular style",
     labeled?.labeled === true && labeled.tabular === "tabular-nums" && labeled.fontSize === labeled.tokenSize,
     JSON.stringify(labeled));
+
+  // AC-190 (UI-57, SPEC-v0.0.13 §3.4): the bar renders the version the
+  // running app actually is — the value read once from the app's own
+  // identity, the same one the About dialog shows (flowAbout compares
+  // `app_about` against the packaged version; here the label is compared
+  // against that same packaged value) — in the bar's tertiary tabular style.
+  const packagedVersion = JSON.parse(readFileSync(join(root, "src-tauri", "tauri.conf.json"), "utf8")).version;
+  const versionLabel = await execute(`
+    const el = document.querySelector('.status-bar .app-version');
+    if (!el) return null;
+    const style = getComputedStyle(el);
+    const token = getComputedStyle(document.documentElement).getPropertyValue('--text-12').trim();
+    return {
+      raw: el.textContent.trim(),
+      fontSize: style.fontSize,
+      tokenSize: token,
+      tabular: style.fontVariantNumeric,
+    };
+  `);
+  check("AC-190: the status bar shows the version the running app actually is, in the tertiary tabular style",
+    !!versionLabel && versionLabel.raw === packagedVersion &&
+      versionLabel.fontSize === versionLabel.tokenSize && versionLabel.tabular === "tabular-nums",
+    JSON.stringify({ ...versionLabel, packaged: packagedVersion }));
 
   await searchFor("doc0010"); // core tier: doc00100–102 match this prefix
   const filtered = await readStatusBar();
@@ -6117,6 +6140,7 @@ async function readStatusBar() {
       resultCount: digits(text('.result-count')),
       matchedTotal: search && search.total !== undefined ? search.total : null,
       missingWarning: text('.missing-warning'),
+      version: text('.app-version'),
       progress: !!bar.querySelector('.progress-wrap'),
       buttons: bar.querySelectorAll('button').length,
       chips: bar.querySelectorAll('.count-chip, .chip').length,
@@ -14766,13 +14790,17 @@ async function flowEpubPerformance() {
 
 // ---------------------------------------------------------------- v0.0.10 app updates (FR-25 / UI-52)
 
-// flowAppUpdate (AC-151, AC-152, AC-153 — SPEC-v0.0.10 §3.11): the fixture
-// endpoint is baked into the binary at build time (header note; DR-329 item
-// 3), the fixture manifest and artifact are generated here, never committed
-// (D15). Without the fixture build the app checks its real update source and
-// every claim below would be about the network, not about the app.
+// flowAppUpdate (AC-151, AC-152, AC-153 — SPEC-v0.0.10 §3.11, re-anchored
+// for v0.0.13 by DR-422: the availability affordance is the update modal,
+// and AC-184…AC-187 — SPEC-v0.0.13 §3.2 — add the modal content, the
+// session deferral and the version-scoped Skip). The fixture endpoint is
+// baked into the binary at build time (header note; DR-329 item 3), the
+// fixture manifest and artifact are generated here, never committed (D15).
+// Without the fixture build the app checks its real update source and every
+// claim below would be about the network, not about the app.
 const UPDATE_FIXTURES_DIR = join(root, "tmp", "update-fixtures");
 const UPDATE_FIXTURE_VERSION = "999.0.0"; // newer than every 0.x (DR-329 item 6)
+const UPDATE_SKIP_FIXTURE_VERSION = "998.0.0"; // the Skip scenario's version (SPEC-v0.0.13 AC-186/AC-187)
 const UPDATE_FIXTURE_NOTES = "Fixture release notes: the update flow is verified end to end.";
 const UPDATE_ARTIFACT_BYTES = 768 * 1024;
 
@@ -14822,6 +14850,12 @@ function buildUpdateFixtures() {
     artifact,
     newer: { version: UPDATE_FIXTURE_VERSION, notes: UPDATE_FIXTURE_NOTES, pub_date, url, signature },
     current: { version: appVersion, notes: UPDATE_FIXTURE_NOTES, pub_date, url, signature },
+    // The Skip scenario's manifest (SPEC-v0.0.13 AC-186/AC-187): a second
+    // newer version, so the persisted skip never collides with the scenarios
+    // that expect 999.0.0 to be offered again in a later run. The signature
+    // is bound to 999.0.0 and is inert here — the Skip scenario never
+    // installs, and `check()` stops at the version comparison (DR-329 item 4).
+    skipped: { version: UPDATE_SKIP_FIXTURE_VERSION, notes: UPDATE_FIXTURE_NOTES, pub_date, url, signature },
   };
 }
 
@@ -14889,28 +14923,48 @@ async function manualUpdateCheck() {
   await clickStable(itemByLabel(".menu.settings-menu", "Check for updates"));
 }
 
-const availabilityAffordanceScript = `
-  const toast = Array.from(document.querySelectorAll('.toast')).find((t) => t.textContent.includes('999.0.0'));
-  if (!toast) return null;
+// The availability affordance is the update modal (UI-56, SPEC-v0.0.13
+// §3.2, DR-422): the released dialog component, so the probe reads the
+// released dialog surface — title, body text, action buttons.
+const updateModalScript = `
+  const modal = document.querySelector('.modal');
+  if (!modal) return null;
+  const buttons = Array.from(modal.querySelectorAll('button')).map((b) => b.textContent.trim());
   return {
-    text: toast.textContent.replace(/\\s+/g, ' ').trim(),
-    install: Array.from(toast.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Install'),
+    title: modal.querySelector('.modal-title')?.textContent?.trim() ?? '',
+    text: modal.textContent.replace(/\\s+/g, ' ').trim(),
+    install: buttons.includes('Install'),
+    skip: buttons.includes('Skip this version'),
   };
 `;
 
+async function updateModalPresent() {
+  return waitForEval(updateModalScript, { timeout: 15000 });
+}
+
+async function dismissOpenModal() {
+  await execute(`
+    const close = document.querySelector('.modal .modal-close');
+    if (close) close.click();
+    return true;
+  `);
+  await waitForEval(`return document.querySelector('.modal') ? null : true;`, { timeout: 5000 });
+}
+
 // The AC-153 silence window: no update affordance of any kind — not a
-// toast, not the availability affordance, not the download bar — observed
-// across the whole window (the check itself is a local round-trip either
-// way; 1.5 s covers its slowest honest completion).
+// report toast, not the update modal, not the download bar — observed across
+// the whole window (the check itself is a local round-trip either way;
+// 1.5 s covers its slowest honest completion).
 async function observeNoUpdateAffordance(windowMs) {
   const deadline = Date.now() + windowMs;
   for (;;) {
     const seen = await execute(`
       const toasts = Array.from(document.querySelectorAll('.toast')).map((t) => t.textContent);
-      const shown =
-        toasts.some((x) => x.includes('is available') || x.includes('up to date') || x.includes("Couldn't check for updates") || x.includes('could not be installed')) ||
-        Array.from(document.querySelectorAll('.progress-wrap')).some((g) => (g.getAttribute('aria-label') ?? '') === 'Downloading…');
-      return shown ? toasts.join(' | ') : null;
+      const modal = document.querySelector('.modal');
+      const bar = Array.from(document.querySelectorAll('.progress-wrap')).some((g) => (g.getAttribute('aria-label') ?? '') === 'Downloading…');
+      const shown = !!modal || bar ||
+        toasts.some((x) => x.includes('up to date') || x.includes("Couldn't check for updates") || x.includes('could not be installed') || x.includes('Update installed'));
+      return shown ? (modal ? 'update modal open' : toasts.join(' | ') || "download bar") : null;
     `);
     if (seen) return { quiet: false, detail: seen };
     if (Date.now() >= deadline) return { quiet: true };
@@ -14940,24 +14994,46 @@ async function flowAppUpdate() {
   }
   const fixtures = buildUpdateFixtures();
   let server = await startUpdateFixtureServer(fixtures);
+  // The version the running app actually is — the modal's version line names
+  // it next to the fixture version (AC-184), the same source the About
+  // dialog's comparison uses (flowAbout).
+  const appVersion = JSON.parse(readFileSync(join(root, "src-tauri", "tauri.conf.json"), "utf8")).version;
   try {
     await dismissOpenToasts();
+    // The session app's startup check races with this flow's server (the
+    // server starts here, after the session opened): if the check fires
+    // late it reaches this server and arms a modal that would occlude the
+    // menu clicks below. Same barrier as the AC-152 scenario: give the
+    // straggler its chance, clear whatever it armed, then begin.
+    const openStraggler = Date.now() + 8000;
+    while (server.state.requests === 0 && Date.now() < openStraggler) await sleep(100);
+    await dismissOpenModal();
 
-    // AC-151, first clause: a newer-version manifest — the manual check
-    // surfaces the version, the notes text and an Install action.
+    // AC-184 / UI-56 (SPEC-v0.0.13 §3.2, DR-422): a newer-version manifest —
+    // the manual check opens the update modal: title, the current version and
+    // the new one named, the notes text, and exactly the two actions.
     server.state.manifest = fixtures.newer;
     await manualUpdateCheck();
-    const availability = await waitForEval(availabilityAffordanceScript, { timeout: 15000 });
+    const modal = await updateModalPresent();
     check(
-      "AC-151: a newer-version manifest surfaces the new version, its notes and an Install action",
-      !!availability && availability.text.includes(UPDATE_FIXTURE_NOTES) && availability.install,
-      availability ? availability.text : "no availability affordance appeared",
+      "AC-184: the manual check opens the update modal — current and new version, notes, Install and Skip actions",
+      !!modal && modal.title === "Update available" && modal.text.includes(appVersion) &&
+        modal.text.includes(UPDATE_FIXTURE_VERSION) && modal.text.includes(UPDATE_FIXTURE_NOTES) &&
+        modal.install && modal.skip,
+      modal ? modal.text : "no update modal appeared",
     );
-    check(
-      "UI-52: the affordance is a quiet toast with an action — never a modal",
-      !(await execute(`return document.querySelector('.modal') ? true : false;`)),
-    );
-    await dismissOpenToasts();
+
+    // AC-185: closing the modal defers it for this session only — nothing is
+    // persisted: a new manual check re-arms the same update, and the same
+    // 999.0.0 is armed again at the next startup (the AC-152 scenario below
+    // runs after this dismissal and finds the modal waiting).
+    await dismissOpenModal();
+    await manualUpdateCheck();
+    const rePresented = await updateModalPresent();
+    check("AC-185: closing the modal defers it — a new manual check re-presents the same update",
+      !!rePresented && rePresented.text.includes(UPDATE_FIXTURE_VERSION),
+      rePresented ? rePresented.text : "the update was not re-presented");
+    await dismissOpenModal();
 
     // AC-151, second clause: a current-version manifest — the manual check
     // reports exactly that.
@@ -15007,18 +15083,29 @@ async function flowAppUpdate() {
     }
 
     // AC-152: the newer manifest once more — this time the update is found
-    // by the startup check itself (UI-52 arms the affordance from it), the
-    // Install action is clicked, the download renders through the released
+    // by the startup check itself (UI-56 arms the modal from it), the Install
+    // action is clicked, the download renders through the released
     // job-progress affordance, and the install carries the app's exit.
+    // (AC-185's other half: this scenario runs after the modal dismissal
+    // above — a deferred update is armed fresh at the next startup.)
     server = await startUpdateFixtureServer(fixtures);
     server.state.manifest = fixtures.newer;
+    // The previous instance's startup check can outlive the observation
+    // window and now reaches THIS server — a straggler modal would occlude
+    // the window-close click of the restart below. Give it its chance (the
+    // check fires within the app's bounded init; 8 s covers the slowest
+    // observed delivery), then clear whatever it armed.
+    const stragglerDeadline = Date.now() + 8000;
+    while (server.state.requests === 0 && Date.now() < stragglerDeadline) await sleep(100);
+    await dismissOpenModal();
     await restartApp();
-    const startupArmed = await waitForEval(availabilityAffordanceScript, { timeout: 15000 });
-    check("UI-52: the startup check arms the availability affordance — the toast with the Install action",
-      !!startupArmed && startupArmed.install, startupArmed ? startupArmed.text : "nothing armed at startup");
+    const startupArmed = await updateModalPresent();
+    check("UI-56: the startup check arms the update modal — Install and Skip actions",
+      !!startupArmed && startupArmed.install && startupArmed.skip,
+      startupArmed ? startupArmed.text : "nothing armed at startup");
     await clickStable(`() => {
-      const toast = Array.from(document.querySelectorAll('.toast')).find((t) => t.textContent.includes('999.0.0'));
-      const button = toast && Array.from(toast.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Install');
+      const modal = document.querySelector('.modal');
+      const button = modal && Array.from(modal.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Install');
       return button ?? null;
     }`);
     let sawBar = false;
@@ -15061,7 +15148,50 @@ async function flowAppUpdate() {
         : "the app never exited");
     // D14: the flow hands the suite a working app — the install exit is the
     // claim, not the state the flows after it may depend on.
+    const beforeRelaunch = server.state.requests;
     await relaunchSession();
+
+    // The relaunched instance's startup check reaches the still-running
+    // server (the 999.0.0 manifest) and arms its modal. That offer is
+    // dismissed — a deferral, nothing persisted — before the Skip scenario
+    // starts; the request barrier proves the check landed. The server from
+    // the AC-152 scenario is reused: same port, already up.
+
+    // AC-184 / AC-186 / AC-187 (SPEC-v0.0.13 §3.2, FR-25 as modified): the
+    // version-scoped Skip. The startup check arms the modal for 998.0.0; the
+    // modal's Skip action persists the version; the next startup check runs
+    // (the request barrier proves it) and offers nothing; a manual check
+    // re-presents. The persisted 998.0.0 never collides with the 999.0.0
+    // scenarios of this or any later run.
+    const relaunchBarrier = Date.now() + 10000;
+    while (server.state.requests <= beforeRelaunch && Date.now() < relaunchBarrier) await sleep(100);
+    await dismissOpenModal();
+    server.state.manifest = fixtures.skipped;
+    await restartApp();
+    const skipOffer = await updateModalPresent();
+    check("AC-184: the startup check arms the modal for the new version",
+      !!skipOffer && skipOffer.text.includes(UPDATE_SKIP_FIXTURE_VERSION) && skipOffer.skip,
+      skipOffer ? skipOffer.text : "nothing armed at startup");
+    await clickStable(`() => {
+      const modal = document.querySelector('.modal');
+      const button = modal && Array.from(modal.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Skip this version');
+      return button ?? null;
+    }`);
+    await waitForEval(`return document.querySelector('.modal') ? null : true;`, { timeout: 5000 });
+    const beforeSkip = server.state.requests;
+    await restartApp();
+    const skipBarrierDeadline = Date.now() + 10000;
+    while (server.state.requests <= beforeSkip && Date.now() < skipBarrierDeadline) await sleep(100);
+    const quietAfterSkip = await observeNoUpdateAffordance(1500);
+    check("AC-186: after the Skip the next startup check runs and offers nothing",
+      server.state.requests > beforeSkip && quietAfterSkip.quiet,
+      `requests ${beforeSkip} → ${server.state.requests}; ${quietAfterSkip.detail ?? "nothing shown"}`);
+    await manualUpdateCheck();
+    const rePresentedSkip = await updateModalPresent();
+    check("AC-187: the manual check re-presents the skipped version",
+      !!rePresentedSkip && rePresentedSkip.text.includes(UPDATE_SKIP_FIXTURE_VERSION),
+      rePresentedSkip ? rePresentedSkip.text : "the skipped version was not re-presented");
+    await dismissOpenModal();
   } finally {
     if (server) server.stop();
   }
@@ -15107,7 +15237,9 @@ const AREAS = {
   "settings-and-appearance": ["flowThemeAndSettings", "flowLogs", "flowDarkRamp", "flowTooltipSurfaces", "flowAbout", "flowScrollbars"],
   "the-app-window": ["flowDragRegion", "flowWindowChrome", "flowToolbarControls", "flowActionParity", "flowContextMenuSuppression", "flowReaderContextMenu"], // D20 / AC-116: the window-level context-menu guard (library + reader halves)
   "keyboard-shortcuts": ["flowKeyboardAudit"],
-  // v0.0.10 (FR-25 / UI-52, AC-151…AC-153): the app's own update flow.
+  // v0.0.10 (FR-25 / UI-52, AC-151…AC-153), v0.0.13 (FR-25 MODIFIED /
+  // UI-56, AC-184…AC-188): the app's own update flow — modal affordance,
+  // deferral, version-scoped Skip, relaunch after install.
   "keeping-up-to-date": ["flowAppUpdate"],
 };
 

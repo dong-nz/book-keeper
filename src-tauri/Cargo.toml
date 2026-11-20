@@ -1,6 +1,6 @@
 [package]
 name = "bookkeeper"
-version = "0.0.12"
+version = "0.0.13"
 edition = "2024"
 
 [dependencies]
@@ -24,6 +24,10 @@ tauri-plugin-opener = "2.7.2"
 # tauri 2.12.5 line. Its transitive tree (reqwest, tauri-plugin-fs,
 # minisign-verify, tempfile) belongs to the plugin, not to this manifest.
 tauri-plugin-updater = "2.14.1"
+# DR-418/DR-422 (SPEC-v0.0.13 §3.3): self-restart after a completed in-app
+# update on macOS/Linux, where the updater's install returns with the old
+# binary still running. The official process plugin of the tauri 2.12.5 line.
+tauri-plugin-process = "2.4.0"
 # DR-330: `tauri::generate_context!` deserializes the `plugins` config section
 # through `serde_json` by name — with `plugins.updater` present the app crate
 # must declare it (the standard Tauri template ships the same line). Zero new

@@ -112,6 +112,28 @@ describe("settings store", () => {
     await settings.load();
     expect(settings.logLevel).toBe("error");
   });
+
+  it("restores the skipped update version and reads corrupt rows as nothing skipped", async () => {
+    appGetSettings.mockResolvedValueOnce({ update_skipped_version: "0.9.9" });
+    await settings.load();
+    expect(settings.updateSkippedVersion).toBe("0.9.9");
+
+    appGetSettings.mockResolvedValueOnce({ update_skipped_version: "0.9.9-beta; keep" });
+    await settings.load();
+    expect(settings.updateSkippedVersion).toBe("");
+
+    appGetSettings.mockResolvedValueOnce({});
+    await settings.load();
+    expect(settings.updateSkippedVersion).toBe("");
+  });
+
+  it("writes the skipped version immediately, outside the settings batch", () => {
+    // AC-186 (SPEC-v0.0.13 §3.2): a restart made right after the Skip has
+    // to read it — there is no debounce window to wait for.
+    settings.skipUpdateVersion("0.9.9");
+    expect(appSetSetting).toHaveBeenCalledWith("update_skipped_version", "0.9.9");
+    expect(settings.updateSkippedVersion).toBe("0.9.9");
+  });
 });
 
 describe("last_filter decoding (AC-113)", () => {

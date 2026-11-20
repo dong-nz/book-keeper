@@ -1,6 +1,6 @@
 # The app window
 
-> **Status: ✅ Shipped in v0.0.2, updated in v0.0.3, v0.0.4, v0.0.7, v0.0.8 and v0.0.12** — verified by running the app on Windows. macOS and Linux follow the same design; since v0.0.12 macOS differs where the operating system expects it (see the amendment below) and is being verified on real Mac hardware with the published release.
+> **Status: ✅ Shipped in v0.0.2, updated in v0.0.3, v0.0.4, v0.0.7, v0.0.8, v0.0.12 and v0.0.13** — verified by running the app on Windows. macOS and Linux follow the same design; since v0.0.12 macOS differs where the operating system expects it (see the amendments below) and is being verified on real Mac hardware with the published releases.
 
 ## No separate title bar
 The system title bar is gone. The app's own top bar *is* the title bar:
@@ -45,3 +45,9 @@ The menus (Browse, Sort, View, application menu) are reachable with Tab and open
 > - On **macOS** only, the three window buttons — the app's own buttons, not the system's traffic lights — now sit at the **left end** of the top bar, in the Mac order **Close, Minimize, Maximize/Restore**, inset from the window corner the way native Mac windows are. Reading windows' top bars move with them ([reading-pdfs.md](reading-pdfs.md), [reading-epubs.md](reading-epubs.md)). Everything else in the bar — Browse, View, Settings, the search box — keeps its released position on every platform.
 > - On Windows and Linux nothing looks different.
 > - Dragging the bar, double-click to maximize, the keyboard paths, the menus and the scrollbars are unchanged everywhere.
+
+> **Amendment (2026-11-20, v0.0.13): on macOS, double-clicking the bar maximizes or restores the window** (verified by the app's automated checks — the press logic is unit-tested and the Windows-shape window checks re-ran unchanged; confirmation on real Mac hardware is underway with the published release).
+>
+> - The previous amendment's promise that double-click-to-maximize was unchanged everywhere held on Windows and Linux, but on Mac it had never actually worked: macOS' built-in rule requires the mouse to stay perfectly still between the second press and its release, which a real hand never does. The app now does the Mac's drag handling itself: **the first press moves the window, the second press maximizes or restores** — the behavior the bar has always had on Windows, now on Mac too, in the library window and in the reading windows alike.
+> - On Windows and Linux nothing changed: the released mechanism handles the bar exactly as before.
+> - Pressing a control, the search box or a menu still never drags the window; the menus and keyboard paths are unchanged everywhere.

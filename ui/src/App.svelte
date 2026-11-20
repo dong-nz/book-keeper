@@ -11,8 +11,10 @@
   import DocumentArea from "./components/DocumentArea.svelte";
   import StatusBar from "./components/StatusBar.svelte";
   import ToastStack from "./components/ToastStack.svelte";
+  import UpdateModal from "./components/UpdateModal.svelte";
   import { library } from "$lib/state/library.svelte";
   import { settings, decodeFilter } from "$lib/state/settings.svelte";
+  import { appinfo } from "$lib/state/appinfo.svelte";
   import { feedback } from "$lib/state/feedback.svelte";
   import { pickFilesAndImport, pickFolderAndImport } from "$lib/importFlow";
   import { isTextTarget, searchFocus } from "$lib/focus";
@@ -72,9 +74,13 @@
     // FR-25 / UI-52: the startup update check — fire-and-forget after the
     // mount sequence (AC-153: it never delays a window, shows nothing when
     // the app is current or the source is unreachable; a found update arms
-    // the availability toast). App only mounts in the main window — reader
-    // windows are routed elsewhere in main.ts — so "never on reader windows"
-    // is structural here, not a condition to write.
+    // the update modal, SPEC-v0.0.13 §3.2). App only mounts in the main
+    // window — reader windows are routed elsewhere in main.ts — so "never
+    // on reader windows" is structural here, not a condition to write.
+    // UI-57 (SPEC-v0.0.13 §3.4): the version identity is fetched once here
+    // and never re-fetched; the status-bar label and the modal render from
+    // the store, and the modal needs it before any check can complete.
+    appinfo.ensure();
     void checkForUpdates(false);
   });
 
@@ -204,6 +210,7 @@
     <DocumentArea />
     <StatusBar />
     <ToastStack />
+    <UpdateModal />
     {#if dragging}
       <div class="drop-overlay" role="presentation">
         <p class="drop-title">{t("drop.title")}</p>

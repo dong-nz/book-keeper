@@ -142,12 +142,15 @@ const en = {
   // v0.0.10 (UI-52): the update download rides the same bar (DR-332 item 4).
   "job.update": "Downloading…",
 
-  // App updates (FR-25 / UI-52, DR-332 item 2): the availability affordance
-  // carries the version, and the notes variant only when the release carries
-  // notes text; "up to date" and an unreachable source are plain toasts.
-  "updates.available": "Book Keeper {version} is available",
-  "updates.availableNotes": "Book Keeper {version} is available — {notes}",
+  // App updates (FR-25 / UI-52 as modified by SPEC-v0.0.13 §3.2, DR-422):
+  // the availability affordance is the modal — title, version line (rendered
+  // from the versions themselves, no strings needed), notes text, and these
+  // two actions; the completion toast names the relaunch. "Up to date" and a
+  // failed check or install stay plain toasts (unchanged, AC-151).
   "updates.install": "Install",
+  "updates.installed": "Update installed — restarting",
+  "updates.modal.title": "Update available",
+  "updates.skip": "Skip this version",
   "updates.uptodate": "You're up to date",
   "updates.checkFailed": "Couldn't check for updates.",
   "updates.installFailed": "The update could not be installed.",

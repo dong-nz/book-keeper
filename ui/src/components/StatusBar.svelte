@@ -10,6 +10,7 @@
   // `status_updated` and stay library-wide, never filter-dependent (FR-15's
   // invariant unchanged).
   import { library } from "$lib/state/library.svelte";
+  import { appinfo } from "$lib/state/appinfo.svelte";
   import { hasActiveFilter } from "$lib/types";
   import { t, tp } from "$lib/i18n";
   import { formatCount } from "$lib/format";
@@ -36,6 +37,14 @@
 
   {#if filtered}
     <span class="result-count" aria-live="polite">{t("status.results", { count: formatCount(library.total) })}</span>
+  {/if}
+
+  <!-- UI-57 (SPEC-v0.0.13 §3.4): the version the running app actually is,
+       read once at startup from the app's own identity and never re-fetched
+       — the same value the About dialog shows. Conditional content like
+       everything else on this bar: no value, no label. -->
+  {#if appinfo.version}
+    <span class="app-version tabular">{appinfo.version}</span>
   {/if}
 </footer>
 
@@ -69,6 +78,11 @@
   }
 
   .result-count {
+    font-size: var(--text-12);
+    color: var(--text-tertiary);
+  }
+
+  .app-version {
     font-size: var(--text-12);
     color: var(--text-tertiary);
   }

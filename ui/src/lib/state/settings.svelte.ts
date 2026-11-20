@@ -62,6 +62,15 @@ function parseReaderViewMode(value: string): StoredReaderViewMode {
     : "continuous";
 }
 
+/** The skipped update version (FR-25, SPEC-v0.0.13 §3.2): the same
+ *  restatement pattern as the validators above — the Rust side
+ *  (`service::is_valid_skipped_version`) is the authority; this only keeps
+ *  a corrupt row from reaching the update check. The empty string means
+ *  "nothing skipped", the released behavior for an absent key. */
+function parseSkippedVersion(value: string): string {
+  return value === "" || /^\d+\.\d+\.\d+$/.test(value) ? value : "";
+}
+
 class SettingsStore {
   view = $state<ViewMode>("list");
   gridColumns = $state<GridOverride>("auto");
@@ -76,6 +85,9 @@ class SettingsStore {
    *  Live reader windows are unaffected by later changes (per-window choice
    *  stands, UI-34 unchanged) — only a new window's store reads this. */
   readerViewMode = $state<StoredReaderViewMode>("continuous");
+  /** The skipped update version (FR-25): the version a startup check must
+   *  not offer again; only the update modal's *Skip this version* writes it. */
+  updateSkippedVersion = $state("");
   loaded = $state(false);
 
   // Settings writes are debounced (R4.3) as one batch: a 300 ms window collects
@@ -129,6 +141,9 @@ class SettingsStore {
         // is its own state, not a derivation of this).
         this.readerViewMode = parseReaderViewMode(value);
         break;
+      case "update_skipped_version":
+        this.updateSkippedVersion = parseSkippedVersion(value);
+        break;
       default:
         break;
     }
@@ -177,6 +192,7 @@ class SettingsStore {
       this.epubTextSize = parseTextSize(settings.epub_text_size);
       this.logLevel = parseLogLevel(settings.log_level);
       this.readerViewMode = parseReaderViewMode(settings.view_mode);
+      this.updateSkippedVersion = parseSkippedVersion(settings.update_skipped_version);
       this.loaded = true;
       return {
         sort: settings.sort,
@@ -226,6 +242,19 @@ class SettingsStore {
     const mode = parseReaderViewMode(value);
     this.readerViewMode = mode;
     this.#persist("view_mode", mode);
+  }
+
+  /** The update modal's *Skip this version* action (FR-25, SPEC-v0.0.13
+   *  §3.2): the only writer of this key. Written immediately, not through
+   *  the debounced batch — the skip has to survive a restart made right
+   *  after it (AC-186's restart assertion); the released write path, the
+   *  broadcast to the other windows, and the silent-failure rule are
+   *  unchanged. */
+  skipUpdateVersion(value: string): void {
+    const version = parseSkippedVersion(value);
+    this.updateSkippedVersion = version;
+    this.#persist("update_skipped_version", version);
+    void this.flushNow();
   }
 
   /** The Log section's level selector (UI-53, AC-156): written through the

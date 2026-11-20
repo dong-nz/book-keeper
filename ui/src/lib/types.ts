@@ -75,6 +75,9 @@ export interface SettingsDto {
   /** Reader view mode, one of the four mode names (FR-29, SPEC-v0.0.12
    *  §3.2): the mode new reader windows open in. */
   view_mode: string;
+  /** Skipped update version, `x.y.z` or `""` — nothing skipped (FR-25,
+   *  SPEC-v0.0.13 §3.2). An absent key reads as `""` at the mirror. */
+  update_skipped_version: string;
 }
 
 export interface AboutDto {
